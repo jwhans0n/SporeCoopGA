@@ -1,0 +1,72 @@
+---
+id: BUG-0578
+title: Crash at Graphics::cModelWorld::FinishBackgroundLoad+0x2735 on 0.7.3.6 (3010a413, mode none)
+status: not-reproduced
+kind: crash
+stage: All
+reported: 2026-11-04
+source: player report 2026-11-04 (Discord bug-reports, 0.7.5, Steam build)
+role: guest
+versions: 0.7.3.6
+fixed_in:
+branch: fix/w43-transitions; tested on fix/w46-n1-crashes
+commits:
+tests: exit_editor_held, exit_editor_open
+signature: 3010a413:SporeApp.exe Graphics::cModelWorld::FinishBackgroundLoad+0x2735 (GOG 2024 0x753D05)
+docs: docs/re/tribe.md#tribe-exit-editor
+related: BUG-0576, BUG-0855
+---
+
+## Report
+A crash in an older run (coop 0.7.3.6, SporeKit 0.3.6, 2026-11-03), carried in the 2026-11-04 report: 0xC0000005 at 0x00AF3D05 Graphics::cModelWorld::FinishBackgroundLoad+0x2735, chain StandardFileFilter::IsValid <- cFrustumCull::FrustumTestAABB <- Model::Release <- GeneralAllocator_FreeInternal. Game mode none (a load).
+Reports: SporeCoop-report-2026-11-04 175959 (crash-20261103-210113) (out/reports/2026-11-04, not in git). Not analysed yet.
+
+## Root cause
+Logs: the reports' sporekit.log of both players (host 17:26-20:15, guest 17:27-19:45 and 19:47-20:09, lined up by the session clock `[s N]`).
+* Observed (crash text, dump): 0xC0000005, write of 0x00000000 at 0x00AF3D05 = GOG 2024 0x753D05: unlinking a
+  list node whose links are 0 (`mov [eax],ecx` with eax = [esi+4] = 0), under Graphics::Model::Release /
+  GeneralAllocator_FreeInternal, on the game's main thread at exit: the log ends with cSporeApp::Shutdown at
+  21:01:13.604, the mod unloaded at .668, the crash at .725 (mode none). Coop 0.7.3.6, the player as host in Tribe
+  with 16 gifts; before it: "the editor waits: the game is busy (paused)" (as BUG-0576) and the guest timed out.
+* Inferred: a model freed twice or left in a render list at shutdown (a model of ours: puppet, mirror or effect).
+
+* Observed (the 0.7.3.6 log, previous/sporekit-20261103-210114.log of the report): the session ended exactly as
+  BUG-0576: at 20:59:48 the host's vote "wants to evolve (Tribe)" for **editor 99E92F05 (the City Hall)**, at its end
+  "the editor waits: the game is busy (paused)", then 81 s of nothing (the game's own pause for that editor), the
+  guest left, and the player quit the game at 21:01:13 (cSporeApp::Shutdown). The crash's stack has
+  App::cSporeApp::Shutdown <- cAppSystem::PreShutdown <- **App::cGameModeManager::Dispose <- Editors::cEditor::Dispose**
+  <- ... Graphics::Model::Release: the game disposing its editor (prepared for the held request) at exit, 57 ms after
+  the mod unloaded.
+* Inferred: the game's exit path with an editor request in flight (the game paused for it, the editor not open)
+  frees a model twice or one left in a render list. The state comes only from BUG-0576 (the mod held the game's own
+  City Hall request); with BUG-0576 fixed the editor opens at once and the player has no reason to quit there.
+
+## Fix
+None on its own: BUG-0576 (core.editor_own_pause) removes the state the player quit from.
+
+## Verification
+no-fail-run: an exit crash of 0.7.3.6 at the end of BUG-0576's black screen, not reproduced on the current build.
+
+0.7.11 N1 (fix/w46-n1-crashes, GOG 2024): the quit from that state tried in the lab for the first time, through the
+game's own exit (`coop.close`: WM_CLOSE to the game window, cSporeApp::Shutdown, the game mode manager and its editor
+disposed), test coop_exit_editor_held.py:
+* exit_editor_held (core.editor_own_pause off: the City Hall editor waits, the game paused for its own request, as
+  0.7.3.6; the guest leaves, WM_CLOSE in that state): the game exits by itself (Shutdown, unload, ExitProcess 0), no
+  crash report: out/lab/20261107-231415 (20 s after the leave) and out/lab/20261107-233741 (40 s; "the editor still
+  waits at the exit (0x01654C02 Tribe)"). (out/lab/20261107-232504: the old gate had opened the editor after 60 s,
+  so that exit came from the editor.)
+* exit_editor_open (the fix on, WM_CLOSE inside the City Hall editor): clean, out/lab/20261107-231415,
+  out/lab/20261107-232504.
+(The FAIL lines of the 20261107-231415 runs are the test's own check of the guest after the exit: both games of a
+lane's bottle end together; fixed in the test.)
+Reasoning: on GOG 2024 under Wine the exit from the held state and from the editor frees nothing twice; the report's
+crash came on Windows (Steam) 57 ms after the mod unloaded, in the game's own model release. With BUG-0576 fixed the
+held state does not come in play any more (the editor opens at once), so a player has no reason to quit there.
+
+## History
+- 2026-11-04: opened.
+- 2026-11-04 (fix/w43-replay, step 0 of 0.7.7): replayed on 0.7.6 code; still open (T1), triaged from the dump.
+- 2026-11-04 (fix/w43-transitions, T1): the same session as BUG-0576 (the held City Hall editor, then the quit):
+  not-reproduced, the state is gone with BUG-0576.
+- 2026-11-07 (fix/w46-n1-crashes, 0.7.11 N1): the game's own exit (WM_CLOSE) tried with the editor held and open: clean, no crash report (lab 20261107-231415, 232504, 233741). Stays not-reproduced, closed with the runs.
+- 2026-11-10 (plan/w47-closed-open, closed-ticket review 2026-11-10): closed-ticket review: the ticket closed partly because BUG-0576 removed the state the player quit from (an editor request held by the game's own pause). BUG-0855 (open, 0.7.13 T1) suspects the same hold at Civ -> Space: BUG-0576's mask covers only the Tribe pause reason 0x4BF38A6. If it is confirmed, the exit-with-a-held-editor state of this crash is reachable again. Untried test: exit_editor_held with the spacecraft editor (Civ -> Space vote), not the City Hall.

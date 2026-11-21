@@ -41,8 +41,17 @@ def main():
     ck('vote active' in guest.call('coop.vote')['out'], 'a superweapon starts a vote')
     gu = Ui(guest, 'guest')
     gu.wait(lambda s: s['ready']['vis'], 10, 'ready button')
-    gu.click('ready')
-    time.sleep(3)
+    # the window has just opened for the vote: a click in its first frames was lost twice in seven
+    # runs (BUG-0176; one by hand seconds later worked). Settle first, click again like a player
+    # when nothing happened; how many clicks it took is printed
+    time.sleep(1.0)
+    clicks = 0
+    for clicks in range(1, 4):
+        gu.click('ready')
+        time.sleep(3)
+        if 'the superweapon fires' in host.call('coop.status')['out']:
+            break
+    print(f'  the guest\'s "I\'m ready" took {clicks} click(s)')
     st = host.call('coop.status')['out']
     ck('the superweapon fires' in st, 'it fires when everybody is ready')
     print(' ', st.split('civ(host)')[1].splitlines()[0])

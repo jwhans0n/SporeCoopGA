@@ -19,6 +19,7 @@
 import re
 import time
 
+from harness import sp, waiter
 import fixtures
 import lane
 from coop_ui import VK_F9, Ui
@@ -26,10 +27,6 @@ from twoinst import Checks, shot, start, wait_guest_in
 
 VK_RETURN, VK_ESCAPE = 0x0D, 0x1B
 W, H = 1440, 1080
-
-
-def sp(con, *a):
-    return con.call('coop.space ' + ' '.join(str(x) for x in a))['out'].strip()
 
 
 def place(con):
@@ -42,14 +39,7 @@ def context(con):
     return 'planet' if p & 0x40000000 else 'system' if p & 0x80000000 else 'galaxy'
 
 
-def wait(cond, secs, step=1.0):
-    t0 = time.time()
-    while time.time() - t0 < secs:
-        r = cond()
-        if r:
-            return r
-        time.sleep(step)
-    return None
+wait = waiter(step=1.0)
 
 
 def no_movie(con, secs=40, esc=False):
@@ -206,7 +196,11 @@ def main():
     st = ui.wait(lambda s: s['page'] == 'space' and s[f'sbtn{idx}']['vis'], 10, 'Space page')
     ck(st is not None and st[f'sbtn{idx}']['text'] == 'Fly there', 'the Space page shows the button')
     shot(guest, 'allies_page.png')
-    ui.click(f'sbtn{idx}')
+    rows2 = sp(guest, 'rows')  # the page may have changed since (a row more shifts every button)
+    if rows2 != rows:
+        print('  guest rows now:', rows2.replace('\n', ' | '), flush=True)
+    idx2 = next((int(r.split(':')[0]) for r in rows2.splitlines() if "Alice's empire: colonies in your galaxy: 1" in r), idx)
+    ui.click(f'sbtn{idx2}')
     guest.call(f'key {VK_F9}')
     ck(wait(lambda: place(guest)[1] == star and context(guest) == 'system', 40), f'the button took the guest to star {star}')
     no_movie(guest)

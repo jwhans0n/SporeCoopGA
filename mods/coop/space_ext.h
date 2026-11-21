@@ -17,7 +17,12 @@
 //   50..59  space_rivalry  rivals mode (own budgets, PvP)
 //   60..69  space_allies   partner colonies as an allied empire
 //   70..79  space_trade    tool gifts and trade between players
-//   80..99  free
+//   80..84  space_planets  a shared colony's stored spice (BUG-0537)
+//   85..89  space_badges   badges kept across a rejoin
+//   90..94  space_eco      a planet's ecosystem (plant and animal species, BUG-1148)
+//   95..    free
+// The table of every kind (owner feature, who may send it) is net/space_kinds.def (B3 of 0.7.15): a new kind is a row
+// there, with its direction; tests/validate_tests.cpp checks the rows against each feature's enum Kind and kind range.
 #pragma once
 
 #include <cstdint>
@@ -26,6 +31,7 @@
 #include <vector>
 
 #include "net/buffer.h"
+#include "space_logic.h"
 #include "spacecoop.h"
 
 namespace spaceext {
@@ -44,6 +50,8 @@ struct Feature {
     // after spacecoop::init (symbols, hooks); false = the feature stays off (logged)
     std::function<bool(const SkHost*, SkMod*)> init;
     std::function<void(double now)> tick;                                  // every frame, inside Present
+    // every frame while the host's session settings switch the feature off (F3): what it still owes the player (BUG-1037)
+    std::function<void(double now)> tick_off;
     std::function<void(uint8_t kind, uint8_t origin, net::Reader&)> on_message; // origin != me
     std::function<void()> on_session_end;
     std::function<void()> draw_overlay;                                    // inside Present: draw only
@@ -64,7 +72,50 @@ bool connected();
 bool is_host();
 uint8_t my_id();
 std::string name_of(uint8_t id);
-bool in_space();          // the Space stage is running
+// BUG-1107, host: the key of the state kept for a player across its rejoin (colonies, cargo hold, badges, budget):
+// net::Session::player_key (its rejoin token, else its name). "" = no such player. `coop.fix space.kept_token off`:
+// the session name (0.7.14: two players of the same name who rejoin in the other order swap their kept state)
+std::string kept_key(uint8_t id);
+// (map, trade, badges and rivalry keep a rejoiner's state through space_kept.h under this key: C5, BUG-1132)
+bool in_space();          // the Space stage is running (false while the `away` test hook is on)
+// tests (BUG-0226, BUG-0228, BUG-0229): `coop.space away 1|0` makes the Space modules act as
+// outside Space while the Space world stays (as an editor or an adventure entered from Space does):
+// in_space() false, no inventory. Cleared at session end and on unload; never saved.
+bool away();
+void set_away(bool on);
+// The Space world in memory (BUG-0228, BUG-0229; a Space-only stand-in for #151's stage epoch).
+// +1 on the first kSpace frame after the Space world was torn down (a frame in any mode other
+// than kSpace, kEdit, kEditor or kScenario: a load, the galaxy menu, another stage) and when, in
+// kSpace, the player's cEmpire changes from one non-null pointer to another. Editors and
+// adventures entered from Space keep it. Two equal values: the same Space world. 0 = Space not
+// seen yet since the mod loaded (a hot reload starts again at 0). Updated in tick_all, before
+// every feature's tick of that frame. Not seen: a reload that shows no non-Space frame and reuses
+// the old cEmpire's address.
+uint32_t world_epoch();
+// C2 (BUG-1141): what world_id.h (coop.cpp) reads in Space: the save file as the epoch counts it (0: not known, or
+// `space.world_file` off) and the player's cEmpire (null outside Space)
+uint32_t world_save();
+const void* world_anchor();
+// BUG-0694 (space_contracts.cpp): a reward tool (its key) this game cannot take now (outside Space) is owed and given in
+// the first Space frame of the same Space world; false: the switch space.reward_owed is off (the tool is lost)
+bool owe_tool_key(const uint32_t key[3], const std::string& what);
+// the game's saves made while the mod runs (space_allies' save hook counts them; 0 without it).
+// Only the 0.7.3.0 refund rule (`coop.fix space.owed_id off`) still reads it (BUG-0225).
+void note_save();
+uint32_t saves();
+// ---- the galaxy identity of owed refunds (BUG-0225, GitHub #159; space_logic.h WorldLedger) ----
+// owed_id(): `space.owed_id` is on. world_tag(): the Space world in memory and its save file now
+// (take one when something leaves the inventory). owed_action(tag): pay it now, drop it or keep it
+// owed (call it in Space). note_saved(): the save hook, after the game wrote a save; recorded only
+// while the Space world is open. The ledger is memory only (a hot reload starts it again).
+bool owed_id();
+spacelogic::WorldTag world_tag();
+spacelogic::OwedAction owed_action(const spacelogic::WorldTag& t);
+void note_saved();
+std::string game_key(); // the save file of the game played now (cached per Space world; "" unknown)
+// another module's work before every game save of any stage (called by the same hook before the
+// game writes; BUG-0121: the Tribe co-op epic leaves first)
+void on_save(void (*fn)());
 bool russian();           // the co-op window speaks Russian
 inline const char* tr(const char* en, const char* ru) { return russian() ? ru : en; }
 void notice(const std::string& text); // a local toast + chat log line
@@ -72,12 +123,31 @@ void notice(const std::string& text); // a local toast + chat log line
 // player carries its id in the payload and the others ignore it
 void send(uint8_t kind, const net::Writer& body);
 
+// ---- allies mirrors (owned by space_allies.cpp) ----
+// a political id of a mirror empire of this copy (a partner's colonies): local to each copy, never
+// shared by pol (BUG-0071)
+bool allies_mirror_pol(uint32_t pol);
+// a partner's colony this copy shows as a colony of my own empire (allies.own_star, BUG-0197): not mine
+bool allies_own_mirror(uint32_t planet);
+// BUG-0195: make `planet` a colony of my own empire at record level (a guest's colony the host kept for
+// it). "" = done (or mine already), "wait" = not now (the ship is at that planet), else why it can not be mine.
+std::string colonize_own(uint32_t planet);
+// BUG-1151 (space_allies.cpp): my colony's cities as the planet record keeps them (wire/space_map.h put_cities; empty:
+// none), and writing them back into a restored colony ("" done, "wait": the planet is loaded, else why not)
+std::vector<uint8_t> colony_cities(uint32_t planet);
+std::string colony_cities_apply(uint32_t planet, const std::vector<uint8_t>& blob);
+bool colony_cities_on(); // space.colony_cities
+// the game's missions (cMission*, every state; space_allies.cpp reads the noun list)
+std::vector<void*> game_missions();
+
 // ---- rivals mode (owned by space_rivalry.cpp; other features only read it) ----
 // rivals(): the host's session option "players are rival empires" (own budgets, diplomacy per
 // player). relation(a, b) between two players: allies (the default, also when rivals() is off),
 // neutral or at war. The setters are for space_rivalry.cpp only.
 enum class Relation : uint8_t { Ally = 0, Neutral = 1, War = 2 };
 bool rivals();
+// F3 (BUG-0768): the host's session settings allow this feature (space.trade, ..., space.rivals for "rivalry")
+bool feature_allowed(const std::string& name);
 Relation relation(uint8_t a, uint8_t b);
 void set_rivals(bool on);
 void set_relation(uint8_t a, uint8_t b, Relation r);

@@ -107,7 +107,7 @@ edge, and rejects custom root, parent and sample overrides. It bounds descriptor
 properties, lengths, references and recursion, rejects cycles/malformed streams,
 and validates each distinct music ID once per collection. It never rewrites an act's
 authored value, disables music, substitutes tracks, or transfers an unsupported
-custom audio graph. Missing ordinary descriptors still fail, with the adventure,
+custom audio graph. Missing required descriptors/samples still fail, with the adventure,
 one-based act, authored music ID and actual failing typed key in the diagnostic.
 The scalar/array property parser reads native big-endian headers and little-endian
 ResourceKey payloads; the existing verified record stream handles decompression.
@@ -122,6 +122,39 @@ descriptors and sample-key baselines; it checks resolution/provenance, not audib
 playback. See `out/music-resolution/audit-input.json` for local record provenance.
 Muted native tests can establish successful load/act transitions and unchanged
 authored IDs, but must not be described as audible playback verification.
+
+### Editor preview 8: raw-sample music fallback, Motel of Melora
+
+The installed preview7 log and a private two-player reproduction both rejected
+Motel of Melora ('22 Edition), scenario290DE23F, act6, music8F7E1796. Its source
+music IDs are0,4BA21A81,D75F9DB1,0,0,8F7E1796,C4C2988F. There is no installed
+021407EE!8F7E1796.02B9F662. Spore_Audio1.package does contain
+021407EE!8F7E1796.01A527DB at344059900,491284 uncompressed bytes, SHA256
+2e3066a6c4b5de5085ed64a6f1f9ffd0c0a22a102f3a31a1c28b6a1fa57f2b81.
+The earlier validator wrongly treated every ordinary missing root descriptor as
+fatal even when this native fallback sample was installed.
+
+Static dc04 evidence: A22FD0 constructs the descriptor key and returns false
+atA2303E..A2304E when the audio resource loader refuses it. The A2E5F0 caller
+atA2E75D..A2E776 tolerates that absence and continues through the default property
+set into AudioSystem slot90=A28410 atA2E7F0..A2E80F. Wave selection reads701ED91E
+atA286E1..A286F1; A286F5..A28701 replaces a zero wave instance with the original
+authored ID. The existing sample path then uses the audio group/sample type.
+No descriptor or authored value needs to be synthesized or rewritten.
+
+The resolver now tries that same-ID stock sample only after a missing root
+descriptor. A present descriptor retains priority, including its inherited
+parents and wave references. Custom overrides, unreadable/malformed descriptors,
+aliases and missing inherited parents cannot fall through to the sample path.
+The sample uses the same effective native provenance checks as descriptor waves.
+This corrects the old blanket test rejecting a raw sample alone; a palette alone
+still cannot satisfy either native path. Reserved control1 retains its existing
+separate handling. Diagnostic collection logs identify `native=sample`.
+
+Protocol22 and authored/recovery formats are unchanged. Muted native tests can
+prove admission, unchanged native act music and edit/history behavior; they do
+not establish audible playback quality. Offline catalog checks now accept
+additional reported IDs with `adventure_music_catalog.py --music 8F7E1796`.
 
 Card metadata loads an owned native pollen metadata resource. NameText414E00
 returns metadata+78's UTF16 string pointer; AuthorText550880 returns+58. Native
@@ -2301,3 +2334,1466 @@ unproven. Serial private startup, waiting for the first instance to reach native
 Galaxy before starting the second, passed with the same C4 binary and profiles.
 This was a test-runner startup constraint; no registry or personal-profile
 settings were changed and no new native entry was called by production code.
+
+## Native Adventure Editor working resource and history (dc04)
+
+The editor work uses the same exact executable identity as the GA adapter:
+`dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37`.
+`tools/addrport/verify_editor_dc04.py` checks entry bytes, stack cleanup,
+call edges and the relevant field references before rendering
+`data/symbols/overrides_editor_dc04aee5.sym`. Imported ModAPI addresses alone
+are candidate discovery, not an approval to call them.
+
+### Editor entry and draft ownership
+
+Native ScenarioMode initialization `EF1D20` copies launch request `+28` into
+mode `+D0`. Context zero creates the editor input and display strategies and
+selects submode `+CC = 1`; quickplay contexts one and two select play submode
+two. Normal native Create, Create Adventure, Choose a Planet was exercised in
+the hidden, muted owned profile `winlab_ga_editor_probe_85`. Choosing Alpine
+Valley produced request `(entryKind +24 = 1, context +28 = 0)`, a zero adventure
+root key and the selected planet key at `+0C`. It entered Scenario with
+submode one. This is a different entry from the verified Sporepedia quickplay
+pair `(2, 1)`. A party's quickplay interception must require that exact pair.
+The second owned profile remained in Galaxy. No personal instance received input.
+
+The actual editable draft is mode `+74` ScenarioData, then data `+10`
+ScenarioResource, not an immutable resource-manager record. The live draft is
+native owned. It must not be replaced by writing an EditorSaves or Pollination
+file underneath the open editor. Snapshot capture calls the previously verified
+ScenarioResource Write into an owned, bounded stream outside Present.
+
+The resource has acts at `+23C` (stride `534`, at most eight), classes at
+`+2BF4` (map pair stride `27E8`, class key at zero, class at eight) and
+placements in an indexed pool at `+2C10` (row stride `238`, flags at zero,
+marker at four). The row word is not a marker ID. Bit 31 marks a free slot;
+live marker identity is its row index. `F40F90` frees a pool slot without
+compacting survivors, and `F2EBC0` reuses a free index or appends a slot.
+Marker position `+04`, orientation `+10` and scale `+20` are global authored placement fields. They are not independent
+per-act transforms. Marker `+228` is a runtime identity field, not a substitute
+for persistent project IDs. The adapter retains an explicit stable object to
+native pool-index binding across reconstruction; class, placement and act IDs
+occupy separate initial namespaces. New host-assigned IDs must retain bindings
+instead of being derived again after a native index reuse. A reused slot gets
+a fresh incarnation. Parsed snapshots can have `marker+228 = FFFFFFFF`, so
+that runtime field cannot replace the owned pool-index binding.
+
+### Owned snapshots and native reconstruction
+
+`F2E670` is thiscall ScenarioResource constructor, returns the resource in EAX
+and uses a `2CB0` byte allocation. The native history call site `F45865..F458A0`
+constructs that object, adds its initial owned reference through vtable slot
+zero, then deep copies the live resource. Its initial reference count is zero;
+native Release is slot four and releases the complete allocation. The matching
+allocator is `F47240`, cdecl size, allocation name, then four zero words. It calls
+GeneralAllocator `16C8B44` through `928C80`, and pairs with plain free `F47220`.
+Both the resource deleting destructor `F2E9C0` and history-entry deleting
+destructor `F3CBE4` call that plain free. The superficially similar existing
+`Memory::operator_new_named` at `9262B0` is incompatible here: it allocates an
+extra eight-byte allocator header and returns an adjusted pointer; its matching
+delete `9262F0` subtracts that header. This distinction was caught by static
+review before testing the new adapter in a game. No native resource or history
+entry may mix these allocator families.
+
+`DFFA00` is thiscall `(destination, sourceResource*)`, returns the destination
+in EAX and pops four stack bytes. It deep copies the authored resource,
+including strings, properties, acts, class and marker containers, embedded
+resource data and the native editor camera fields. Capture bytes are the raw
+ScenarioResource Write format, not an outer DBPF container. Read into a freshly
+constructed owned resource avoids depending on previous container contents.
+The ResourceObject key at `+08` is kept separately from serialized draft data.
+
+An actual cold reopen now distinguishes scalar property padding from authored
+data. Scenario Write `F25E00` emits magic `B523D4F9` and version 17, then calls
+the embedded property list at resource `+18` through vtable `+40`. Its vtable is
+`1408848`: Read `+3C` is `6A2F60`, Write `+40` is `6A1540`. Property-list headers
+are big endian; scalar ResourceKey values are 16 serialized bytes containing
+the little-endian 12-byte instance/type/group key and a reserved fourth word.
+Native `SetValueKey` at `422F40` copies only offsets `0/4/8`, or uses size `0C`
+on its alternate storage path; it leaves inline `+0C` untouched. `GetValueKey`
+at `6A1030` returns that typed key. Generic property reading at `694410` and
+writing at `693360` retain the 16-byte inline representation. Thus the fourth
+word is not an extra authored resource identity. The existing music descriptor
+reader independently uses the same scalar-key layout and ignores that word.
+
+For the actual private `Native C16 Save Proof` file, fresh C17 processes opened
+exact source `408A0000!29096B31.366A930D` through the native browser before any
+Recover. Full read-only export is 15,291 bytes, SHA-256 `ccb4e789...fc14a`; the
+saved checkpoint's snapshot is the same size, SHA-256 `9207984f...51b`. Only
+bytes 32-34 differ, in the reserved word of the first scalar key property
+`00B2CCCB`; its actual key `42840100!66AA7D12.00B1B104` is identical. Every byte
+outside that four-byte reserved word, including all remaining property metadata
+and the complete embedded DBPF, is identical. The known placement pose and
+semantic hash also match. Negative comparisons reject changes in all three
+actual key words and representative later authored/payload bytes. This closes
+this fixture's cold opaque round trip without changing product comparison
+rules or permitting arbitrary opaque exclusions. It does not establish every
+adventure's round trip.
+
+The live SDK console truncates one response at 8,191 characters. Although the
+read-only native byte command accepts up to 4,096 bytes, its hex plus header
+exceeds that transport limit. The audit helper now uses 2,048-byte pages and
+verifies the complete SHA and size on each page and after reassembly.
+Receipts: `out/editor-native-pair-c17-final/{cold-open,cold-bytes-retry}/`,
+`out/editor-audit-c17/cold-difference.json`, and the static exact-image
+`out/editor-native-re/c17-{cold-format,header,property-header,property-codec,property-value,key-size}.txt`.
+These additional addresses are static observations, not newly called interfaces.
+
+The input stream ABI is byte-count Read at vtable `+30`, not a bool result:
+`F2FD9F..F2FDB0` calls that slot and compares full EAX with the requested byte
+count. Primitive helper `93A6F0` converts its own result to bool. Write uses
+bool AL. The read-only snapshot adapter rejects seek, resize and writes beyond
+its owned bounded input; its output counterpart is capped at 32 MiB.
+
+The dependency collector can read captured bytes into an independently owned
+ScenarioResource, traverse the existing dependency closure, normalize server
+references on that private copy and serialize the normalized root. Guests must
+restore the normalized returned root bytes. This operation changes neither the
+live draft nor a loaded profile database. The source resource key remains an
+explicit argument; a newly created project does not need a first native save
+merely to inspect its captured body.
+
+### Native gesture and Undo boundaries
+
+History lives at global `16065D8`: entry vector zero, cursor `+14`, not-editing
+flag `+20`, owned in-progress entry `+24`. `F45810` is thiscall
+StartHistoryEntry `(ScenarioData*)`, with no stack arguments. It obtains an
+owned before snapshot and creates the native history entry. `F45920` is the
+matching CommitHistoryEntry: it deep copies the after snapshot, appends one
+native gesture and releases the in-progress entry. Neither function returns a
+mutation permission. Suppressing this void Start call would not prevent its
+caller from subsequently changing the draft, so it is not a valid edit lock.
+
+`F3CAE0` constructs a real native history entry in `18` bytes and pops `0C`:
+`(parent ScenarioData*, beforeResource*, afterResource*)`. Parent `+0C` is
+borrowed; snapshot pointers `+10/+14` are owned references. The adapter can
+retain an entry while the normal Commit releases its own reference, then
+serialize both snapshots in an outside-frame task. Deferred tasks must verify
+the same native data owner and project generation before publishing a gesture.
+
+`F46400` is thiscall `(realHistoryEntry*, snapshotResource*)`, pops four bytes.
+It clears the active native tool through manager `15AD298`, cleans the scene,
+deep copies into the existing draft resource, reconstructs actors, rebuilds
+the current editor act and sends `072BDB11` synchronously. Native history
+Undo `F464B0` passes the entry's before snapshot; Redo `F464C0` passes after.
+Remote reconstruction must retain the local camera resource bytes `+2C30..4F`
+and must separately account for current local selection/tool ownership.
+`EFC410` is the no-argument cdecl editor-act accessor, not the runtime play act.
+
+Native placement create/clone/delete, pre-mutation input fencing, selection
+preservation and the normal asynchronous Save As/playtest-return lifecycle
+remain separate verification gates. A working snapshot copier does not prove
+those operations safe. The following entry receipts enable initial placement
+operations; actual paired runtime coverage is recorded separately.
+
+### Verified placement operations and initial UI fences
+
+`F44210` is thiscall `(ScenarioData*, classID, position*, orientation*, scale)`,
+pops `10`, and returns a new live marker pointer. A negative scale selects native
+class defaults. It inserts a fully constructed marker, creates all current act
+data, instantiates the actor and registers both object maps. `F44460` is thiscall
+`(ScenarioData*, const sourceMarker*)`, pops four, and returns a new live marker.
+It uses deep marker-map insertion `F2EBC0`, preserving opaque per-marker data.
+This is appropriate for Clone and for restoring a deleted placement from its
+owned native artifact. It must merge into the current resource; restoring a
+whole old scenario would overwrite unrelated accepted edits.
+
+`F428A0` is thiscall `(ScenarioData*, marker*)`, pops four. Its native `F416C0`
+route cleans the actor and frees the resource marker pool slot. Other slot
+indices remain unchanged; a subsequent create can reuse the freed index. The
+adapter retains owned actor references
+across a gesture, asks the existing verified GetMarkerForObject for surviving
+actors, and records distinct before and after stable binding maps. The deferred
+gesture serializer uses those explicit maps, not the latest global mapping.
+
+Editor context pointer `16C7B88` contains current act zero and the owned selected
+GameData at `+04`, with auxiliary path-node selection at `+10`. Tool manager
+pointer `15AD298` uses vtable `148B708`. SetSelection `EFE810` is thiscall
+`(manager, GameData*)`, pops four, and updates selection and its UI. After scene
+reconstruction the adapter resolves the selected stable placement to its newly
+created native actor and reselects it. Deleting that placement clears selection.
+
+ToolAction `F03770` is thiscall `(manager, action, rawWord, rawWord)`, returns a
+32-bit handled result and pops `0C`. Action one starts a selected-object drag,
+six changes scale and eleven enters clone or path-node handling; action zero
+finishes an already started gesture. PlaceClass `F00670` takes a class ID and
+returns bool AL, pops four. DeleteSelection `F02CE0` takes no stack arguments.
+The shared adapter gates those mutation entry points on the actual held leases
+before calling native mutation code. Place/clone require short structural
+ownership. Unsupported patrol-node editing is held before its mutation path.
+
+ImportClass `F462F0` is thiscall `(ScenarioData*, const ResourceKey*)`, pops four,
+and returns the new class ID or `FFFFFFFF`. The initial shared preview holds it
+before its class-map insertion and counter change. Palette templates can be
+prepared in the normal native editor before hosting. Class import is a separate
+future semantic transaction, rather than an unvalidated change to a shared
+class. Known act timeline, global/terraform, avatar, raw playtest, reset and
+Save/Done/Cancel controls are disabled through native UI flags while sharing;
+the adapter owns references and restores their original enabled flags on exit.
+The collaboration coordinator and verified native save adapter own those flows.
+
+Authored goals use the same reviewed layout as `adventure_catalog`: act `+84`
+is a fixed vector of up to three `188`-byte goals, type at zero, primary class
+at four and secondary class at eight. Initial projection conservatively retains
+every existing placement matching a referenced class. The avatar is outside the
+ordinary placement projection and is not an editable placement. Private incoming
+snapshot validation parses into an owned resource and checks the canonical
+class/act roster, stable placement bindings, finite transforms and original
+objective references before a live scene can be restored.
+
+ScenarioData dirty state is separate from resource serialization: last saved
+native revision at `+80`, ordinary authored dirty at `+84`, and imported/new flag
+at `+85`. Accepted remote placement changes set ordinary dirty only. Local
+rollback snapshots retain these fields and restore them on failure; they are
+never serialized as network artifact metadata. Setting imported/new merely to
+make a Save button active would alter the native save lifecycle and is forbidden.
+
+
+### Editor UI mutation ownership and chronological native history
+
+Native manager Undo `ED9B20` and Redo `ED9B60` change history cursor `+14`
+before calling the entry virtual method. Shared history therefore intercepts
+these manager entries before any native cursor movement, in addition to the
+entry-level fallback guard. Each original native Start/Commit gesture remains
+one shared gesture. A rejected shared Undo does not advance native history.
+
+Editor display `ED5130` owns cast palette UI at `+14` and a separate authored
+script UI at `+18`. Script constructor `EDD480` installs IWinProc vtable
+`148A760` at script `+08`; its `+18` callback is `EE4290`, thiscall on that
+interface, with source window and message pointer arguments, bool AL and
+`ret 8`. The callback handles authored act, goal, class and text mutations.
+While the shared editor owns this exact script object, the initial adapter
+leaves these events unhandled without calling those native authored setters.
+Independent tool/camera event handlers remain available. This is a native
+pre-mutation fence, not an after-the-fact snapshot rejection.
+
+Generic class/act property binding in `F08DFB..F08E28` follows mode `+14`,
+display `+18`, script `+18`, then property UI `+10`. That last field is a
+`UILayout`, not an `IWindow`: `EDEB50` constructs it through `8100A0` and
+stores it at `+10`. The adapter uses the already verified
+the layout-scoped FindWindowByID `810650` to resolve its exact property root
+`073E6BA0` before disabling that owned subtree outside Present, retaining and
+later restoring its original enabled flag. GetContainerWindow returns the
+shared parent layer and must never be disabled for this purpose. Cast palette
+placement is separate and remains available. Initial shared classes, goals,
+act selection and global properties are read-only; class import returns the
+native failure sentinel before the class map changes. Unsupported controls
+are nonfatal blocks, not a request to freeze or discard the shared document.
+
+The working snapshot also exposes the authored avatar key at resource `+130`
+and lock flag `+175`; read-only accessors use the currently normalized live
+resource. These fields are distinct from the source adventure ResourceObject
+key at `+08`. Preview captain rules must use the former rather than treating
+editor entry as Sporepedia quickplay.
+
+An authoritative incoming or recovery full snapshot has no local dirty metadata:
+after successful native reconstruction it marks ordinary authored dirty `+84`
+only. It leaves saved revision `+80` and imported/new `+85` unchanged. In contrast,
+a local rollback carries its captured metadata and restores all three exactly.
+This keeps a recovered unsaved draft eligible for the normal native save checks,
+without bypassing CanSave or fabricating an imported creation.
+
+
+### Editor readiness and the thumbnail flag
+
+First hidden native testing found data `+124` was zero in a fully usable native
+Adventure Town editor and in its ordinary Test Mode. Real native Play
+`07104131` entered `CC=2,D0=0` with the authored Blue Soldier; real Hammer
+`07104130` returned to `CC=1` retaining the working data. The field stayed zero
+after 160 and 100 rendered frames respectively. Raw `F3D740` calls thumbnail
+request builder `F3CDB0`, whose `F3D067` path clears owner `+124` while creating
+128/256 pixel render requests. The imported name mHasLoaded is not a stable
+editor readiness contract and must not be set or used to unlock capture.
+
+Native editor shell Load `ED5C70` constructs a UILayout via `8100A0`, stores
+it at display `+24` at `ED5CCC`, then calls `8121C0`. Failure clears that field
+at `ED5D06`. The editor readiness predicate instead requires editor submode
+one/context zero, a valid working resource, an initialized shell layout and
+readable owned container, and inactive native loading screen `+370`. It uses
+read-only fields; capture and all reconstruction still execute outside Present.
+The initial runtime observations and screenshots are under
+`out/editor-native-lab/87-ordinary-native-preview*.png`; these are ordinary
+native editor checks, not a shared multiplayer playtest PASS.
+
+Locally constructed history entries also start with reference count zero at
+`+08` (`F3CAE0`). Their primary Release vtable `148D270` points at `7B87B0`,
+which destroys only when decrement reaches exactly zero; releasing an unowned
+zero-reference entry would leak it and its two snapshot references. The restore
+adapter acquires its initial AddRef before the owned entry wrapper releases it.
+This matches native history-vector ownership rather than relying on a negative
+reference count. C4 already contained this AddRef before its functional
+roundtrip. The static ownership audit confirmed the existing code; it did not
+establish a runtime leak or change production ownership.
+
+C4 live UI testing caught that distinction: disabling the property layout's
+GetContainerWindow disabled shared editor layer `2EDD95CA` (`fl=11`), preventing
+palette input even though camera movement remained possible. No native edit
+was accepted during that test. The corrected fence uses `810650`, thiscall
+`(UILayout, controlID, recursive)`, `ret8`, with native property-root caller
+`EDEC46..EDEC52` requesting `073E6BA0`. Its tail helper `8102A0` searches the
+layout's owned object list `+64/+68`, then children, instead of treating its
+parent layer as the property's window. Paired editing acceptance is tested
+after rebuilding this correction; SaveAs and baseline convergence already
+passed in C4 and are not evidence for working local mutation input.
+
+Known Save/Done/Cancel, reset, act and global controls are resolved through the
+current display `+24` UILayout, not the global cached window tree. C5 inspection
+found an enabled live Done/disk alongside a disabled stale duplicate; global
+first-match lookup did not establish an effective UI fence. The adapter also
+requires the actual active game mode to be Scenario before reporting editing,
+preview or readiness. Leaving/re-entering Scenario invalidates its native
+generation even if a retained ScenarioMode/data allocation is reused.
+
+
+### Shared gestures require an independent current before snapshot
+
+`F45810` optimizes native history: when cursor `16065EC` is nonzero it queries
+the preceding entry and retains that entry's after resource `+14` as its new
+before snapshot. Only when that entry is unavailable does it allocate and copy
+the current live resource. This is correct for ordinary native-only edits, but
+remote and canonical shared application does not append matching native history.
+The previous native after resource can therefore be stale.
+
+C5 underbudget Alpine Valley exposed this directly: the durable journal
+recorded one accepted Create followed by its accepted own Undo. A later actual
+Move failed closed with a missing stable binding. Read-only native history
+inspection found the latest before resource still contained the second slot
+from before that canonical Undo, while its after resource correctly contained
+one live actor and one free slot. The evidence is `out/editor-native-lab/c5-frozen-history-pools.json`.
+
+The shared adapter now allocates and deep copies the current live resource at
+its authenticated Start boundary, independently of native history's optimized
+before pointer. It retains that owned copy and the exact before bindings through
+the native gesture, then serializes both sides outside Present. Replaced,
+cancelled and stale-generation tasks release both references. A valid native
+history entry remains the source of the completed after snapshot. This avoids trusting stale native history or falling back to a full old
+scenario overwrite. Actual mutation acceptance
+was rerun in C6: an actual drag of the original Ace committed on both peers at
+revision two with matching native projections. C5's durable own Undo remains
+distinguished from a native Forward Delete. This C6 pass does not establish the
+other structural operations or complete editor acceptance.
+
+
+### Raw native commands, mode ownership and detach rebaseline
+
+Save command dispatcher `ED75E0` is thiscall `(UIbase, commandMode)`, `ret4`
+at `ED78BB`; real UI callers `ED7FC0/ED7FE9` and keyboard dispatcher `EDA319`
+reach it before UI pending mode `+58` is written at `ED760B`. The shared save
+adapter holds this raw path before native Save, Done, Cancel or New can change
+the resource or leave the editor. The explicit owned save API uses verified
+`ED7390` instead, with native asynchronous dialog completion and independent
+record readback retained. `ED4A80` pending SaveStay mode two clears `+58`
+without calling the guarded command/display dispatcher.
+
+The already verified SelectDisplayMode `ED6620` is also held before raw Play
+or Terraform. A narrowly owned API scope permits actual group preview entry
+and return. Native initial Build mode zero is allowed for the current owned
+UI in editor submode, with active display `+1C` at `-1` or zero, so asynchronous native
+editor entry and an idempotent Build refresh can finish normally. Unrelated
+ordinary native editing retains the original handlers. Save and preview
+ownership checks require the adapter's actual active Scenario context, not a
+retained but inactive ScenarioMode allocation.
+
+After canonical restoration has settled, `rebaseline` retires the native-only
+history using the separately verified `EraseHistoryRange` and
+`DiscardHistoryEntry` composition. It requires no native gesture or queued
+adapter captures and invalidates previous callback generation. Cursor `+14`
+resets, serial `+18` increments with an overflow guard, and the native dirty
+counter predicate is preserved: a previously clean saved counter `data+80`
+advances with the serial; an already dirty counter stays old. Authored and
+metadata flags `+84/+85` remain intact. This prevents ordinary native Undo after
+shared End from restoring a stale pre-collaboration snapshot. Exact reset
+receipts are in `docs/re/adventure-editor-history.md` and its separate verified
+symbol map, rather than guessed vector memory writes.
+
+
+### Serialized marker bindings and the actual native clone entry
+
+C6 accepted removal of the original Ace from native pool slot zero while slots
+one and two survived. Both native scenes retained those survivor identities,
+but private snapshot validation failed with a missing stable binding. The
+serialized resource does not retain free slots at their original indices:
+native Write emits live markers in pool order and native Read builds a dense
+pool. A binding table associated with owned serialized bytes must therefore
+name that dense marker order, rather than the live indexed-pool offsets.
+
+Capture projects stable identities against the live pool and converts only
+its snapshot binding table to serialized order. The current live binding map
+is retained separately. Artifact lookup, private validation and restore use the
+serialized table; current native actor references resolve their stable identity
+against the live map. Incoming resources, checkpoints, redo artifacts and
+recovery all carry the serialized table. The portable mapping fixture covers
+all 64 possible single holes in a 64-row pool, slot reuse with a distinct
+incarnation, reordered input, duplicate slots and duplicate or invalid IDs.
+These mapping checks do not substitute for rerunning actual native Delete,
+Undo and Redo on the rebuilt candidate.
+
+Native Alt-drag calls clone-selection entry `F00730`, thiscall
+`(toolManager, sourceGameData*)`, returning bool AL and popping four bytes
+(`F00877`, `F00880`, `F009D5`). Its ordinary clone branch calls native Start at
+`F008D7`, hides the source's cursor representation, calls CloneMarker at
+`F0096B`, selects the clone and leaves it held by the native cursor. This
+entry can be reached directly as well as through ToolAction eleven. The
+shared adapter gates this full entry before those changes, and records its
+source stable identity before Start. Restricting interception to ToolAction
+alone missed the real Alt path and mislabelled its result as Create. C6 real
+Ctrl-drag was ordinary movement; the acceptance fixture now uses Alt-drag.
+The new entry is verified in the exact image map and verifier.
+
+The native active display is `UIbase+1C`; `+20` is its separately remembered
+return display. `ED57A0` writes the former at `ED5801`; `ED47A0` writes the
+latter. In ordinary C6 Build, read-only observation found `+1C=0,+20=-1`.
+Readiness requires actual active Build zero, without treating a remembered
+return value as current UI initialization.
+
+
+### Native deletion must settle before a structural replacement
+
+The isolated C6 pair rendered both newly-created Ace placements on the guest,
+while the host's local inverse-delete followed by immediate accepted recreation
+left the new host model absent. The original visible host Ace still accepted
+ordinary Move. Projection equality alone did not establish a rendered,
+interactable editor scene.
+
+Exact native cleanup explains a required lifecycle boundary: `F416C0` first
+uses `F3FC30` to unregister the old actor, frees its marker slot through
+`F40F90`, then publishes class message `07311FF7`. `F3FC30` calls noun-manager
+removal `B22560` at `F3FDBB` before erasing the actor/marker maps. That removal
+marks the old actor's byte `+20`, retains an owning reference and queues it in
+the manager's deferred range `+80..88`. The normal manager model-update path
+retires that range at `B22B09..B22B1D`. Holding actor references or removing a
+scenario map entry is therefore not proof that native rendering lifetime has
+ended. A structural inverse and immediate replacement in one outside-frame
+callback can reuse a freed marker slot before normal cleanup completes.
+
+The integration must let the normal native scheduler cross this boundary while
+keeping editing input and the pending request fenced. It must not call an
+unverified manager drain or force actor destruction. New host models, actual
+selection and movement, repeated create/delete, and both sides' scene output
+remain native acceptance checks after this ordering correction.
+
+
+Native Create tests prospective pool index against `400` at `F44267`, and
+Clone does the same at `F444DE`, before insertion. This adapter consequently
+limits native projected/decoded rosters and snapshot bindings to 1024 while
+leaving the portable editor document's generic limit independent. Private
+native Read results are checked before live reconstruction; every live restore
+also requires matching canonical projection validation, including empty actor
+rosters. Applying an oversized native document fails before capture or mutation.
+The mapping fixture accepts 1024 distinct slots and rejects 1025 while leaving
+its previous output intact.
+
+
+### Opaque authored edits require a private comparison
+
+The semantic document intentionally exposes only the initial placement fields.
+Class/act ID equality and an empty pose diff do not prove that native authored
+bytes stayed unchanged. Before accepting a native gesture, `supported_changes`
+privately parses its owned before/after resources and constructs normalized
+comparison resources. It retains their global, class, act and avatar data and
+uses matching surviving marker pairs in stable-ID order. Clone pairs compare
+the source's before marker with the new marker; ordinary Create comes from the
+verified native defaults, and deleted/new roster entries are excluded from the
+pair comparison. This detects unsupported edits even when the semantic mutation
+list would otherwise be empty.
+
+The new private-only helper `DFF300` is thiscall `(destination row vector,
+source row vector)`, returns the destination and pops four at `DFF42C`.
+It deep-copies or destroys owned `238`-byte marker rows and updates vector end;
+it does not operate on a live scenario scene. ResourceCopy calls it at
+`DFFC4C`, then copies the pool's `+14/+18` free-index metadata at
+`DFFC51..DFFC5A`. The validator uses that exact owning composition with an empty
+native-constructed resource, rather than replacing vector pointers manually.
+`F2EBC0` is thiscall `(marker pool, const marker*)`, returns the new index and
+pops four at `F2ECEB`. Native Create and Clone both call this owning deep insertion.
+The helpers are named and verified in the editor override map.
+
+The comparison normalizes position `+04`, rotation `+10` and supported scaling;
+related normalized scale `+24` is ignored only when actual scale `+20` changed.
+Placement validation `F412C0` derives marker flags `+224` bits `10/02/04`, so
+only mask `16` is normalized. Other flags and elevation `+220` remain covered.
+Only local camera fields `2C30..2C4F` are normalized globally. Two final native
+Writes compare the complete normalized resources, avoiding a separate Write
+for every individual marker. An unknown difference fails closed; it must not be
+silently dropped or declared a new supported property.
+
+Native PlaceClass also rejects special class `FFFFFFFE` during shared editing:
+`EFEDC0` routes it to avatar placement `F432C0`, outside the shared placement
+roster. The authored avatar remains protected. This is distinct from placement
+validation `F412C0`, which is called by normal drags and must not be broadly
+blocked as though it selected a captain.
+
+Static receipts are under `out/editor-native-re/opaque-query.txt`. Actual valid
+Move/Clone/Scale and negative UI coverage must run on the rebuilt candidate to
+establish that these checks reject unsupported edits without rejecting allowed
+native behavior. Native projection and serialized-binding fixtures alone do
+not establish that result.
+
+
+### Native chronological history availability (dc04 editor candidate 8)
+
+The native command handler at `EDA1F0` gates Undo command `C9D86390`
+through `ED4750` at `EDA4D4`, then reaches native history Undo at
+`EDA4F9`. Redo command `C9D86391` calls `ED47C0` at `EDA528` before
+native history Redo at `EDA54D`. Both availability getters are
+`bool __thiscall(editorHistory*)`, with a plain return. `ED4750` requires
+history `+20` and cursor `+14 > 0`; `ED47C0` requires `+20` and cursor
+less than vector size. Co-op Undo deliberately leaves the native cursor
+unchanged, so intercepting the manager alone prevented native Redo inputs
+from reaching the co-op history callback.
+
+The adapter hooks the two verified availability getters only for the exact
+native history object while shared editing owns it. It returns the cached
+co-op chronological availability; unrelated editors and ordinary native
+editing delegate to the original getters. The native command's existing
+modal/input checks remain in place, and no resource or UI work occurs in
+these getters. Actual rebuilt native toolbar/shortcut acceptance remains a
+separate required check. Exact instruction and caller receipts are checked
+by `verify_editor_dc04.py`; the editor override map now has 31 entries.
+
+### Placement investigation: distinguish native terrain locations from reconstruction
+
+Candidate 7's Alpine fixture created a placement at screen `(650,470)`.
+Both marker and creature spatial, animation root and model translation were
+at radius 500. Its apparent visible creature could be a cursor thumbnail:
+there was no corresponding new cast-member window, and genuine subsequent
+selection and movement did not select that exact marker. A fresh ordinary
+native Alpine editor, before any shared session or snapshot Restore,
+reproduced the same radius-500 placement and failed selection at that
+location. A native placement at `(601,470)` instead had radius about 559.6
+and genuine subsequent movement advanced native history and changed its
+marker position. Therefore the radius-500 result alone does not establish
+a co-op reconstruction defect. The pair fixture now leaves the verified native `(601,470)` point free by
+first moving its original actor aside through ordinary native input. It still
+requires actual selection and movement of each newly created stable identity.
+
+Negative RE findings: `F035D0` finalizes a native placement by calling
+`EEF6F0` before history Commit, so its authored marker capture is not
+simply missing a later terrain-grounding write. Its post-Commit cast
+`074E0069` is null for the Ace creature (`C06500 -> C02930 -> C0B7D0`),
+so the conditional `+12B/+128` finalizer cannot repair this fixture.
+`F41350` refreshes placement-validity flags and their derived invalid style;
+`F40040` validates markers through `F3FF30`. No speculative call to these
+functions or authored position/radius adjustment was added. Receipts are
+`out/editor-native-re/c7-ground-query.txt`, `c7-finalize-query.txt`,
+`c7-render-ui-query.txt` and
+`out/editor-native-candidate7-clean-native-baseline`.
+
+
+### Native cast icons group nearby placements (dc04 editor candidate 8)
+
+The apparent second-actor rendering/selection failure was a fixture error.
+Native marker, spatial, animation-root and model transforms matched the
+committed document. The editor deliberately combines nearby cast icons into
+one stacked icon, so the projected foot point of one member does not necessarily
+have its own clickable window.
+
+The executable references cast window ID `100A0000` at `EBEBB6` and
+`EBF851`. `EBF540` clears the current widget groups, visits the selected marker,
+avatar and every live marker, and populates groups through `EBF220`. It then
+merges overlapping rectangles with `EBF4C0`. A group owns its marker-pointer
+vector at `+14/+18`, native layout at `+28`, and rectangle at `+04..+10`.
+The final pass draws stacked frames `100A0002/100A0003` and count label
+`100A1000` for groups with multiple markers. `EBEB50` returns the first marker
+of a hit group. The selected marker is exempt from merging: `EFC800` reads the
+owned native selection at Context `+04` and resolves its marker through
+`EEBE80`.
+
+This exactly explains the tests' doubled frames. At whole-planet zoom a typical
+icon is 50 pixels wide. The clone at x538 overlapped both original x503 and
+source x572; retaining the old source selection left the clone grouped with the
+original. Ordinary native cloning selected the new clone and kept its separate
+icon; clearing selection let it join a stack. A separated ordinary native clone
+at x434 retained its own icon after Escape, and genuine selection/movement
+changed only that exact new marker. Similarly, creating a second actor at x430
+after moving the first to x463 produces overlapping icons.
+
+The adapter adds only a local `select_placement` helper using the already
+verified `SetSelection` and marker-to-object lookup. The coordinator can select
+its own newly committed Create/Clone, matching normal native editing after the
+optimistic temporary object is replaced. Remote commits retain the remote
+editor's independent selection. This selection does not change authored bytes,
+camera or native dirty flags. It does not disable native grouping or change
+actor positions. Tests should use separated icons or the normal native group
+selection UI, rather than treating a missing per-marker hit rectangle as a
+missing model. No speculative render finalizer, radius correction, pool-flag
+write or repeated full-scene reconstruction was added.
+
+Receipts: `out/editor-native-re/c8-cast-widget-query.txt`,
+`out/editor-native-candidate8-separated-native-clone/result.json` and
+`out/editor-native-candidate8-second-clone/pool-view-readonly.json`.
+Canonical pools had correct sentinel bits and heads; the low free-list bits in
+a reused live row are not a rendering fix. Candidate 8 also proved genuine
+native Ctrl+Z/Ctrl+Y and explicit-Ready native preview simulation/return; see
+`out/editor-native-candidate8-native-history` and
+`out/editor-native-candidate8-preview`.
+
+### Native class-property binder requires its own input guard
+
+Stage 5 property receipts now have a separate read-only verifier:
+`tools/addrport/verify_editor_properties_dc04.py`. It first verifies the existing
+exact-build editor ABI, then 23 additional class-property receipts against the
+installed GOG executable. This does not add callable symbols or enable controls.
+
+`EE538A` reads the selected native class ID from the ClassInput interface at
+`+14` (the interface itself is class-settings `+0C`). `EE53AB` resolves that
+class through `F3E740`; `EE53BA..EE53C5` reads the current act and indexes the
+class's `+70` vector with stride `4E0`. This is shared class/act state, not
+independent per-placement tuning.
+
+Awareness control `0792BF78` uses component `0742CD10`. Its begin message
+`07A4489C` reads class-act float `+484` and calls native StartHistory at
+`EE5A22`; value message `EF00A884` multiplies the slider fraction by the exact
+175.0 constant at `148A700`, writing `+484` at `EE6473`. End message `07A44749`
+uses finalizer `EDE300`, then calls `F42660` from `EE5B22`.
+
+That final helper is not merely an inspector refresh: it iterates authored acts
+and goals, and its `F42890` path clears bit zero at goal `+14`. Any enabled
+property transaction must account for the native authored side effects or reject
+and restore the entire unsupported change. Never normalize away goal changes or
+call this helper as if it were a read-only UI update. The owned-snapshot byte
+guard remains required. Live mutation/refresh acceptance is still open.
+
+C9 exposed a real read-only UI gap. Disabling root `073E6BA0` left its
+descendant sliders enabled (`0xB`), and their separately registered native
+binder handled speed-slider input despite the ScriptUI `EE4290` guard.
+The opaque-change validator rejected the edit and restored revision 12.
+Immediate native-byte equality after the slider was rollback evidence, not
+proof that the slider never changed authored data: the recorded UI tree already
+contained rejection notifications before the close button was pressed.
+The reproduced sequence and read-only native-history inspection are under
+`out/editor-native-candidate9-class-property-negative` and
+`out/editor-native-candidate9-transform-probes`.
+
+Verified exact dc04 receipts: constructor `EDEA20` installs vtable `148A7A8`
+at class-settings object `+0C`; `EDEB50` registers that interface directly on
+root and descendant controls. Its IWinProc `+18` is `EE5380`, thiscall
+`(classSettings+0C, window*, Message*)`, `ret8` (including `EE6716`).
+`EE53C8` loads the second stack argument as Message, `+08` is its type, and
+`EE59CC` tests control `0742CD10` at Message `+0C`. The function contains
+class/act setters and native Start/Commit calls, so blocking only its parent
+ScriptUI callback cannot protect these controls. Static receipts are in
+`out/editor-native-re/c9-class-boundary-query.txt` and
+`c9-class-input-query.txt`; the exact executable verifier now covers 32 symbols.
+
+The adapter suppresses this exact owned binder before its setters while
+sharing. It permits the normal dismiss component `0595E0A8` activation; that
+ID has no authored-setter branch in this handler. Normal nonshared input
+delegates unchanged. The UI fence also disables the owned descendants, preserving
+that close button, rather than relying on inherited enabled state. Traversal is
+bounded to 2048 nodes and retained flags/references to 4096 windows; a changed
+native ownership generation restores/releases the old fence before installing
+the new one. The pre-entry binder guard remains authoritative between UI ticks.
+Rejection diagnostics now report the first differing normalized byte and both
+normalized lengths without relaxing any opaque-field check.
+
+These source changes require actual rebuilt native testing. In particular,
+retest opening, slider interaction, normal closing, settling, and a subsequent
+legitimate placement gesture with unchanged opaque state; testing only an
+immediate inspector hash is insufficient. The second generic property layout
+created by `F08DD0` is a distinct scope and is not claimed covered merely by
+traversing the first owned class layout.
+
+C10's first deployment also demonstrated a loader-path pitfall: the correct
+32-entry source map was copied beside `mods/coop.dll`, while the loader retained
+the old 31-entry map in `mods/sporekit/symbols`. The missing ClassInput symbol
+correctly left the native adapter unavailable; no shared session started.
+Always verify the actual loaded target, including its bytes and runtime symbol
+resolution, rather than only the source map. The corrected cold C10b startup
+resolved ClassInput at runtime `00ED5380` on both owned processes and reported
+`available=1`. The bounded pair runner now compares all three installed editor
+maps with their verified sources before launching; the acceptance fixture fails
+before input if the adapter is unavailable. Deployment and preflight receipts:
+`out/editor-native-candidate10/deploy-corrected.json` and
+`out/editor-native-candidate10b-preflight.json`.
+
+The corrected C10b pair verified a narrower positive read-only route on both
+participants: normal double-click did not open the editable class controls,
+authored native bytes stayed unchanged after settling, and a subsequent normal
+placement Move committed on each client. This does not claim a visible slider
+and close-button test, because the shared opener was blocked before the pane
+became editable. Receipt:
+`out/editor-native-candidate10b-class-negative-final/result.json`.
+
+### Hidden-lab transform-input diagnostics
+
+The installed EP1 `readme_en-us.txt` lists Shift plus mouse wheel for Scale,
+held Tab with the selected object for advanced rotation, and right-click on the
+left palette to locate an asset. The last operation genuinely zooms to the
+actor and exposes its normal blue rotation ring and vertical handle; it is a
+useful ordinary UI route when whole-planet cast icons obscure manipulators.
+See `out/editor-native-candidate10b-ordinary-locate/87-native-locate.png`.
+
+SporeKit 0.3.4's queued `input_wheel` posts `MAKEWPARAM(0, delta)`, omitting
+mouse modifier bits. The fixture therefore has a bounded ordinary Win32 wheel
+helper with current owned HWND/PID checks, `ClientToScreen`, real held keyboard
+input and matching `MK_SHIFT`/`MK_CONTROL`/held-left-button flags. It waits for
+both native frames and wall-clock delivery before releasing modifiers. This
+does not call native game functions or write game memory. The drag helper also
+waits at least 120 ms after down and 60 ms per motion fraction: uncapped native
+editors can execute frame-only fences faster than ordinary drag thresholds.
+
+C10b ordinary unshared controls after normal shared End still did not produce Scale or expanded Tab
+handles with these inputs, so this diagnostic alone is not evidence of a shared
+Scale defect. This control excludes the active input fence, but does not exclude
+retained tool state from prior native restoration or history retirement. A fresh
+ordinary editor before sharing remains a separate control. Native input dispatch
+remains a validation gate. Static wheel
+receipts are `out/editor-native-re/c10-wheel-query.txt`: `EF0910` forwards to
+game-input vtable `+60`, `B196F0`, which emits event-kind 8 through `B1C480`
+and then the configured dispatcher `B1BA80`. The ordinary editor's input-mode
+global `15ACC34` was 4, satisfying that entry's mode check. Manipulator visibility
+`EFCF10` queries game-input vtable `+18`, `B18CD0`, which calls `8D3A40` for
+the action hash held at `15AD294` (`07A98D04` in this instance). No speculative
+native input-state write or manipulator finalizer was introduced.
+
+Further static checks distinguish the two controls. `EECD40` maps `.crt`
+`2B978C46` to category `E34E8A60`, outfitted creature `074E0069` to
+`E137FF08`, vehicle `.vcl` to `5B3D1D0D`, and UFO to `D37C1045`.
+`EFCF10` calls `F25450`, which excludes these four categories from the
+additional three-axis handles. Buildings `.bld` (`2399BE55`, category
+`B10E526F`) pass that check. Therefore absence of expanded Tab handles on Ace
+is not proof of failed keyboard delivery. In fact, a read-only observation of
+the native command table `167BEF0` showed count zero before input, then count
+one with hash `07A98D04` while the ordinary Tab key was held. Both Shift-wheel
+directions remained unproved in the ordinary editor. `F40840` does not
+categorically reject creature scaling: ordinary creature assets delegate to
+`EED310`'s authored native min/max and tier bounds; avatar class `-2` and
+gameplay properties use separate paths. Receipts:
+`out/editor-native-re/c11-transform-eligibility.txt` and
+`out/editor-native-re/c10-native-held-key-readonly.json`.
+
+`B3D340` is the existing `cGameViewManager::Get`, not a keyboard-device
+singleton. Its `+34` picks the world object; `B18DB0` queries the verified
+spatial interface `01186577`. Do not label its spatial visibility/ownership
+flags as keyboard modifiers or write them to manufacture input.
+
+The C10b ordinary native Edit route also established a large authored fixture
+without constructing synthetic content: normal Sporepedia selection of
+Adventure Town followed by native ready reported 419 placements, 118 classes
+and five acts, source `408A0000!BF0CE0D0.366A930D`. Gameplay noun counts are a
+different measurement. No Town edits or native Save were performed for this
+count. Receipt: `out/editor-native-candidate10b-town-count-final`.
+
+C11 subsequently established a genuinely fresh ordinary control: normal
+Create opened Alpine Valley, imported Ace and placed one actor, before any
+shared Begin or native Restore (`restores=0`). Right-clicking its palette card
+and allowing the close camera to settle exposed the blue yaw ring. Dragging its
+front arc from `(601,475)` to `(625,435)` changed only the authored quaternion;
+position and uniform scale remained identical. The earlier unsuccessful left
+arc was a poor input target and is not evidence that native rotation is broken.
+Receipts: `out/editor-native-candidate11-fresh-yaw/result.json` and
+`out/editor-native-candidate11-fresh-ace-retry/result.json`. The latter fresh
+control also tried Shift-wheel down after a modifier-bearing mouse move: scale
+remained 2 and the quaternion/position did not change. This keeps native Scale
+input acceptance open without attributing it to shared restoration. No native
+save or shared session was started during these controls.
+
+The fresh C11 control proves the ordinary front-ring recipe only; a shared
+invocation is separate evidence. A bounded shared check can use the calibrated
+Alpine/Ace setup and require exact rotation changes with position/scale
+preserved on both participants, checking only the intended stable identity. Large
+Town diagnostics can truncate the last quaternion, so the fixture accepts only
+complete four-component rotation fields and never treats a partial last row
+as a native pose.
+
+The subsequent C11 shared front-ring check did not rotate the actor: three
+ordinary attempts increased the native rejection counter by three, without
+starting native history, changing revision zero or freezing either peer. The
+local selected identity remained valid, and no waiting-for-ownership status
+appeared. Both participants returned normally to Galaxy. This is a failed
+shared-rotation check, not a successful extension of the fresh ordinary control.
+Receipt: `out/editor-native-candidate11-shared-yaw/actual/result.json`.
+
+C12 static investigation corrects the earlier `Context+10` patrol-only label.
+It is the active auxiliary manipulator. `F03770` action 1 with nonzero `+10`
+and no existing dragged object calls `EFEB70`; that function owns `+0C`, starts
+the manipulator through its interface and invokes native StartHistory. The
+normal frame dispatcher `F02B30` then calls `F02040` while `+10` is nonzero.
+`F02040` dispatches by the manipulator's native type. Its `07ABDD8D` branch
+copies the resulting quaternion to marker `+10` and applies marker state;
+the `07A81824` branch also writes that quaternion except for its distinct
+`Context+14` special case. `EFCF10` explicitly compares `+10` against the
+rotation-handle pointers at `+18`, `+1C` and `+20`. Other branches modify
+per-act paths, secondary orientation or creature dimensions, so allowing every
+nonzero auxiliary would expose unsupported authored edits. Receipts:
+`out/editor-native-re/c12-tool-context.txt` and the earlier
+`out/editor-native-re/c11-transform-eligibility.txt`.
+
+The diagnostic-only C12 adapter retains its fail-closed auxiliary guard and
+logs the actual rejection cause before returning: auxiliary context, empty
+selection, missing or denied placement gate, or missing or denied structure
+gate. It includes action, selection count, context and selected/auxiliary
+pointers, the three rotation-handle pointers, native readiness, generation and
+the cause's count. A global 250 ms
+and per-cause one-second throttle bounds repeated input logging. These logs
+read the already-owned context and state; they perform no resource capture,
+UI traversal or new native calls. The isolated exact-CI i686 translation unit
+compiled with `-Wall -Wextra -Werror`; an actual C12 diagnostic run remains
+separate evidence.
+
+The isolated C12n run established that exact cause before native history could
+start. All three host front-ring attempts logged `context-auxiliary`, action 1,
+one selected placement, ready 1 and generation 3. Auxiliary `1A487DA0` exactly
+matched `rotation20=1A487DA0`; the other handle pointers were distinct. The
+shared revision stayed zero, neither peer froze, and normal End plus native
+Quit returned both to Galaxy with zero faults. C12n deliberately contained the
+new diagnostic and Runtime grant grace with the older Session object; it is not
+evidence for the later Session release fences. Receipts:
+`out/editor-native-candidate12n/rejection-logs.json`,
+`out/editor-native-candidate12n/shared-yaw-retry/result.json` and
+`out/editor-native-candidate12n/handoff/result.json`. Its first attempt timed
+out in redundant fresh-start creator-radial fixture clicks before editor entry;
+that failure is retained separately in `shared-yaw`.
+
+The subsequent narrow policy permits nonzero auxiliary pointers only for
+actions 1 and 6, only when the complete context through `+20` is readable, and
+only for an exact match with `+18`, `+1C` or `+20`. Stable placement selection
+and its exact lease are still mandatory. Every auxiliary action 11 and every
+unknown or path auxiliary remains blocked before native mutation. The pure
+policy fixture covers all three rotation identities, unknown identities,
+missing readable handles and clone rejection. Actual shared rotation after
+this change remains a separate native acceptance check.
+The binding/input-policy fixture passes 8,241 checks on both the portable host
+and actual i686 Win32 executable, including 17 new auxiliary-policy cases.
+The production native translation unit also compiles with the exact CI i686
+toolchain and `-Wall -Wextra -Werror`.
+
+The integrated C12 candidate (`0a4a8a96a70a7da46d32d4253a4045b7b09e518966fb47be158b168335aff065`)
+then passed actual shared front-ring rotation on both host and guest. Their
+ordinary native gestures advanced revisions 0 to 1 and 1 to 2 respectively;
+only the intended quaternion changed, while position, uniform scale, template
+and identities stayed equal. Both native/canonical views converged and normal
+End plus Quit returned both participants to Galaxy without faults. The first
+blocked input requested a lease; retries waited for its actual local grant.
+Receipt: `out/editor-native-candidate12/shared-yaw-retry/result.json`. The first
+cold attempt missed a one-shot Create-menu click before editor entry and is
+preserved in `shared-yaw`; it is not a native rotation failure. The calibrated
+algorithm is retained as the tracked `yaw` fixture stage. Among multiple actors
+of one template, Locate's selected stable identity and camera must be checked
+before any ring input; the one-placement proof does not establish arbitrary
+same-template Locate behavior.
+
+C12 also reached real native Scale input. Ordinary modifier-bearing Shift-wheel
+input produced a ToolAction 6 placement-lease rejection, then a subsequent
+minus input entered native history. Its captured result failed the opaque
+authored-change check and was restored to the committed draft: normalized
+byte 14266 changed from `01` to `07`, sizes 15295 and 15301. This is a failed
+Scale acceptance check, not an input-delivery-only gap. Later variations in the
+already frozen session are not independent Scale tests. The bounded audit
+ended normally in Galaxy with zero native faults. Receipt:
+`out/editor-native-candidate12/scale-audit/result.json`.
+
+The serialized offset alone does not identify the changed authored field. An
+immutable copy of that project's saved CAS base shows byte 14266 begins a
+little-endian size 1025, followed at 14270 by an embedded DBPF. Its one record,
+`01897C18!01897C18.01897C18`, has 893 RefPack-compressed bytes representing
+3075 uncompressed bytes. A six-byte package-length change may originate from
+a field anywhere in that native payload. Compare decoded normalized payloads
+and the known marker fields before adding any opaque exclusion. Read-only
+receipt: `out/editor-native-re/c12-scale-readonly/receipt.json`.
+
+C13 adds bounded diagnostics to this existing failure path; actual native
+diagnostic acceptance is pending. The reviewed patch is retained at
+`out/editor-native-re/c13-scale-diagnostic/diagnostic.patch`. It logs changed marker
+`+20` scale and `+24` relative scale, plus raw `+220`/`+224` fields for at most
+eight placements. It also searches at most four embedded packages and reports
+the first 32 differing decoded payload bytes. Compressed size, index-declared
+size and the RefPack header's decoded size are each capped at 1 MiB before
+decoding. Unavailable decoding stays a diagnostic failure, never permission
+to accept unknown data. It adds no native calls and changes no authored
+normalization or rollback behavior. The immutable base decodes to native
+schema `01A80D26` with 34 sized fields; its saved-base decoded payload is only
+read-only context, not the missing post-Scale proof.
+
+The actual C13 diagnostic resolved that field without accepting an opaque
+difference. With one Ace captain selected through native Locate, an ordinary
+Shift-wheel `+2` request was followed by its actual usable placement grant,
+then native Shift-wheel `-2`. The native Scale history changed marker `+24`
+from `0.5` to `0.479587317`, while physical scale `+20` stayed `2` and raw
+elevation `+220` and flags `+224` stayed zero. The decoded 3075-byte payload
+differed only at offsets 689 to 692: `3F 00 00 00` became `3E F5 8C 78`.
+The native field index identifies these four bytes as float property
+`071147E9`, following physical-scale property `071147E8`. The compressed
+envelope length change was a consequence of that authored float. C13 correctly
+rejected and restored this unsupported mutation; both participants returned
+normally to Galaxy with zero faults. Receipt:
+`out/editor-native-candidate13/scale-known-recipe/result.json`.
+The earlier one-notch attempts did not enter native Scale history and remain
+separate failed input calibrations, not additional property results.
+
+Exact static receipts establish the two-field semantics. `F004F0`, called by
+ToolAction 6 at `F0382E`, starts native history and supplies marker `+24` as
+an output pointer to `F40840` (`F005B7`, `F005C6`), then stores the returned
+physical float at `+20` (`F005CF`). The reflection descriptor at `138C2B8`
+names property `071147E9`; `138C2F4` specifies offset `24`. The creature
+calculation `EED310` clamps its returned physical scale to native tier bounds,
+but calculates the companion from the original requested size around the
+native default scale. Its lower and upper branches do not clamp that companion
+to `[0,1]`. Native tier values are initialized at runtime and no numeric tier
+bounds are inferred from their zero-filled image storage. `F3D930` applies
+physical `+20` through the actor interface; its `EED640` editor-state helper
+does not read `+24`. This limited consumer audit does not assert that the
+companion is unused everywhere else. Receipts:
+`out/editor-native-re/c14-scale-semantic.txt` and
+`out/editor-native-re/c14-scale-consumer.txt`.
+
+The reviewed C14 source change uses an explicit schema capability. New
+documents register exactly one required placement Number property,
+`071147E9`, preserving its exact finite float throughout capture, validation,
+apply, Undo, Redo and checkpoint recovery. The admitted numeric range is the
+full finite float range, with NaN and infinities rejected. Target-document
+schema determines private validation; Runtime explicitly scopes incoming and
+recovered capture mode, including asynchronous Save completion. A companion
+change is represented even when physical scale, position and orientation are
+unchanged. Opaque normalization admits only the represented `+24` field;
+elevation, other flags, class fields, terrain and global fields retain the
+existing rejection behavior. Pose previews continue to expose physical `+20`
+only and do not claim exact companion preview rendering.
+
+Legacy schema-empty checkpoints and their chronological history are retained
+without migration. Their native Scale action is blocked before mutation with
+a throttled explanation; Move, Rotate, structural editing, recovery and
+playtest retain their old projection. Starting a new shared project from a
+native saved copy explicitly selects the new capability. The existing Clone
+wire remains unchanged: ordinary Clone must preserve its source companion,
+including a source whose physical scale is unchanged. Scale input during an
+active Clone is held until that gesture finishes. A mismatching native Clone
+companion remains a rejection, not an implicit extra operation.
+
+The OUT proposal at `out/editor-native-re/c14-scale-semantic/native.patch`
+passes 184 schema/projection/core/wire checks on the portable host and actual
+i686 Win32 executable. These include companion-only guarded commits, exact
+float bits, Clone/Delete history, combined physical/companion Undo, persisted
+history recovery and legacy-history retention. The proposed adapter compiles
+with the exact CI i686 toolchain and `-Wall -Wextra -Werror`; the extended
+exact-executable verifier passes all 32 existing entries plus the five Scale
+field/caller receipts without adding symbols. These are static and controlled
+tests. Actual C14 native Scale, Clone, Save and recovery acceptance is pending.
+
+The isolated C14 DLL
+`148f63c91e11109b85ad1b10e01e707adb86d3f5744be2a4cd54f3712cf1754c`
+then passed an actual legacy-recovery gate before creating a new typed project.
+Instance 88 reopened its owned C13 checkpoint
+`5cd1e3d3fa534ed26493fa5ae477ba6b`, revision 1, with source
+`408A0000!29094310.366A930D` and the original gestures preserved. Both peers'
+ordinary calibrated Scale attempts received the nonfatal legacy explanation;
+native history, canonical revision, raw snapshot bytes and existing history
+were unchanged. A genuine native Move and its chronological Undo still worked
+without introducing the new property. Normal End, native exit and party leave
+returned both hidden participants to Galaxy with zero faults. Receipt:
+`out/editor-native-candidate14/legacy-recovery/result.json`.
+
+The first new typed project passed host and guest native Scale with exact
+companion convergence and native Ctrl+Z/Ctrl+Y. Those inputs changed both
+physical and companion values, so they do not establish the relative-only
+branch. The guest's ordinary Clone preserved its source companion exactly and
+Undo removed the clone, but Redo could not retain editing ownership. Read-only
+inspection found that the Session pruned every local grant for an absent
+placement, whereas the core explicitly permits a restoration lease for a
+tombstone. This is a separate Session restoration defect; it does not justify
+weakening the native companion checks or fabricating a successful Redo.
+The failed gate and normal fault-free cleanup are retained at
+`out/editor-native-candidate14/typed-scale/result.json`.
+
+A separate small-fixture C14 run passed native persistence without depending
+on that blocked Clone Redo. Each author scaled the one existing placement and
+used native Ctrl+Z/Ctrl+Y; both physical and exact companion floats converged.
+Native Save completed at revision 6 with two of two explicit SavedApplied
+acknowledgements. After normal End and native exit, the exact saved title was
+opened through the native browser. Read-only verification returned
+`REOPEN_VERIFIED revision=6 source=408A0000!29094C76.366A930D`
+before any Recover call. Subsequent checkpoint recovery retained the same
+authored floats and chronological history. Both participants returned normally
+to Galaxy and left the party with zero faults. Receipt:
+`out/editor-native-candidate14/scale-save-native-reopen-retry/result.json`.
+This proves the two-field Scale/persistence path, not an observed native
+physical-unchanged Scale gesture or a fixed tombstone lease path.
+
+The bounded relative-only search remains separate. Its first 64 ordinary
+positive notches produced 16 committed Scale gestures and crossed a native
+size tier, but did not produce unchanged physical scale with changed
+companion. An enlarged saved-copy continuation reached a red, invalid native
+placement at physical `14` and companion `1.00022388` without committing a
+shared gesture; the canonical draft and guest retained `13.456227` and
+`0.977342188`. Normal End restored the canonical draft and both clients exited
+without faults. That invalid-placement/finalization branch requires further
+classification; a retained ToolManager byte is not established as its cause.
+Receipts:
+`out/editor-native-candidate14/relative-only-save-reopen-retry/result.json` and
+`out/editor-native-candidate14/relative-only-large-native-save/result.json`.
+
+### Invalid placement cancels the current native entry, not the user's Undo
+
+The C14 red-looking Scale result motivated inspection of native current-entry
+cancellation, but that appearance did not positively prove the cancellation
+executed. Subsequent C15 ordinary wheel input reached physical scale 14 with
+companion 1.02380562 without increasing either cancellation diagnostic counter.
+Those wheel attempts must remain distinct from a verified invalid-placement
+input. Exact executable inspection establishes the branch itself: `F03200`
+commits a valid current gesture at `F032BB -> F45920`; when the editor spatial
+object's native invalid flag `+6E` is set, it calls `F030B0` at `F0329F`. That
+helper copies the selected marker identity, calls `F3BF00` at `F030E0`, and
+resolves/reselects the restored marker afterwards. `F3C9D0` resolves that
+identity in the restored marker pool; it does not copy rejected fields back.
+The finalizer clears ToolManager `+5` on both branches. Neither an unchanged
+value after ignored input nor a red-looking screenshot proves a stuck Tool
+byte or an actual current-entry cancellation.
+
+`F3BF00` checks native History `notEditing +20`, obtains `ownedEntry +24`,
+queries interface `0743BB11`, invokes its vtable `+10` Undo, clears/releases
+that owned entry and sets `notEditing` true. The exact assembly is important:
+Ghidra's initial function recovery treats the call as a PIC construction and
+joins the cancellation helper to another function. Raw `E8` call targets,
+instructions and stack returns establish the actual boundary.
+
+HistoryEntry constructor `F3CAE0` assigns the primary vtable `0148D26C` at
+`F3CAFA` and borrows its ScenarioData owner at `+0C`. Primary QueryInterface
+`F3CB70` accepts `0743BB11` and returns the same interface pointer with
+`ret 4`; vtable `+10` is already-verified `F464B0`, and `+14` is `F464C0`.
+The new `HistoryEntryVTable` symbol is read-only type evidence, not a callable
+native entry. The exact-executable verifier now checks all 33 symbols, the
+constructor assignment, these slots and QI bytes, the owned-current-entry
+dispatch, and both invalid-Scale cancellation caller edges. Existing verified
+`RestoreHistorySnapshot` (`F46400`, thiscall entry plus resource, `ret 4`)
+remains the only restoration call required by the proposed fix.
+
+The reviewed OUT adapter distinguishes cancellation only while native History
+owns an in-progress entry. It requires the exact entry captured by native
+Start, primary vtable, owner, native generation, monotonic gesture serial and
+cached project/epoch/local capability. It restores an independent before copy
+with the live local camera retained, then waits for the native finalizer and a
+later actual frame before asking Runtime to restore the latest canonical
+draft. This second restoration preserves disjoint commits accepted since
+Start; the before copy is not a replacement for the current canonical draft.
+Selection is retained by stable identity when it survives. Native mutation
+entry points and user history remain held until settlement. Unknown current
+entries never become chronological Undo; current failures request recovery,
+while replaced logical/native ownership retires only the stale hold. Runtime
+independently validates and deduplicates the cancellation ticket. No protocol
+change, global native Undo invocation or guessed native state write is needed.
+Status exposes the pending hold and monotonic shared cancellation serial. A
+separate saturating `ordinary_cancellations` counter observes only the exact
+ordinary owned current-entry branch before forwarding the original native
+Undo unchanged; committed history Undo and module-owned restoration are not
+counted. This permits an actual unshared red-placement comparison to establish
+that the original cancellation executed, rather than inferring it from an
+unchanged value after possibly ignored input. A scope change before finalizer
+entry retains Start's original ticket and retires it without restoring or
+faulting the replacement.
+
+The original C14 wrapper reproduces the routing defect in a controlled real
+i686 executable: in-progress entry cancellation calls OwnUndo, does not call
+the original native rollback, and leaves the rejected Scale value. The
+proposed production-cpp fixture passes 422 checks, covering ordinary native
+Undo, user chronological Undo, exact current-entry rollback, real frame delay,
+camera/selection retention, latest-canonical callback, duplicate finalization,
+input/history holds, unsupported entry/type, allocation failure, serial
+exhaustion, stale capability/project/epoch/native context and canonical
+restoration failure, plus ordinary diagnostic forwarding and pre-finalizer
+logical replacement. These are controlled ABI/ownership tests, not a running
+game pass. Actual ordinary unshared red cancellation, shared cancellation
+with an intervening disjoint commit, and the relative-only Scale acceptance
+branch remain pending the next isolated native candidate.
+
+Receipts: `out/editor-native-re/c15-scale-cancel.txt`,
+`out/editor-native-re/c15-scale-history-entry-asm.txt`,
+`out/editor-native-re/c15-scale-history-interface-asm.txt`, and
+`out/editor-native-re/c15-cancellation/` (OUT proposal, exact verifier report,
+controlled baseline and Win32 fixture).
+
+### Ordinary invalid-placement setup: verified bounds and height input
+
+Further exact-image static inspection of `dc04aee5` identifies the ordinary
+invalid-placement bound. `B7E620` reads the terrain descriptor's base-radius
+float at `+34`, falling back to 500. `B7E650` returns exactly twice that value.
+`F92760` independently computes terrain height as base `+34` plus the sampled
+height times amplitude `+38`. `F3B880` tests all eight actual world-AABB corners
+against the sphere of radius twice the base radius; equality is accepted. A
+screen edge, water placement, a red highlight or the anchor radius alone does
+not prove that the invalid-finalization branch executed.
+
+Normal Ctrl-drag selects radial height movement. `697A50` updates the key bitset;
+`6979C0` derives the native input bit 2 from `VK_CONTROL` (17), visible at
+ScenarioMode `+40`. `EFC5D0` uses it to choose Context `+68 == 2`, and `F01B00`
+dispatches that mode to `EFDAF0`, which projects cursor movement onto the
+object's radial axis and updates elevation `+220`. Mode 1 (`F01490`) instead
+preserves the old elevation during surface motion.
+
+Above-ground permission is class-dependent: `EEC800` calls `F25DE0`, which
+rejects `.crt` creatures, vehicles and UFOs but permits ordinary buildings and
+props. `EFDAF0` snaps forbidden positive elevation back to terrain. Raising Ace
+therefore cannot establish an elevated ordinary cancellation fixture. A building
+or prop can be prepared before sharing, leaving shared height authoring blocked.
+
+The native modifier bit is distinct from Windows mouse-message flags. Normal
+Control-held left-down/move uses `MK_CONTROL | MK_LBUTTON = 0x9`; left-up while
+Control remains held uses `0x8`, followed by Control-up and an unmodified move.
+SporeKit 0.3.4's move/wheel helpers omit Control/Shift `wParam` bits, so modifier
+probes need consistent ordinary messages to the exact owned HWND as well as the
+normal key state. No new callable alias or direct native mutation is introduced.
+
+Pure wheel scaling remains an active native gesture until normal modifier
+release and an unmodified mouse move. Holding Shift and posting only ordinary
+wheel messages therefore permits an actual disjoint host commit while a guest
+owns a rejected Scale, without mixing in Move or mouse-button actions. The C17
+four-player run `out/editor-native-party-c17-final/held-wheel-185236/result.json`
+confirms current-entry cancellation preserves that peer commit and history.
+Wheel picking matters: the accepted fixture uses the selected building's visible
+body. A scale limit or an ignored wheel over clear world is not cancellation.
+
+### Shared authoring must drain creature observations
+
+`game::h_Update` appends every observed native creature to `g_seen`, including
+editable creatures. `npc::tick` normally calls `game::creatures_updated()` each
+frame, which swaps and clears the input vector. The shared editor's early return
+skips that consumer, so repeated updates accumulated pointers indefinitely.
+
+C17 read-only observations of the exact loaded shadow DLL confirm the problem:
+all four real Town editors retain another 10,325-10,679 entries in eight seconds
+without authored input. Earlier editor use left capacity for 1,048,576 pointers
+in one collector vector per process. The observer verifies the C17 DLL hash and
+its named debug symbols before reading vector headers; it makes no game calls
+or memory writes. Receipt:
+`out/editor-native-party-c17-final/collector-growth-190626/result.json`.
+
+The correction discards both input and previous-scene observations every shared
+authoring frame, without sorting, dereferencing actors or running NPC replication.
+Gameplay retains its normal consumer. The actual Update-wrapper regression runs
+2,000 frames with 32 observations each, verifies bounded collection, and confirms
+resumed gameplay receives only its new observations. This fixes a demonstrated
+mod allocation source; it does not by itself establish a native heap plateau.
+
+Receipt: `out/editor-native-re/C17-CANCELLATION-HANDOFF.md`, SHA-256
+`55df06bac1497ab392215084082d4cde0f00230af558dad6b06061f0e7772969`.
+This is a verified input/validity recipe, not an actual ordinary cancellation
+pass. Positive ordinary rollback and shared interleaving remain execution gates.
+
+### Shared act feasibility and the first-act preview restriction
+
+Native editor act selection is process-local `Context +0`, read by verified
+`EFC410`. Marker position `+04`, orientation `+10`, physical scale `+20` and
+scale-range companion `+24` are global placement fields. Native class data
+contains act-indexed settings, and scene reconstruction uses the current editor
+act. These facts establish separate native context storage and shared authored
+fields, not safe independent-act collaboration. No two-peer different-act
+authoring acceptance or verified editor act-setting barrier has been completed.
+
+The current projection assigns each global placement a read-only `act_id`
+corresponding to the captured editor context. Snapshot metadata retains that
+act index, but `editor_native::restore` does not set the live editor act; its
+verified `F46400` rebuilds using native `GetAct`. A fresh guest normally starts
+at index zero. Thus a host choosing a nonzero act before sharing is not sufficient
+to synchronize the fallback: the incoming bytes can validate against snapshot
+metadata while the guest's next live capture belongs to another act. There is
+no approved native setter to close that gap in this preview.
+
+The integrated C16 implementation restricts shared placement sessions to the first act
+(native index zero, displayed Act 1). It blocks Begin before native Save As,
+rechecks the completed asynchronous saved snapshot, rejects incoming nonzero-act
+resources before registration or editor entry, and rejects nonzero recovery
+before native entry, restoration or a new Save As. It also checks an already
+open/just-loaded native editor's actual act before restoring a baseline or
+recovery. The panel disables unsupported Begin and explains the first-act
+restriction. Ordinary native editing and the portable general-act document/wire
+formats remain unchanged; unsupported checkpoints are retained without migration.
+
+Independent cameras and selections retain their separate acceptance evidence.
+Independent acts and host-selected act changes with a synchronization barrier
+remain future native feasibility work, including shared-template/global locks
+across acts. The verified field layout alone is not a complete Stage 0
+independent-act feasibility result.
+
+Controlled first-act Runtime tests exercise pre-Save rejection, the asynchronous
+Save completion recheck, incoming general-act UDP baselines rejected before any
+native registration/entry/restore, persisted recovery retention, and a loaded
+context that lands in the wrong act. An actual C16 ordinary Add Act then Begin
+test passed: native act index 1 was rejected before Save As, preserving the
+native snapshot and generation with zero faults. Receipts are in
+`out/editor-act0-c16/` and
+`out/editor-native-c16-acceptance/act-guard/result.json`.
+
+### Candidate ordinary-input relative-only Scale sequence
+
+`F004F0` computes requested size from the current physical marker `+20` times
+`exp(nativeRate * inputDelta)`. `EED310` clamps its physical return to the
+selected native tier while computing companion `+24` from the original
+unclamped request. Therefore repeated identical input at a fixed physical
+clamp can recompute the same companion indefinitely. Sending more identical
+wheel messages does not necessarily exercise a companion-only change.
+
+The existing input dispatcher `B1BA80` event eight preserves wheel magnitude:
+`B1BBF0` converts the signed integer wheel value to float and `B1BBF4`
+multiplies by constant `013F5C98` (`8988083C`, approximately `1/120`). There is
+no integer-notch division or quantization at that conversion. A single ordinary
+delta-240 wheel packet differs from two delta-120 packets because Scale derives
+each request anew from physical size. The exact raw receipts are in
+`out/editor-native-re/c16-scale-wheel-magnitude-asm.txt`, with the existing
+decompilation in `out/editor-native-re/c11-key-mapping.txt`.
+
+A bounded source-supported candidate is to shrink a creature on clear terrain
+to an actually observed lower physical clamp, then change the ordinary packet
+magnitude (for example one same-direction 240-unit packet after 120-unit
+packets). Require unchanged physical float bits, changed companion bits, no
+cancellation, peer convergence and exact native Undo/Redo. A 60-unit packet is
+another magnitude the conversion can represent. Ignored hover input is not
+proof of a clamp; actual native history/gesture activity must be observed, and
+the now-small creature may need native Locate again. This avoids relying on the
+upper-size red-placement branch. No numeric native bound is invented, and no
+actual relative-only acceptance is claimed by this static proposal.
+
+### Ordinary minimal natural-results fixture, GOG 2024 C16
+
+Normal native Locate is available by right-clicking the actual placement
+palette image (Ace at 88,170 in the 1024x768 fixture). After the camera settles,
+drag the goal pin at 744,594 onto the located creature's actual body, hold for
+one second, and release. The successful fixture showed the native radial menu;
+hovering 599,490 displayed Move To and selecting it authored one objective.
+Earlier planet-overview drags that only showed a blue pin did not prove a
+target was accepted. Both camera focus and held settling differed in the
+successful sequence, so their individual necessity is not established.
+
+The actual first placement class is 1024 (logical class 8589935616), not zero.
+`coop.adventure.catalog` prints marker runtime ID at `+22C`, not editor slot
+identity; an unplayed marker can report 4294967295. Require the actual matching
+class and exactly one native target rather than an assumed runtime ID zero.
+The ordinary act timer checkbox 07462210 at 767,722 toggles the native
+60-second timer. No numeric timer edit or 30-second preset was verified.
+Dragging the authored captain portrait from 967,655 to a world point normally
+places the captain. These controls are used only before sharing; goals and
+avatar editing remain restricted while sharing.
+
+Actual four-player success and timeout both reach native results and host Done
+returns all editors. A located host camera at landmark y=394.242371 returned
+at y=384.000427 in the timeout fixture, while default guest cameras stayed
+unchanged. The saved resource's 32-byte view at `+2C30` is not proof of the
+actual live interpolated camera, and ordinary resource restore must not be
+assumed to restore that projection. Keep the local-camera acceptance gate open.
+Receipts: `out/editor-native-party-c16/natural-success/`,
+`natural-failure-class-retry/` and `ordinary-step-150816/`.
+
+
+## Editor local camera return: exact current view, C17 proposal
+
+C16's actual four-player natural timeout froze clocks and reached native
+failure state 6 on every peer. Host Done returned every peer to the retained
+draft with unchanged source, IDs, history and authored resource. The local
+camera gate failed on the unselected host: Ace projected Y changed from
+394.242371 before Test to 384.000427 afterward. The three guests retained their
+own projections. The separate actual natural-success return passed its view
+gate. These are independent lifecycle and camera findings; this section does
+not claim a running-game camera fix.
+
+The exact dc04 executable's editor cleanup F03880 and native Save F44E80 write
+ScenarioResource +2C30..2C4F from desired orbit target B101C0, desired quaternion
+644A30 (camera +CC) and current distance C376A0 (+10C). Ordinary snapshot capture
+only calls ScenarioResource Write and need not refresh those fields. Native
+EFF670 enters the editor camera consumer EFDDC0 at F0007A. That consumer calls
+instant LookAt B12D10, B13AF0 and distance setter B10420. History reconstruction
+F46400 has no verified edge to that consumer. A copied 32-byte resource view
+therefore cannot establish actual live-view preservation.
+
+The native final transform B133E0 instead consumes current target direction
++54/+58/+5C times radius +28, current quaternion +AC..B8, yaw +154, pitch +130
+and distance +10C. B10160 returns the current orbit point through a borrowed
+static Vec3, plain ret. B0F1A0 is thiscall(camera,float*,float*,float*), ret C,
+and returns those three current scalars. It differs from desired getter
+B0F170 (+15C/+138/+114). B106C0 is thiscall(camera,float,float,float), ret C;
+it sets current/desired values immediately, clears native interpolation state,
+clamps pitch to native +2AC/+2B0 and distance to at least 0.1, and marks the
+transform dirty. Native EFDE4C calls it during editor initialization.
+
+The staged adapter captures values only, with no camera pointer surviving
+Test. It resolves CameraManager freshly through verified GameModeManager Get
+and virtual +50, requires the +38 active camera to equal +40 editor camera ID
+00EBB801, and uses Cast(+0C,011966ED). These borrowed access paths are directly
+used by F03880 and EFDDC0. GetCameraByID 7C67A0 returns its borrowed array entry
+without acquiring a caller ref. Runtime pins view values to exact project,
+epoch, round and revision. It checks the pre-Test Native generation before
+module-owned Stop, records only that Stop's synchronously returned generation,
+and rechecks it before canonical/view restoration. A replacement context in
+the same logical round is rejected before Stop or a native write.
+
+After canonical draft and independent selection restoration, the proposal
+uses existing approved SimCamera_LookAt B12D10(point,quaternion,true), then
+B106C0(current scalars). Native readback must match; no derived field, broader
+camera constructor, spring/path builder or selection-focus helper is invoked.
+Four finite native transform/viewer settings (+26C/+270/+310/+314) must match,
+and are never overwritten. Missing activation holds return acknowledgment for
+up to five seconds; stale ownership, invalid values, incompatible settings or
+failed readback fails closed with recovery. NoneSelected needs no fallback.
+General remote-edit/snapshot restoration retains its existing local-view rule.
+
+OUT evidence: out/editor-camera-c17/PROPOSAL.md, exact-byte verification.json,
+the staged 36-entry native map/verifier, and existing c16-camera*.txt receipts.
+Controlled Win32 Native ABI tests pass 639 checks, including existing native
+cancellation regressions. Focused two-peer Runtime view tests pass 454 checks,
+including delayed activation/no early ACK, different local views, NoneSelected,
+legitimate Stop generation advance and same-round replacement/no-write.
+The rebased Win32 Runtime quick suite passes 5,515 checks and full suite passes
+6,166 checks, including its 24 MiB retained-closure/cached-join regressions.
+Runtime init/shutdown now clear transient preview-return latches, allowing the
+new controlled owner-failure case to be followed by a fresh session.
+Running-game C17 natural failure and Hammer-return camera checks remain required.
+
+
+### Retained local context during End and disconnect
+
+The initial C17 camera proposal preserved normal group return but inherited
+selection-pin retirement on End, transport retirement and inactive Controller
+phases. Those paths also called finish_return with its prior false default.
+That would skip local-view restoration on an otherwise owned disconnect/End.
+The reviewed followup retains its value pin until the native preview lease has
+actually retired, including Frozen/Disconnected/Idle Controller phases.
+
+set_editor_preview already refuses a replacement while g_preview exists. The
+new ordinary C++ editor_preview_matches predicate checks the immutable bound
+project/epoch/round/revision, independent of config.current or connectivity.
+The read-only editor_preview_owner predicate reuses existing preview_bound to
+verify the exact mode/data/resource/key before module-owned Stop. Neither
+introduces a native entry point, guessed layout or retained camera pointer.
+Cleanup also requires the retained pin to match the current_native document's
+project/epoch/revision. A different same-revision Test round is rejected.
+
+Every owned preview finish restores the pinned selection and actual local view
+after the canonical draft, including End/disconnect. Only confirmed normal
+group-return callbacks additionally require the Controller's current round;
+retired cleanup uses the immutable bridge lease. Before Stop the original
+native generation is mandatory. Only that exact synchronous module-owned Stop
+can publish its new generation, which then updates the transport cleanup lease
+and is rechecked through delayed readiness and restoration. Replaced native
+contexts retain the existing no-Stop/no-restore retirement branch.
+
+OUT followup: out/editor-camera-c17-returns. Strict cross-compile and Native
+Preview Win32 fixture 84 checks pass. Focused view/lifecycle Runtime tests pass
+818 checks; Runtime quick 5,799 and full 6,451 checks pass, including retained
+24 MiB closure/cached-join tests. These cover End while playing, host transport
+loss with both Stop generations advancing, private-draft selection/view
+preservation, exact bound-round and resource-owner mismatch, and replacement
+generation no-write. Health independently reviewed the ordering/ownership with
+no concrete blocker. Actual C17 native return/End/disconnect camera results
+remain pending, and no running-game camera-fix claim follows from fixtures.
+
+### Native Move and first-use bulk-fixture calibration (C18)
+
+The real `408A0000!29058784.366A930D` (`Live or Die`) fixture opens through
+the native browser with 648 placements. The fresh private host initially shows
+disabled Adventure creation controls. Normal visible Welcome Play, captain
+creation/naming/save and native exit unlock those controls. The browser contains
+two exact-title cards, so native source identity must be checked after opening;
+title matching alone is insufficient. These observations do not require a new
+native call or an external edit to the loaded profile.
+
+A normal shared drag of its floating Plane Piece, stable placement
+`4294967300:1`, changes position from
+`(920.854065,104.872391,299.871033)` to
+`(923.027283,109.683479,293.896576)`. Its native orientation also changes from
+`(-0.411485,0.514416,-0.619385,-0.427105)` to
+`(-0.414161,0.511443,-0.619552,-0.427846)`, while class, scale and relative
+scale stay fixed. All three native editors converge on that committed gesture.
+The orientation change is an observed part of this native Move; the exact
+internal adjustment algorithm is not established by this input test. Tests must
+retain and compare its full canonical result rather than assume every Move
+preserves the selected placement's quaternion. Unrelated placements must remain
+unchanged. The initial position-only harness rejects this observation and is
+not a bulk-latency result. Both setup cohorts complete normal exit with code
+zero. Receipts: `out/editor-native-bulk/c18-run1`, `c18-run2`, their ordinary
+input logs and `c18-run2/after-first-move-objects.txt`.
+
+C18's first real bulk run attributes most confirmation delay to native
+apply/integrity work, not durable flush or proxy delivery. The C19 optimization
+adds no native symbol, function or layout. After the existing full native
+projection validator succeeds, Runtime can omit opaque normalization only when
+the entire owned serialized byte vector, serialized bindings and act exactly
+match its committed snapshot. Any difference uses the existing normalizer.
+Malformed bytes and mismatched supported fields still fail that first validator.
+
+For a nonstructural apply, the freshly captured live projection identifies
+unchanged placements before native lookup. No marker roster changes, so the
+adapter need not retain every actor or decode a structural source copy.
+Changed markers use the same verified apply call and full before snapshot for
+rollback; persistence still captures and validates the canonical result before
+acknowledgement. Structural create/delete/restore retain the original actor,
+artifact and live-marker checks. Controlled actual-i686 adapter tests cover
+1,024 markers, exact preservation of every other marker, no-op reapplication
+and nonfinite rejection. Runtime negatives retain the full opaque guard for
+changed bytes, bindings or act. These are controlled checks, not a native
+latency pass. See the implementation report's C18 bulk/C19 section.
+
+Native Locate can keep easing long after a short frame or wall-time fence.
+In the C19 cold-join fixture, the attempted body point is `(568,214)` while the
+eventual projection of the same unchanged placement is `(496.770569,276.791992)`
+(before the body offset). Reusing the initial point through lease retries hits
+different geometry and triggers native invalid-placement cancellation. A fixed
+3.5-second wait is insufficient on this fixture. The corrected OUT harness
+requires successive actual projections to stay within 0.03 pixels for two
+seconds before taking its input point. It does not set the camera or any native
+transform. The failed attempt preserves all four canonical/durable revisions,
+advances one owned cancellation serial and exits normally. Source:
+`out/editor-native-bulk-c19/run2`, especially the new-author failure record and
+`96-commands.json`. This observation is separate from the earlier C17 pure
+Scale/concurrent-commit cancellation acceptance.
+
+## Preview 6 group launch and native spatial goal lifetime
+
+The private C1 Obnoxious SpacePonies reproduction entered native play mode on
+four participants but never left co-op Loading. Read-only process receipts
+`out/editor-preview6/c1/read-preview.json` showed host ScenarioData `14 == 1`,
+guest `14 == 0`, and no active loading screen on any participant. This byte is
+`mHadMissingAssets`, as the upstream cScenarioData header also records. Accepting
+native missing-creation replacements leaves this historical flag set. It is not
+a loading-state predicate. The editor bridge may ignore it only after the exact
+owned editor-preview launch and its validated dependency preparation. Ordinary
+quickplay retains its prior loading checks.
+
+C2 `out/editor-preview6/c2/group-c2-actual` reached Adventure in progress with
+one run identity and 233 mirrored world actors. The host and guest then advanced
+to Act 2 through the ordinary test-next-act button. `ponies-act2` receipts show
+matching act, hostility and health, and actual captain damage from the ponies.
+Do not infer finite health from this act: its authored shields are enabled.
+
+C2 subsequently crashed at `F1F607` in CheckGoalProgress, attempting execution at
+`29623600` while casting the avatar for a spatial goal. The receipt is
+`out/editor-preview6/c2/crash/crash-20261028-214526-i91.txt`. Co-op can retain
+downed captain bindings after native death cleanup; a goal can also complete an
+act and retire the aliased captain before the native routine finishes its other
+goals. The new guard requires Alive, positive health and nonretired native flags
+for local and remote checks. Each native call retains its exact aliased actor
+through verified AssignObjectReference `B5FAB0`, balancing the reference after
+the AvatarScope ends. The native mirror fixture covers living, downed, retired
+and life-state-fenced actors, balanced references and restored avatar scope.
+C5 subsequently ran the native four-player Act 3 preview for more than five
+minutes, received NPC attacks, advanced through an ordinary spatial goal to
+Mission Complete, and returned all four editors at revision20 with unchanged
+history and authored captain settings. No repeat of the goal crash occurred.
+C9 again started all four participants in confirmed Act 3 with hostile ponies
+at `202/202`, rather than the shielded Act 2 tuning. NPC damage downed the host;
+the public group return restored every editor at revision38 with one hash.
+Receipts: `out/editor-preview6/c5/group-act3`, `spatial-goal-after-combat`,
+`group-results-return`, and `c9/group-act3`, `host-pony-attack`, `group-return`.
+The attempted attack used an empty native ability slot. The same private captain
+has empty slots in ordinary Solo, so these inputs do not establish player damage
+against the ponies. Keep that manual/native attack assertion separate from the
+verified group launch, finite NPC health and NPC-to-captain damage.
+
+## GOG 2024 Large Address Aware identity (2026-10-30)
+
+The installed GOG 2024 PE32/x86 image is 24,895,536 bytes. Its PE header starts
+at file offset `0x120`; Characteristics is at `0x136` and is `0x0102`.
+Setting `IMAGE_FILE_LARGE_ADDRESS_AWARE` changes only byte `0x136` from `02`
+to `22`, yielding full-file SHA-256
+`47f60c4db38fda1f15c5a3525617e171b0a98d728d99d645b035aa794a9199ab`.
+Clearing that bit reproduces the entire original `dc04aee5` file exactly.
+Code, data, resource sections, entry point and preferred image base do not change.
+SporeKit already selects the original symbols using its verified code fingerprint;
+its reported executable SHA remains the actual file hash. The native co-op adapters
+now accept only the two exact full-file hashes through `supported_gog2024`.
+Neither symbol identity alone nor a prefix match authorizes native adapters.
+The canonical network build ID remains `dc04aee5`, with no protocol/save change.
+
+The first patched private pair cold-booted with all 2,842 symbols and native
+editor availability, reporting `4095 MB` total user address space on 64-bit
+Windows. A separately linked x86 LAA regression allocated/wrote/read a native
+page at `0x90000000` through the ordinary pointer-validation helper. The native
+control fixture passes for both hashes; unknown hashes still install no hooks.
+See the editor validation report for the subsequent adventure-level evidence.

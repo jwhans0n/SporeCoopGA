@@ -26,10 +26,12 @@ struct Counters {
 
 // Installs narrow native hooks. The vehicle aggregate, initialization, model
 // updates and final cleanup keep running. Capability failure removes all hooks
-// installed by this helper and leaves available() false.
+// installed by this helper and leaves available() false. The shared tree entry
+// belongs to native_behavior_tree, including when a later Civ subscriber uses it.
 bool init(const SkHost* host, SkMod* mod, Ctx ctx);
 bool available();
 Counters counters();
 void reset();
+void shutdown(); // unsubscribe the GA tree policy before its context retires
 
 } // namespace adventure_world_vehicles

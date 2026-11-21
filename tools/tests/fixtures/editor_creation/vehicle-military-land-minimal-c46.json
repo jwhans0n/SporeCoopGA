@@ -1,0 +1,25 @@
+{
+  "schema": 1,
+  "profile": "vehicle-military-land",
+  "viewport": [1024, 768],
+  "evidence": "Actual C46 guest Military Land stages out/preview9-c46-guest-vehicle-{enter,body-name,cockpit-tab,wheel-tab,gun-tab,save}/result.json. Explicit7D433FAD route; body, cockpit and paired tires yield finish0/blockers0. Final weapon-palette navigation is retained from the measured sequence; no weapon part is added. Requires current viewport/palette checks.",
+  "steps": [
+    {"slow_drag": [58, 114, 650, 550]},
+    {"frames": 30},
+    {"click": [500, 741]},
+    {"frames": 20},
+    {"text": "{name}"},
+    {"click": [850, 600]},
+    {"frames": 30},
+    {"click": [114, 40]},
+    {"frames": 30},
+    {"slow_drag": [58, 114, 650, 480]},
+    {"frames": 30},
+    {"click": [169, 40]},
+    {"frames": 30},
+    {"slow_drag": [58, 304, 558, 533]},
+    {"frames": 30},
+    {"click": [225, 40]},
+    {"frames": 30}
+  ]
+}

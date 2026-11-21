@@ -1,0 +1,125 @@
+// Fix switches for tests (kit.fix), per-thread flags of the fault logging, and the test commands
+// that force the conditions of the freezes fixed in wave 1 (BUG-0050, 0065, 0115, 0132).
+#include "core.h"
+
+#include <cstdio>
+#include <cstring>
+
+namespace sk {
+
+KitFix g_fix_stackdump{"stackdump", "stack / hangdump / watchdog: copy the stack, resume, then format (BUG-0050)", 1};
+KitFix g_fix_cheatwait{"cheatwait", "commands that wait for the main thread refuse to run on it (BUG-0065)", 1};
+KitFix g_fix_reentry{"reentry", "a fault inside the fault logger or the log is not logged again (BUG-0115)", 1};
+KitFix g_fix_hookkeep{"hookkeep", "removed hooks keep their trampolines, a grace before FreeLibrary (BUG-0132)", 1};
+KitFix g_fix_stackov{"stackov", "a stack overflow is reported from a thread waiting beforehand, nothing runs on the full stack (BUG-0056)", 1};
+KitFix g_fix_crashsafe{"crashsafe", "each step of a crash / hang report catches its own failure, the mark first (BUG-0127)", 1};
+KitFix g_fix_hookpark{"hookpark", "a hooked function's code is written once: hooks are made / removed by switching a stub (BUG-0202)", 1};
+KitFix g_fix_hookorig{"hookorig", "a new hook's original is set before its jump goes live: no detour calls address 0 (BUG-0398)", 1};
+KitFix g_fix_hookfirst{"hookfirst", "the first jmp of a hook made after boot is written while no thread runs the function's first bytes (BUG-0403)", 1};
+KitFix g_fix_iniutf{"iniutf", "mods\\*.ini with text that is not ASCII are kept in UTF-16 (BUG-0142)", 1};
+KitFix g_fix_iniencode{"iniencode", "a UTF-16 BE settings file is converted losslessly, one with NUL bytes is left alone (BUG-0245)", 1};
+KitFix g_fix_inilock{"inilock", "a named mutex per settings file around conversion and writes; no \"????\" writes (BUG-0245)", 1};
+KitFix g_fix_exitwait{"exitwait", "the game's exit waits (5 s at most) for an update that swaps files (BUG-0243)", 1};
+KitFix g_fix_crashtid{"crashtid", "a crash report names the thread that crashed, not the one writing the report (BUG-0248)", 1};
+KitFix g_fix_initfail{"initfail", "a failed start of the game (cSporeApp::Init returns 0) writes a report and tells the player (BUG-0521)", 1};
+KitFix g_fix_hangloop{"hangloop", "the watchdog takes no frames while the game loop runs (minimized, unfocused, occluded) for a pause, not a hang (BUG-0347)", 1};
+KitFix g_fix_longout{"longout", "a command's printf output is not cut at 8 KB (up to 1 MB, then a line says so) (BUG-0388)", 1};
+KitFix g_fix_frameunwind{"frameunwind", "a frame cut off by a fault the game's handler caught does not stop every later frame (BUG-0667)", 1};
+KitFix g_fix_outpump{"outpump", "a task for outside the frame waits for the frame's end: no endless repost in the game's message pump after a cut-off frame (BUG-0672)", 1};
+KitFix g_fix_presentlost{"presentlost", "one long frame (a hitch over 2 s) is not taken for Present lost: the fallback needs game loop passes without Present too (BUG-0653)", 1};
+KitFix g_fix_faultstorm{"faultstorm", "one fault the game catches over and over (the same place, 300 times in 10 s) is named in the log and writes one report (BUG-0676)", 1};
+KitFix g_fix_dialognote{"dialognote", "a dialog on the main thread that stops the frames (the C runtime's error box) is logged with its text and the thread's stack, a runtime box writes a report (BUG-0925)", 1};
+KitFix g_fix_offstack{"offstack", "a fault whose stack pointer is outside its thread's stack (Windows and Wine cannot dispatch it, the game ends at once) writes its crash report from the fault logger (BUG-0956)", 1};
+KitFix g_fix_framelimit{"framelimit", "a frame limit another program or the game sets (kFrameLimitMS) is kept, not written back to the first frame's value (BUG-0779)", 1};
+KitFix g_fix_taskdrop{"taskdrop", "the tasks of an unloaded mod are destroyed after the task lock is released: a capture whose destructor queues a task does not deadlock (BUG-0860)", 1};
+KitFix g_fix_drawncam{"drawncam", "the overlay's labels are projected with the camera the frame was drawn with, not the one at Present (BUG-0948)", 1};
+KitFix g_fix_stackvq{"stackvq", "stack / hangdump / watchdog: the stack bounds come from the thread's TEB before the suspend, no VirtualQuery while it is suspended (BUG-0880)", 1};
+KitFix g_fix_wheelmk{"wheelmk", "the virtual mouse wheel carries the held keys and buttons in its wParam (MK_SHIFT, MK_CONTROL, MK_LBUTTON, MK_RBUTTON) (BUG-0859)", 1};
+KitFix g_fix_presentunwind{"presentunwind", "a fault the game's handler caught inside Present does not leave the Present depth set (no frame would start again) or the overlay's scene and surfaces held (BUG-1024)", 1};
+KitFix g_fix_taskcut{"taskcut", "a console command whose main-thread task was cut off by a fault the game's handler caught is answered with an error, not left waiting (BUG-0966)", 1};
+KitFix g_fix_crashcopy{"crashcopy", "the crash report thread works on copies of the crash's exception record and registers, not on the crashed thread's frame (BUG-1020)", 1};
+KitFix g_fix_reportsafe{"reportsafe", "reports written off the main thread read the game mode the main thread cached and the mod list under a lock (BUG-1022)", 1};
+KitFix g_fix_vehbounds{"vehbounds", "the fault logger reads the faulting stack only inside its readable region and records the fault before reading it (BUG-1028)", 1};
+KitFix g_fix_trireset{"trireset", "the overlay's state block is made anew on a new device, a failed CreateStateBlock is tried again after a Reset (BUG-1026)", 1};
+KitFix g_fix_cmdkeep{"cmdkeep", "mod.unload / mod.reload wait for the mod's console commands running on other threads (coop.sample) before its DLL is freed; one that does not return keeps the old image mapped (BUG-1018)", 1};
+KitFix g_fix_postinit{"postinit", "SK_EV_POST_INIT (main menu ready) is not fired when the game's own cSporeApp::Init failed (BUG-1021)", 1};
+KitFix g_fix_logprune{"logprune", "only the newest crash reports, dumps, reports and archives stay in mods\\logs (BUG-0137)", 1};
+
+std::vector<KitFix*> kit_fixes() { return {&g_fix_stackdump, &g_fix_cheatwait, &g_fix_reentry, &g_fix_hookkeep,
+                                       &g_fix_stackov,   &g_fix_crashsafe, &g_fix_logprune, &g_fix_iniutf, &g_fix_hookpark,
+                                       &g_fix_crashtid, &g_fix_iniencode, &g_fix_inilock,
+                                       &g_fix_exitwait, &g_fix_hookorig, &g_fix_hookfirst, &g_fix_initfail, &g_fix_hangloop, &g_fix_longout,
+                                       &g_fix_frameunwind, &g_fix_outpump, &g_fix_presentlost, &g_fix_faultstorm, &g_fix_dialognote, &g_fix_framelimit, &g_fix_offstack, &g_fix_taskdrop, &g_fix_drawncam,
+                                       &g_fix_stackvq, &g_fix_wheelmk, &g_fix_presentunwind, &g_fix_taskcut, &g_fix_crashcopy,
+                                       &g_fix_reportsafe, &g_fix_vehbounds, &g_fix_trireset, &g_fix_cmdkeep, &g_fix_postinit}; }
+
+KitFix* kit_fix_find(const char* name)
+{
+    for (KitFix* f : kit_fixes())
+        if (!strcmp(f->name, name))
+            return f;
+    return nullptr;
+}
+
+// ---- per-thread flags ----
+static DWORD g_tls = TlsAlloc();
+
+uintptr_t thread_flags()
+{
+    if (g_tls == TLS_OUT_OF_INDEXES)
+        return 0;
+    DWORD e = GetLastError(); // TlsGetValue clears it; an exception handler must not change it
+    uintptr_t v = (uintptr_t)TlsGetValue(g_tls);
+    SetLastError(e);
+    return v;
+}
+
+void thread_flags_set(uintptr_t f, bool on)
+{
+    if (g_tls == TLS_OUT_OF_INDEXES)
+        return;
+    DWORD e = GetLastError();
+    uintptr_t v = (uintptr_t)TlsGetValue(g_tls);
+    TlsSetValue(g_tls, (void*)(on ? v | f : v & ~f));
+    SetLastError(e);
+}
+
+// ---- a page whose first access faults and is then repaired ----
+// The fault reaches SporeKit's exception logger first (it is the first vectored handler), then this
+// handler (the last one) makes the page readable and the instruction runs again. A test touches the
+// page while it holds a lock of the fault logging: the logger runs inside that lock.
+static void* g_page;
+
+static LONG CALLBACK test_page_handler(EXCEPTION_POINTERS* ep)
+{
+    auto* er = ep->ExceptionRecord;
+    if (er->ExceptionCode != EXCEPTION_ACCESS_VIOLATION || !g_page || er->NumberParameters < 2)
+        return EXCEPTION_CONTINUE_SEARCH;
+    uintptr_t a = er->ExceptionInformation[1], p = (uintptr_t)g_page;
+    if (a < p || a >= p + 4096)
+        return EXCEPTION_CONTINUE_SEARCH;
+    DWORD old;
+    VirtualProtect(g_page, 4096, PAGE_READWRITE, &old);
+    return EXCEPTION_CONTINUE_EXECUTION;
+}
+
+// tests (BUG-1024, BUG-0966): an access violation nobody repairs (a read of address 0x10), for the game's own handler
+// to catch, as a fault in a mod's code or in the driver would be
+void test_fault_null()
+{
+    volatile uintptr_t a = 0x10;
+    (void)*(volatile uint32_t*)a;
+}
+
+void* test_fault_page()
+{
+    if (!g_page) {
+        g_page = VirtualAlloc(nullptr, 4096, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+        AddVectoredExceptionHandler(0, test_page_handler);
+    }
+    DWORD old;
+    VirtualProtect(g_page, 4096, PAGE_NOACCESS, &old);
+    return g_page;
+}
+
+} // namespace sk

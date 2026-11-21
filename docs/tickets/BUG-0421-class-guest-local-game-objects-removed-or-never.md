@@ -1,0 +1,41 @@
+---
+id: BUG-0421
+title: class: guest-local game objects removed or never created (umbrella)
+status: open
+kind: bug
+stage: All
+reported: 2026-11-01
+source: generalisation audits 2026-11-01 (docs/generalisation-plan.md)
+role: 
+versions: 
+fixed_in:
+branch:
+commits:
+tests:
+signature:
+docs:
+related:
+---
+
+## Report
+Root: update_filter (npc.cpp ~212-226) deletes every guest-local creature except avatar and puppets; the Cell stray purge (cellsync.cpp ~2603-2615) deletes other local cells; squadron keeps only types 3/6. Fixed one exception at a time: BUG-0004 mate id, BUG-0014 hatch, BUG-0018, BUG-0084 posse, BUG-0111, BUG-0218, BUG-0381 NPC tribes, BUG-0384 eggs, BUG-0401 parts.
+Siblings not covered: family / mate egg (BUG-0177), the guest's pack, part tokens (BUG-0316), timed spawns (BUG-0411 may be this), Space type 8 ships (envoy, ambush) destroyed at the host's place (squadron.cpp 488-510) (inf), tribe tools / hut upgrades bought on the host (cTribe +0x36C, +0x19D8) (unknown), other collectables cPlayer +0x10FC..+0x1108, corpses eaten by a guest not forwarded, fruit pools local.
+General fix: keep guest-local objects by origin and role, not an id list (Space: DestroyNPCUFOs' own keep rules). Outcome check: per-kind presence digests (eggs, tribes, cities, buildings, tools, parts hash, relation table hash).
+Source: docs/generalisation-plan.md G4.
+<!-- what the player (or the test) saw, in our words; no player names, no paths from their PC -->
+
+## Root cause
+<!-- observed (runtime, logs, disassembly) vs inferred -->
+
+## Fix
+<!-- what changed and why; the switch to turn it off for tests (coop.fix <name>) -->
+
+## Verification
+<!-- the test: FAIL without the fix, PASS with it, each with its lab run id (out/lab/YYYYMMDD-HHMMSS);
+     or a line `no-fail-run: <reason>` (docs only, regression only, not reproducible) -->
+
+## History
+- 2026-11-01: opened.
+- 2026-11-04 (fix/w43-realign, W2 of 0.7.7): one mechanism for a guest's planet after transitions: realign.cpp (the host's whole-planet list of villages, huts, tools, food mats, nests, cities every 2 s and at once after the host's load / game over reload and a guest's (re)arrival; a guest removes what the host has not through the game's own removal, fixes the buildings' health, counts what it lacks). Tribe villages and buildings done (BUG-0564, BUG-0566, BUG-0567), tools on the whole planet (BUG-0488, wobj.tools_planet); Creature nests compared (realign_creature_rejoin, the same on both after a rejoin); Civ cities compared only (no removal). Class test coop_realign_planet.py (docs/06-testing.md#testing-realign).
+- 2026-11-06 (fix/w45-one-game-objects, L1 of 0.7.9): Creature NPCs across gaps, one rule each: a frozen host still spawns the NPCs newly near a guest (npc.frozen_send, BUG-0413), a guest that leaves hands its proxies over to its own game and a rejoin keeps its own NPCs until the host plays its world (npc.leave_locals, BUG-0412), a saved partner's puppet is never an NPC (npc.stray_ids, BUG-0385). docs/re/creature.md#creature-npc-gaps. Not done here: fruit (BUG-0497), Tribe / Space ornaments (BUG-0528, BUG-0541), Civ buildings and cultural targets (BUG-0602, BUG-0540), bundles (BUG-0548).
+- 2026-11-06 (fix/w45-one-game-objects): detector over smoke + play_cell/creature/tribe/civ/space + the touched tests (out/lab/20261106-021134, 20261106-023303, SPORE_DETECTOR=20): no Creature NPC row in the play runs; `Creature:host_only:creature` + `guest_local:creature` once in creature_e84, at the first join of the restarted guest (12-13 own creatures, 7-8 host NPCs without proxies), the same with SPORE_FIX_OFF=npc.leave_locals (out/lab/20261106-034058) and gone by the next read (creature_e84 checks it now, 0 own 0 s after the rejoin, out/lab/20261106-033912): a sample in the join's first frames, not this branch's rule.

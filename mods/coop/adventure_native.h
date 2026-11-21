@@ -2,6 +2,7 @@
 #pragma once
 
 #include "adventure.h"
+#include <array>
 
 namespace adventure_native {
 
@@ -15,6 +16,29 @@ struct Ctx {
     std::function<void()> reset_movement;
     std::function<void()> reset_pause_movement;
 };
+
+// Installed only after the editor controller's explicit party confirmations.
+// Logical adventure identity may differ from this process's native draft key.
+struct EditorPreview {
+    std::array<uint8_t,16> project{};
+    uint64_t epoch=0,round=0,revision=0;
+    dbpf::Key adventure,authored_avatar;
+    uint32_t start_act=0;
+    std::function<bool()> current; // exact project/epoch/round/revision ownership
+    std::function<bool(std::string&)> launch;
+    std::function<void()> return_editor; // queues a host-authoritative group return
+};
+// Outside Present: pins an owned native snapshot and its local resource identity.
+bool set_editor_preview(EditorPreview, std::string& error);
+bool editor_preview();
+// Cached immutable binding identity, independent of a disconnected Controller.
+bool editor_preview_matches(const std::array<uint8_t,16>& project, uint64_t epoch, uint64_t round, uint64_t revision);
+// Read-only existing mode/data/resource/key ownership check, before native Stop.
+bool editor_preview_owner();
+// Canonical gameplay identity for the bound group run, or zero while held/stale.
+// Independent native Save As keys must never separate the party's captains.
+uint32_t editor_preview_place();
+void clear_editor_preview();
 
 bool init(const SkHost* host, SkMod* mod, Ctx context);
 adventure::Ctx coordinator_context();

@@ -1,0 +1,1203 @@
+#!/usr/bin/env python3
+"""Self-tests of the dev tools (make test): they must never touch the owner's own Spore, profile or
+saves, and keep the knowledge files honest. Every check runs on fakes in a temporary folder:
+
+  docslint  docs_lint flags a known-issues entry without body, heading or ticket id (BUG-0153)
+  noenv     spore.sh and lane.py work without $USER / $HOME (BUG-0252)
+  kill      spore.sh kill / pids on fake game processes inside a private PID namespace
+            (unshare): lane 1 leaves the owner's game alone, a lane leaves other lanes alone,
+            a half-dead game of the lane is ended (BUG-0025, BUG-0101, BUG-0103)
+  fixture   spore.sh fixture restore|slot into the player's own profile ("-") is refused and deletes
+            nothing (BUG-0102), with HOME pointed at a fake bottle
+  headless  headless.sh down with a stale pgid file (the shell is gone, the number now belongs to
+            another process group of the user) leaves that group alone
+  tickets   tickets.py new: ids used on a branch without a worktree are not given out again
+            (BUG-0057); a private ticket made in a worktree is seen from the main checkout and
+            survives the worktree's removal (BUG-0062)
+  tickets_check  tickets.py check: a new fix names its commits (in history, not all released
+            before), an existing test, FAIL and PASS lab run ids or `no-fail-run:`, no path outside the
+            repository, known `switch:` names; release refuses such tickets (BUG-0215, BUG-0214); a fixed
+            bug names its twin switch or the reason it has none (BUG-0430)
+  relint    re_lint.py flags an overrides entry without a confidence word also when a generated
+            .sym has the same name (BUG-0086); a name a test tool calls missing from the .sym files, a
+            float result of an entry without its `returns:` note, an integer result of one that has it (BUG-0430)
+  triage    tools/crash_triage.py reads a report and finds the known ticket (BUG-0158); one signature per
+            place: exit-time, log and short crash files, crash line first (BUG-0247)
+  mergelogs tools/merge_logs.py orders two players' lines by the session clock, picks the last session,
+            places lines without a clock with --all, and lists the sessions (docs/REPORTING.md#reporting-support)
+  campaign  the pure logic of the co-op campaign (campaign_lib.py): plan, stages, findings (BUG-0152)
+  trail     body_trail.since (the detector's read of coop.bodyrec) ends, keeps no row twice and is bounded on a model
+            of the game's command; the old loop (SPORE_BODYTRAIL_OLD_SINCE=1) never ends on it (BUG-0916)
+  testlint  tools/tests/test_lint.py: a game test in no suite, a check on a mod counter without a reason (BUG-0430)
+  laa       tools/laa.py on a fake 32-bit exe: set writes a verified backup and changes only the
+            Characteristics flag and the PE checksum (still valid), set again and a Steam .bind exe are
+            refused, restore brings back the original's sha256; a damaged backup is refused (BUG-0862)
+  wtgc      tools/wt_gc.py on a temporary repository: only merged, clean, unused, old worktrees and merged branches
+            go, and only with --apply (BUG-1127)
+  symlist   upd::kSymbolFiles (updater/winupdate.h, what the uninstall deletes) names every
+            data/symbols/*.sym a release installs (BUG-0851)
+  release   tools/release_check.sh: the tag must match COOP_VERSION and the notes are exactly the
+            tag's CHANGELOG section (BUG-0097)
+
+  tools_selftest.py [check ...]      all checks by default; exit 1 when one fails
+Environment: SELFTEST_LAA / SELFTEST_SPORE / SELFTEST_TICKETS / SELFTEST_RELINT / SELFTEST_RELEASE / SELFTEST_TRIAGE run a check
+against another copy of the tool (an old version: the check must FAIL there)."""
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(os.path.dirname(HERE))
+SPORE = os.environ.get('SELFTEST_SPORE', os.path.join(ROOT, 'tools', 'spore.sh'))
+TICKETS = os.environ.get('SELFTEST_TICKETS', os.path.join(ROOT, 'tools', 'tickets.py'))
+RELINT = os.environ.get('SELFTEST_RELINT', os.path.join(ROOT, 'tools', 're_lint.py'))
+RELEASE = os.environ.get('SELFTEST_RELEASE', os.path.join(ROOT, 'tools', 'release_check.sh'))
+TRIAGE = os.environ.get('SELFTEST_TRIAGE', os.path.join(ROOT, 'tools', 'crash_triage.py'))
+LAATOOL = os.environ.get('SELFTEST_LAA', os.path.join(ROOT, 'tools', 'laa.py'))
+HEADLESS = os.environ.get('SELFTEST_HEADLESS', os.path.join(ROOT, 'tools', 'headless.sh'))
+WTGC = os.environ.get('SELFTEST_WTGC', os.path.join(ROOT, 'tools', 'wt_gc.py'))
+fails = []
+
+
+def check(cond, what):
+    print(('  ok   ' if cond else '  FAIL ') + what)
+    if not cond:
+        fails.append(what)
+
+
+# ---------------------------------------------------------------- kill (inside a PID namespace)
+# comm of the half-dead fakes. A real game's comm is SporeApp.exe, and main's spore.sh kill (BUG-0101)
+# SIGKILLs every half-dead SporeApp on the machine: the parent PID namespace sees our fakes, so a
+# parallel lane's old `spore.sh kill` would end them in the middle of this test. Only a run against
+# an old copy (SELFTEST_SPORE, the run that must FAIL) uses the real name.
+COMM = b'SporeApp.exe' if 'SELFTEST_SPORE' in os.environ else b'sk-fake-game'
+HALF_DEAD = ('import ctypes, threading, time\n'
+             f'ctypes.CDLL(None).prctl(15, {COMM!r})  # PR_SET_NAME\n'
+             'threading.Thread(target=time.sleep, args=(600,)).start()\n'
+             'time.sleep(0.2)\n'
+             'ctypes.CDLL(None).syscall(60, 0)  # SYS_exit: only the main thread ends (zombie leader)\n')
+SLEEP = 'import time; time.sleep(600)'
+
+
+# game folders of the fake lanes 1, 2, 3: names no real lane has, so a parallel `spore.sh kill` of a
+# real lane (its folder is SPORE or laneN) never matches our fakes
+F1, F2, F3 = 'sk-selftest-L1', 'sk-selftest-L2', 'sk-selftest-L3'
+
+
+def win(folder):
+    return f'Z:\\home\\someone\\{folder}\\SporebinEP1\\SporeApp.exe'
+
+
+def fake(folder, *args, code=SLEEP):
+    """a process whose command line looks like a Wine SporeApp.exe of that game folder"""
+    return subprocess.Popen([win(folder), '-c', code, *args], executable=sys.executable)
+
+
+def alive(p):
+    return p.poll() is None
+
+
+def state(p):
+    try:
+        return open(f'/proc/{p.pid}/stat').read().rsplit(')', 1)[1].split()[0]
+    except OSError:
+        return '-'
+
+
+def spore(lane, game, *args):
+    env = dict(os.environ, SPORE_LANE=str(lane), SPORE_GAME=game, SPORE_FIXTURES=os.path.join(TMP, 'fx'),
+               HOME=TMP, USER=os.environ.get('USER', 'u'))
+    return subprocess.run(['bash', SPORE, *args], env=env, capture_output=True, text=True, timeout=60)
+
+
+def kill_inside():
+    """runs as PID 1's child of a fresh PID namespace: only our fakes are visible and killable"""
+    t = TMP
+    lane1 = os.path.join(t, F1)
+    lane2 = os.path.join(t, F2)
+    owner = fake(F1)                                       # the owner's own game: no test argument
+    host = fake(F1, '-sporekit-profile:test')              # a lane 1 test host
+    guest = fake(F1, '-sporekit-instance:2')               # a lane 1 test guest
+    l2 = fake(F2, '-sporekit-instance:3', '-sporekit-profile:test')
+    l2_half = fake(F2, '-sporekit-instance:4', code=HALF_DEAD)
+    l3_half = fake(F3, '-sporekit-instance:6', code=HALF_DEAD)
+    time.sleep(1)
+    check(state(l2_half) == 'Z' and state(l3_half) == 'Z', 'the half-dead fakes have a zombie leader '
+          f'(states {state(l2_half)} {state(l3_half)})')
+    if 'pids' in open(SPORE).read():
+        out = spore(1, lane1, 'pids', '1').stdout.split()
+        check(out == [str(host.pid)], f'lane 1 pids 1: only the test host ({out})')
+        out = spore(1, lane1, 'pids', '2').stdout.split()
+        check(out == [str(guest.pid)], f'lane 1 pids 2: only the test guest ({out})')
+    else:
+        check(False, 'spore.sh pids exists (the PIDs of a lane\'s games, for kill_game)')
+    spore(2, lane2, 'kill')
+    time.sleep(0.5)
+    check(not alive(l2), 'lane 2 kill ends the game of lane 2')
+    check(not alive(l2_half), 'lane 2 kill ends the half-dead game of lane 2')
+    check(alive(l3_half), 'lane 2 kill leaves the half-dead game of lane 3 alone (BUG-0101)')
+    check(alive(owner) and alive(host) and alive(guest), 'lane 2 kill leaves lane 1 alone')
+    spore(1, lane1, 'kill')
+    time.sleep(0.5)
+    check(alive(owner), 'lane 1 kill leaves the owner\'s own Spore alone (BUG-0025)')
+    check(not alive(host) and not alive(guest), 'lane 1 kill ends the test games of lane 1')
+    check(alive(l3_half), 'lane 1 kill leaves lane 3 alone')
+    for p in (owner, host, guest, l2, l2_half, l3_half):
+        if alive(p):
+            p.kill()
+            p.wait()
+
+
+def test_kill():
+    print('kill: spore.sh kill on fake games in a private PID namespace')
+    if not shutil.which('unshare'):
+        print('  skip: no unshare')
+        return
+    probe = subprocess.run(['unshare', '-Urpf', '--mount-proc', 'true'], capture_output=True)
+    if probe.returncode:
+        print('  skip: no unprivileged PID namespace here (' + probe.stderr.decode(errors='replace').strip() + ')')
+        return
+    r = subprocess.run(['unshare', '-Urpf', '--mount-proc', sys.executable, '-I', __file__, '--kill-inside', TMP],
+                       env=dict(os.environ), capture_output=True, text=True, timeout=120)
+    sys.stdout.write(r.stdout)
+    sys.stdout.write(r.stderr[-2000:])
+    check(r.returncode == 0, 'the namespace part ran and passed')
+
+
+# ---------------------------------------------------------------- fixture
+def test_fixture():
+    print('fixture: restore / slot into the player\'s own profile')
+    user = os.environ.get('USER', 'u')
+    roaming = os.path.join(TMP, '.var/app/com.usebottles.bottles/data/bottles/bottles/Games/drive_c/users', user,
+                           'AppData/Roaming')
+    save = os.path.join(roaming, 'Spore', 'Games', 'Game0', 'x')
+    os.makedirs(os.path.dirname(save), exist_ok=True)
+    open(save, 'w').write('the player\'s save')
+    # a fixture whose restore would replace the save
+    src = os.path.join(TMP, 'fxsrc')
+    os.makedirs(os.path.join(src, 'Games', 'Game0'), exist_ok=True)
+    os.makedirs(os.path.join(TMP, 'fx'), exist_ok=True)
+    subprocess.run(['tar', '-C', src, '-czf', os.path.join(TMP, 'fx', 'creature.tgz'), 'Games'], check=True)
+    game = os.path.join(TMP, 'SPORE')
+    r = spore(1, game, 'fixture', 'restore', 'creature', '-')
+    check(r.returncode != 0, f'fixture restore into "-" is refused (rc {r.returncode})')
+    check(os.path.exists(save), 'the player\'s save is still there after restore (BUG-0102)')
+    r = spore(1, game, 'fixture', 'slot', 'creature', '-', '0')
+    check(r.returncode != 0 and os.path.exists(save), 'fixture slot into "-" is refused, the save stays')
+    r = spore(1, game, 'fixture', 'restore', 'nosuchfixture', 'test')
+    check(r.returncode != 0, 'restore of a missing fixture fails')
+    r = spore(1, game, 'fixture', 'restore', 'creature', 'test')
+    check(r.returncode == 0 and os.path.isdir(os.path.join(roaming, 'SporeKit-test', 'Spore', 'Games', 'Game0')),
+          'restore into a test profile still works')
+
+
+# ---------------------------------------------------------------- headless
+def test_headless():
+    print('headless: down with a stale pgid file')
+    rt_parent = os.path.join(TMP, 'run')
+    rt = os.path.join(rt_parent, 'sporecoop-headless')
+    os.makedirs(rt)
+    # a process group of "the user" (its own session) that is not our shell
+    other = subprocess.Popen([sys.executable, '-c', SLEEP], start_new_session=True)
+    open(os.path.join(rt, 'pgid'), 'w').write(f'{other.pid}\n')
+    subprocess.run(['bash', HEADLESS, 'down'], env=dict(os.environ, XDG_RUNTIME_DIR=rt_parent),
+                   capture_output=True, timeout=30)
+    time.sleep(0.3)
+    check(alive(other), 'headless.sh down leaves a process group that is not its shell alone')
+    if alive(other):
+        other.kill()
+    other.wait()
+
+
+# ---------------------------------------------------------------- tickets
+def git(cwd, *a):
+    return subprocess.run(['git', '-C', cwd, *a], capture_output=True, text=True, check=True).stdout
+
+
+def test_tickets():
+    print('tickets: ids across branches and worktrees, private tickets of worktrees')
+    repo = os.path.join(TMP, 'repo')
+    os.makedirs(os.path.join(repo, 'tools'))
+    os.makedirs(os.path.join(repo, 'docs', 'tickets'))
+    shutil.copy(TICKETS, os.path.join(repo, 'tools', 'tickets.py'))
+    env = dict(os.environ, GIT_AUTHOR_NAME='t', GIT_AUTHOR_EMAIL='t@t', GIT_COMMITTER_NAME='t',
+               GIT_COMMITTER_EMAIL='t@t')
+    run = lambda cwd, *a: subprocess.run([sys.executable, '-I', os.path.join(cwd, 'tools', 'tickets.py'), *a],
+                                         cwd=cwd, env=env, capture_output=True, text=True)
+    git(repo, 'init', '-q', '-b', 'main')
+    open(os.path.join(repo, '.gitignore'), 'w').write('out/\n')
+    subprocess.run(['git', '-C', repo, 'add', '-A'], check=True)
+    subprocess.run(['git', '-C', repo, 'commit', '-qm', 'init'], env=env, check=True)
+    wt = os.path.join(TMP, 'wt-a')
+    git(repo, 'worktree', 'add', '-q', wt, '-b', 'fix/a')
+    first = run(wt, 'new', 'found on the way', '--stage', 'Tools').stdout.strip()
+    subprocess.run(['git', '-C', wt, 'add', '-A'], check=True)
+    subprocess.run(['git', '-C', wt, 'commit', '-qm', 'ticket'], env=env, check=True)
+    git(repo, 'worktree', 'remove', wt)
+    second = run(repo, 'new', 'another one', '--stage', 'Tools').stdout.strip()
+    check(os.path.basename(first).startswith('BUG-0001') and os.path.basename(second).startswith('BUG-0002'),
+          f'an id committed on a branch without a worktree is not reused (BUG-0057): '
+          f'{os.path.basename(first)}, {os.path.basename(second)}')
+    wt = os.path.join(TMP, 'wt-sec')
+    git(repo, 'worktree', 'add', '-q', wt, '-b', 'fix/sec')
+    sec = run(wt, 'new', 'open security hole', '--kind', 'security', '--stage', 'All', '--private').stdout.strip()
+    found = run(repo, 'find', 'security hole').stdout
+    check('open security hole' in found, f'a private ticket made in a worktree is found from the main checkout '
+          f'(BUG-0062): {sec}')
+    git(repo, 'worktree', 'remove', '--force', wt)
+    found = run(repo, 'find', 'security hole').stdout
+    nxt = run(repo, 'new', 'next', '--stage', 'Tools', '--private').stdout.strip()
+    check('open security hole' in found and not os.path.basename(nxt).startswith(os.path.basename(sec)[:8]),
+          f'it survives the worktree\'s removal and its id is not given out again ({os.path.basename(nxt)})')
+    # BUG-1126: the stage of a new ticket is one of the list; an alias is written as its stage
+    r = run(repo, 'new', 'on the moon', '--stage', 'Moon')
+    check(r.returncode != 0 and 'one of' in r.stderr and not r.stdout.strip(), 'new refuses a stage that is no stage')
+    r = run(repo, 'new', 'no stage')
+    check(r.returncode != 0, 'new needs a --stage')
+    p = run(repo, 'new', 'an alias', '--stage', 'civilization/tribe').stdout.strip()
+    check(p.endswith('.md') and 'stage: Tribe, Civ\n' in open(p).read(), f'new writes an alias list as "Tribe, Civ"')
+
+
+# ---------------------------------------------------------------- tickets check (BUG-0215)
+TICKET = """---
+id: {id}
+title: t
+status: fixed
+kind: bug
+stage: {stage}
+reported: 2026-10-28
+source: x
+role: both
+versions: 0.7.3.0
+fixed_in: {fixed_in}
+branch: fix/x
+commits: {commits}
+tests: {tests}
+signature:
+docs:
+related:
+{extra}---
+
+## Verification
+{verif}
+
+## History
+- 2026-10-28: opened.
+"""
+
+
+def test_tickets_check():
+    print('tickets_check: the evidence rules of new fixes (BUG-0215)')
+    repo = os.path.join(TMP, 'repo')
+    for d in ('tools/tests', 'docs/tickets', 'mods/coop'):
+        os.makedirs(os.path.join(repo, d))
+    shutil.copy(TICKETS, os.path.join(repo, 'tools', 'tickets.py'))
+    open(os.path.join(repo, 'tools', 'tests', 'suite.py'), 'w').write("add('cell_x', 'python3 x')\nadd('unit', 'make test')\n")
+    open(os.path.join(repo, 'mods', 'coop', 'a.cpp'), 'w').write('COOP_FIX("pool.purge", "BUG-0001", g, "x");\n')
+    env = dict(os.environ, GIT_AUTHOR_NAME='t', GIT_AUTHOR_EMAIL='t@t', GIT_COMMITTER_NAME='t',
+               GIT_COMMITTER_EMAIL='t@t')
+    g = lambda *a: subprocess.run(['git', '-C', repo, *a], env=env, capture_output=True, text=True, check=True).stdout
+    g('init', '-q', '-b', 'main')
+    g('add', '-A')
+    g('commit', '-qm', 'old fix (BUG-0001)')
+    old = g('rev-parse', '--short', 'HEAD').strip()
+    g('tag', 'v0.7.3.0')
+    open(os.path.join(repo, 'x'), 'w').write('x')
+    g('add', '-A')
+    g('commit', '-qm', 'new fix (BUG-0001)')
+    new = g('rev-parse', '--short', 'HEAD').strip()
+    path = os.path.join(repo, 'docs', 'tickets', 'BUG-0001-t.md')
+    good = dict(id='BUG-0001', fixed_in='unreleased', commits=new, tests='cell_x', extra='', stage='Cell',
+                verif='FAIL with SPORE_FIX_OFF=pool.purge: out/lab/20261028-101010. PASS: 20261028-111111.')
+
+    def check(cwd=repo, **kw):
+        open(os.path.join(cwd, 'docs', 'tickets', 'BUG-0001-t.md'), 'w').write(TICKET.format(**{**good, **kw}))
+        subprocess.run([sys.executable, '-I', os.path.join(cwd, 'tools', 'tickets.py'), 'index'], capture_output=True)
+        r = subprocess.run([sys.executable, '-I', os.path.join(cwd, 'tools', 'tickets.py'), 'check'], cwd=cwd,
+                           capture_output=True, text=True)
+        return r.returncode, r.stdout
+    rc, out = check()
+    globals()['check'](rc == 0, f'a complete new fix passes ({out.strip().splitlines()[-1] if out.strip() else ""})')
+    cases = [
+        (dict(commits=''), 'commits', 'a fixed ticket with empty commits: fails'),
+        (dict(commits='deadbee'), 'does not exist', 'a commit that does not exist: fails'),
+        (dict(commits=old), 'already released', 'commits only in an earlier release: fails (BUG-0167)'),
+        (dict(verif='FAIL and PASS, by hand'), 'run ids', 'a lab test named and no run id: fails'),
+        (dict(verif='it works'), 'no FAIL run', 'no FAIL / PASS in Verification: fails'),
+        (dict(tests='no_such_test'), 'names no lab suite', 'a test name that resolves nowhere: fails'),
+        (dict(verif='/tmp/x/run.log ' + good['verif']), 'outside the repository', 'a path outside the repository: fails'),
+        (dict(extra='switch: session_end\n'), 'unknown coop.fix name', 'an unknown switch: name fails (BUG-0214)'),
+        (dict(stage='civ'), 'is written "Civ"', 'a stage alias (civ) fails with the stage to write (BUG-1126)'),
+        (dict(stage='Tribe/Civ'), 'is written "Tribe, Civ"', 'a stage list in another form fails (BUG-1126)'),
+        (dict(stage='Moon'), 'is not one of', 'a stage that is no stage fails (BUG-1126)'),
+        (dict(stage=''), 'is not one of', 'an empty stage fails (BUG-1126)'),
+        (dict(verif='FAIL: out/lab/20261028-101010. PASS: 20261028-111111.'), 'names no twin switch',
+         'a fixed bug that names no twin switch and no reason: fails (BUG-0430)'),
+        (dict(verif='FAIL: out/lab/20261028-101010. PASS: 20261028-111111.', extra='switch: none\n'),
+         'names no twin switch', 'a bare `switch: none` without a reason: fails (BUG-0430)'),
+    ]
+    for kw, want, what in cases:
+        rc, out = check(**kw)
+        globals()['check'](rc == 1 and want in out, what)
+    rc, out = check(verif='no-fail-run: docs only')
+    globals()['check'](rc == 0, 'the same with `no-fail-run: docs only` passes')
+    rc, out = check(extra='switch: pool.purge\n')
+    globals()['check'](rc == 0, 'a known switch: name passes')
+    rc, out = check(verif='FAIL: out/lab/20261028-101010. PASS: 20261028-111111.', extra='switch: none (a check only)\n')
+    globals()['check'](rc == 0, f'`switch: none (<reason>)` passes (BUG-0430) {out.strip().splitlines()[:1]}')
+    rc, out = check(fixed_in='0.7.2', commits='')
+    globals()['check'](rc == 0, 'an old fix (released up to 0.7.3.0) is not failed retroactively')
+    check(commits=old)
+    rel = subprocess.run([sys.executable, '-I', os.path.join(repo, 'tools', 'tickets.py'), 'release', '0.7.4'],
+                         cwd=repo, capture_output=True, text=True)
+    globals()['check'](rel.returncode == 1 and 'BUG-0001' in rel.stdout and 'unreleased' in open(path).read(),
+                       'release refuses a fixed ticket without a commit of the release (BUG-0167)')
+    g('add', '-A')
+    g('commit', '-qm', 'tickets')
+    shallow = os.path.join(TMP, 'shallow')
+    subprocess.run(['git', 'clone', '-q', '--depth', '1', 'file://' + repo, shallow], capture_output=True, check=True)
+    rc, out = check(cwd=shallow, commits='deadbee')
+    globals()['check'](rc == 0 and 'git checks skipped' in out, 'a shallow clone: the git checks are skipped with a note')
+
+
+# ---------------------------------------------------------------- re_lint
+def test_relint():
+    print('relint: confidence of overrides entries that a generated .sym also names')
+    tree = os.path.join(TMP, 'relint')
+    os.makedirs(os.path.join(tree, 'tools'))
+    shutil.copytree(os.path.join(ROOT, 'data', 'symbols'), os.path.join(tree, 'data', 'symbols'))
+    shutil.copytree(os.path.join(ROOT, 'mods'), os.path.join(tree, 'mods'),
+                    ignore=shutil.ignore_patterns('*.o', '*.d', '*.dll'))
+    shutil.copytree(os.path.join(ROOT, 'sporekit'), os.path.join(tree, 'sporekit'),
+                    ignore=shutil.ignore_patterns('*.o', '*.d', '*.dll'))
+    shutil.copy(RELINT, os.path.join(tree, 'tools', 're_lint.py'))
+    lint = lambda: subprocess.run([sys.executable, '-I', os.path.join(tree, 'tools', 're_lint.py')],
+                                  capture_output=True, text=True)
+    base = lint()
+    check(base.returncode == 0, 're_lint passes on the tree as it is')
+    gen = open(os.path.join(ROOT, 'data', 'symbols', 'march2017_dc04aee5.sym'), errors='replace').read()
+    import re
+    name = re.search(r'^([A-Za-z_][A-Za-z0-9_:]*)\s*=', gen, re.M).group(1)
+    ovr = os.path.join(tree, 'data', 'symbols', 'overrides_dc04aee5.sym')
+    # a name the overrides file already has (a second entry: which one counts depended on the order)
+    dup = re.search(r'^([A-Za-z_][A-Za-z0-9_:]*)\s*=', open(ovr, errors='replace').read(), re.M).group(1)
+    with open(ovr, 'a') as f:
+        f.write(f'\n{name}=0x00401000 ; TODO\nFoo::NewThing=0x00401000 ; TODO\n{dup}=0x00401000 ; TODO\n')
+    r = lint()
+    flagged = [l for l in r.stdout.splitlines() if 'say how sure' in l]
+    check(any(name in l for l in flagged), f'the override of the generated name {name} is flagged (BUG-0086)')
+    check(any('Foo::NewThing' in l for l in flagged), 'the override of a new name is flagged')
+    check(any(l.startswith('overrides_dc04aee5.sym:') and dup in l for l in flagged),
+          f'a second overrides entry of {dup} without a confidence word is flagged')
+    # BUG-0216: a name looked up through a table needs its .sym entry like a sym("...") call; a plain "free" is
+    # no symbol (the frozen GOG 2016 build and its frozen_off list are gone since BUG-1125)
+    shutil.copy(RELINT, os.path.join(tree, 'tools', 're_lint.py'))
+    shutil.copy(os.path.join(ROOT, 'data', 'symbols', 'overrides_dc04aee5.sym'), ovr)
+    open(os.path.join(tree, 'mods', 'coop', 'zz_table.cpp'), 'w').write(
+        'static const char* t[] = {"Simulator::FooTable", "free"};\n')
+    with open(os.path.join(tree, 'data', 'symbols', 'march2017_dc04aee5.sym'), 'a') as f:
+        f.write('\nSimulator::FooTable=0x00401000 ; high m17=0x00401000\n')  # known (generated), so the literal counts
+    r = lint()
+    check(r.returncode == 1 and 'unchecked symbol Simulator::FooTable' in r.stdout,
+          'a table-looked-up name only in a generated .sym needs its overrides entry')
+    check('free (used' not in r.stdout and ' free,' not in r.stdout, 'a literal "free" is not counted as a symbol')
+    with open(ovr, 'a') as f:
+        f.write('\nSimulator::FooTable=0x00401000 ; verified test entry\n')
+    r = lint()
+    check(r.returncode == 0, f'with its overrides entry it passes ({r.stdout.strip().splitlines()[-1:]})')
+    os.remove(os.path.join(tree, 'mods', 'coop', 'zz_table.cpp'))
+    # BUG-0430: a test tool's `call <Name>` needs the name too; a float result needs the entry's `returns:` note
+    shutil.copy(os.path.join(ROOT, 'data', 'symbols', 'march2017_dc04aee5.sym'),
+                os.path.join(tree, 'data', 'symbols', 'march2017_dc04aee5.sym'))
+    shutil.copy(os.path.join(ROOT, 'data', 'symbols', 'overrides_dc04aee5.sym'), ovr)
+    os.makedirs(os.path.join(tree, 'tools', 'tests'), exist_ok=True)
+    tool = os.path.join(tree, 'tools', 'tests', 'coop_zz.py')
+    open(tool, 'w').write("con.call('call Simulator::ToolOnlyName cdecl')\n")
+    r = lint()
+    check(r.returncode == 1 and 'missing symbol Simulator::ToolOnlyName (used at tools/tests/coop_zz.py:1)' in r.stdout,
+          'a symbol a test tool calls by name must be in the .sym files (BUG-0430)')
+    os.remove(tool)
+    with open(ovr, 'a') as f:
+        f.write('\nSimulator::ZzFloat=0x00401000 ; verified thiscall(x) ret 4\n'
+                'Simulator::ZzSaysFloat=0x00401010 ; verified thiscall(x) ret 4; returns: float (ST0)\n')
+    open(os.path.join(tree, 'mods', 'coop', 'zz_ret.cpp'), 'w').write(
+        'static uintptr_t a_Zz, a_Says;\n'
+        'float f(void* x) { return thiscall<float>(a_Zz, x) + (float)thiscall<int>(a_Says, x); }\n'
+        'void init() { a_Zz = S("Simulator::ZzFloat"); a_Says = S("Simulator::ZzSaysFloat"); }\n')
+    r = lint()
+    check(r.returncode == 1 and 'Simulator::ZzFloat: called with a float result at mods/coop/zz_ret.cpp:2' in r.stdout,
+          'a float result of an entry without its `returns:` note is flagged (BUG-0430)')
+    check('Simulator::ZzSaysFloat is called with a int result' in r.stdout,
+          'an integer result of an entry that returns a float in ST0 is flagged (BUG-0430)')
+    os.remove(os.path.join(tree, 'mods', 'coop', 'zz_ret.cpp'))
+
+
+# ---------------------------------------------------------------- release
+def test_release():
+    print('release: tag vs COOP_VERSION, notes = exactly the tag\'s section')
+    if not os.path.exists(RELEASE):
+        check(False, f'{os.path.relpath(RELEASE, ROOT)} exists (the release job\'s checks)')
+        return
+    tree = os.path.join(TMP, 'rel')
+    os.makedirs(os.path.join(tree, 'mods', 'coop'))
+    open(os.path.join(tree, 'mods', 'coop', 'coop.cpp'), 'w').write('#define COOP_VERSION "0.7.3.0"\n')
+    open(os.path.join(tree, 'CHANGELOG.md'), 'w').write(
+        '# Changelog\n\n## [Unreleased]\n\n## [0.7.3.0] - 2026-10-30\n\n- three\n\n## [0.7.3] - 2026-10-01\n\n'
+        '- older\n\n## [0.7.2.4] - 2026-09-01\n\n- four\n\n## [0.7.2] - 2026-08-01\n\n- two\n')
+
+    def rel(tag):
+        r = subprocess.run(['bash', RELEASE, tag, os.path.join(tree, 'notes.md')], cwd=tree, capture_output=True,
+                           text=True)
+        notes = open(os.path.join(tree, 'notes.md')).read() if os.path.exists(os.path.join(tree, 'notes.md')) else ''
+        return r.returncode, notes
+    rc, notes = rel('v0.7.3.0')
+    check(rc == 0 and notes.strip() == '- three', f'v0.7.3.0: ok, notes are its own section ({notes.strip()!r})')
+    rc, _ = rel('v0.7.3.1')
+    check(rc != 0, 'a tag that is not COOP_VERSION fails')
+    open(os.path.join(tree, 'mods', 'coop', 'coop.cpp'), 'w').write('#define COOP_VERSION "0.7.2"\n')
+    rc, notes = rel('v0.7.2')
+    check(rc == 0 and notes.strip() == '- two', f'v0.7.2: notes without the 0.7.2.N sections ({notes.strip()!r})')
+    open(os.path.join(tree, 'mods', 'coop', 'coop.cpp'), 'w').write('#define COOP_VERSION "0.7.4"\n')
+    rc, _ = rel('v0.7.4')
+    check(rc != 0, 'a version without a CHANGELOG section fails')
+    # BUG-0216: notes-check, on the real tickets
+    notes = os.path.join(tree, 'n.md')
+
+    def nc(body):
+        open(notes, 'w').write('### Fixed\n' + body)
+        return subprocess.run([sys.executable, '-I', TICKETS, 'notes-check', '9.9.9', notes], capture_output=True,
+                              text=True)
+    open_t = next((l.split('|')[1].strip().split(']')[0].lstrip('[') for l in
+                   open(os.path.join(os.path.dirname(TICKETS), '..', 'docs', 'tickets', 'README.md'))
+                   if l.startswith('| [BUG-') and '| open |' in l), None)
+    if open_t:
+        check(nc(f'- **x** fixed ({open_t}).\n').returncode == 1, f'notes-check: an open ticket ({open_t}) under Fixed fails')
+        check(nc(f'- **x** ({open_t}), still open: part 2.\n').returncode == 0, 'notes-check: the same item saying "still open" passes')
+    check(nc('- **x** (BUG-9999).\n').returncode == 1, 'notes-check: an id without a ticket fails')
+
+
+# ---------------------------------------------------------------- crash triage
+def test_triage():
+    print('triage: crash_triage.py on a made-up report of a known crash')
+    tool = TRIAGE
+    if not os.path.exists(tool):
+        check(False, 'tools/crash_triage.py exists (CLAUDE.md 5 and the fix-player-report skill name it)')
+        return
+    check(os.path.exists(os.path.join(ROOT, '.claude', 'skills', 'triage-crash', 'SKILL.md')),
+          'the triage-crash skill exists')
+    rep = os.path.join(TMP, 'crash-20261025-000000-i2.txt')
+    open(rep, 'w').write('SporeCoop crash 20261025-000000 (unhandled exception)\n\n== Environment\n'
+                         'SporeKit 0.3.4, game GOG 2024 (exe dc04aee5a3debc3f), frames from Present\n'
+                         'game mode: Creature, frame 1, up 1 s\nmods: coop 0.7.2.3  \n\n== Exception\n'
+                         '0xC0000005 access violation at 0x00C6AE60 SporeApp.exe Foo::Bar+0x20 (thread 1)\n'
+                         'read of address 0x00000160\n\n== Call chain\n'
+                         '  10043000 coop.i2.1.dll+0x43000\n')
+    r = subprocess.run([sys.executable, '-I', tool, rep], capture_output=True, text=True)
+    out = r.stdout
+    check('GOG 2024' in out and 'coop 0.7.2.3' in out and 'mode Creature' in out, 'build, version and stage read')
+    check('dc04aee5:SporeApp.exe Foo::Bar+0x20' in out, 'the signature names build and place')
+    check('BUG-0018' in out, 'the known ticket of 0xC6AE60 is found (BUG-0018)')
+    # BUG-1125: a GOG 2016 report is named and answered "not supported", not analysed
+    rep16 = os.path.join(TMP, 'crash-20261025-000001.txt')
+    open(rep16, 'w').write('SporeCoop crash 20261025-000001\n\n== Environment\n'
+                           'SporeKit 0.3.4, game GOG 2016 (exe 922af7c7908af261), frames from Present\n'
+                           'game mode: Creature, frame 1, up 1 s\nmods: coop 0.7.7  \n\n== Exception\n'
+                           '0xC0000005 access violation at 0x00C6AE60 SporeApp.exe Foo::Bar+0x20 (thread 1)\n')
+    out16 = subprocess.run([sys.executable, '-I', tool, rep16], capture_output=True, text=True).stdout
+    check('GOG 2016' in out16 and 'not supported' in out16 and 'signature' not in out16 and 'BUG-0018' not in out16,
+          'a GOG 2016 report: "not supported", no signature, no ticket search (BUG-1125)')
+
+    # BUG-0247: one signature per place, whatever thread wrote the report and whatever file it is
+    def sigs(name, text):
+        p = os.path.join(TMP, name)
+        open(p, 'w').write(text)
+        out = subprocess.run([sys.executable, '-I', tool, p], capture_output=True, text=True).stdout
+        return [l for l in out.splitlines() if l.startswith(('signature', 'build'))]
+    env = 'SporeKit 0.7.3.0, game GOG 2024 (exe dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37)\n'
+    want = 'signature  dc04aee5:SporeApp.exe Simulator::cNest::Foo+0x20   (0xC0000005 at 0x00C6AE60)'
+    got = sigs('crash-20261028-101010.txt', 'SporeCoop crash (the game ends (ExitProcess 0), seconds after a fault)\n'
+               + env + 'game mode: Creature\n== Exception\n0xC0000005 access violation at 0x00C6AE60 SporeApp.exe '
+               'Simulator::cNest::Foo+0x20 (thread 4242, the game\'s main thread)\n')
+    check(want in got, f'(a) an exit-time report on the main thread: no thread text in the signature ({got[-1:]})')
+    got = sigs('sporekit.log', 'line a\n[ERROR] the game crashed: exception 0xC0000005 at 0x00C6AE60 SporeApp.exe '
+               'Simulator::cNest::Foo+0x20\nsymbols: overrides_dc04aee5.sym\nlast line\n')
+    check([g for g in got if g.startswith('signature')] == [want], f'(b) the crash line in the middle of a log ({got})')
+    got = sigs('crash-20261028-2.txt', 'SporeCoop crash crash-20261028-2 (short: the full report is being written '
+               'over this file)\nSporeKit 0.7.3.0, game GOG 2024\nexception 0xC00000FD stack overflow at 0x00401000 '
+               'SporeApp.exe Foo+0x1 (thread 12)\n')
+    check('signature  dc04aee5:SporeApp.exe Foo+0x1   (0xC00000FD at 0x00401000)' in got,
+          f'(c) a short stack-overflow crash file: the full report\'s signature and exe ({got})')
+    log = ''.join(f'[WARN] exception 0xC0000005 at 0x0040100{i} SporeApp.exe Bar+0x{i} (data 0x0)\n' for i in range(4))
+    got = sigs('sporekit.1.log', 'symbols: overrides_dc04aee5.sym\n' + log + '[ERROR] the game crashed: exception '
+               '0xC0000005 at 0x00C6AE60 SporeApp.exe Simulator::cNest::Foo+0x20\n')
+    check([g for g in got if g.startswith('signature')][:1] == [want],
+          f'(d) four fault-logger lines before the crash line: the crash comes first ({got[1:2]})')
+    got = sigs('crash-20261028-3.txt', 'SporeCoop crash\n' + env + 'run: instance 1, profile own, pid 1234\n'
+               'mods: coop 0.7.3.0\n== Exception\n0xC0000005 access violation at 0x00C6AE60 SporeApp.exe '
+               'Simulator::cNest::Foo+0x20 (thread 7)\n')
+    check(want in got and 'build      GOG 2024 (exe dc04aee5), SporeKit 0.7.3.0, coop 0.7.3.0, mode ?' in got,
+          f'(e) a `run:` Environment line changes nothing ({got})')
+    # BUG-0346: Windows loads the exe relocated; tickets name the address numbered from 0x400000
+    for name, text in (('crash-20261031-1.txt', 'SporeCoop crash\n' + env + 'mods: coop 0.7.3.1\n== Exception\n'
+                        '0xC0000005 access violation at 0x00FCAE60 SporeApp.exe Simulator::cNest::Foo+0x20 (thread 7)\n'
+                        '== Modules\n  00760000  190E000 <game>\\SporebinEP1\\SporeApp.exe\n'),
+                       ('sporekit.2.log', 'exe <game>\\SporebinEP1\\SporeApp.exe sha256=dc04aee5 base=0x00760000 '
+                        '(preferred 0x00400000)\nsymbols: overrides_dc04aee5.sym\n[ERROR] the game crashed: exception '
+                        '0xC0000005 at 0x00FCAE60 SporeApp.exe+0x86AE60\n')):
+        p = os.path.join(TMP, name)
+        open(p, 'w').write(text)
+        out = subprocess.run([sys.executable, '-I', tool, p], capture_output=True, text=True).stdout
+        check('address    0xC6AE60' in out and 'BUG-0018' in out,
+              f'(f) {name}: a relocated exe (base 0x760000) is rebased to 0xC6AE60 and finds BUG-0018 '
+              f'({[l for l in out.splitlines() if l.startswith(("address", "known"))]})')
+    # BUG-0372: the Summary quotes the latest co-op summary, of an earlier run with another version;
+    # the version is the running one (Environment `mods:`), and the log tail's line of the same fault
+    # (without the module name) is not a second signature
+    got = sigs('crash-20261101-135058.txt', 'SporeCoop crash 20261101-135058 (unhandled exception)\n\n== Summary\n'
+               '(an earlier run) latest co-op summary (2026-10-31 19:33): session as host, 29 min; players P1 '
+               '(coop 0.7.3.1, SporeKit 0.3.5, Steam (the GOG 2024 code) 3010a413); faults 0\n\n== Environment\n'
+               + env + 'game mode: Editor, frame 1, up 1 s\nmods: coop 0.7.3.3  \n\n== Exception\n'
+               '0xC0000005 access violation at 0x00C6AE60 SporeApp.exe Simulator::cNest::Foo+0x20 (thread 7)\n\n'
+               '== coop\nSporeCoop 0.7.3.3, name \'x\', game mode 0x00DBDBA1\n\n== Log\n'
+               '[ERR] sporekit: exception 0xC0000005 at 0x00C6AE60 Simulator::cNest::Foo+0x20 (data 0x00000004)\n')
+    check('build      GOG 2024 (exe dc04aee5), SporeKit 0.7.3.0, coop 0.7.3.3, mode Editor' in got
+          and [g for g in got if g.startswith('signature')] == [want],
+          f'(g) the running coop version, not the earlier run\'s of the summary; one signature ({got})')
+
+
+# ---------------------------------------------------------------- noenv (BUG-0252)
+def test_noenv():
+    print('noenv: the tools without $USER / $HOME (containers, env -i, cron)')
+    env = {k: v for k, v in os.environ.items() if k != 'USER'}
+    for what, e in (('without USER', dict(env, SPORE_LANE='10')),
+                    ('with env -i', {'PATH': os.environ.get('PATH', '/usr/bin:/bin'), 'SPORE_LANE': '10'})):
+        r = subprocess.run(['bash', SPORE, 'status'], env=e, capture_output=True, text=True)
+        check(r.returncode == 0 and 'unbound variable' not in r.stderr,
+              f'spore.sh status {what} ({r.returncode}, {r.stderr.strip()[-80:]})')
+    lane_dir = os.path.join(os.path.dirname(SPORE), 'tests')
+    r = subprocess.run([sys.executable, '-I', '-c', f'import sys; sys.path.insert(0, {lane_dir!r}); import lane; '
+                        'print(lane.APPDATA)'], env=dict(env, SPORE_LANE='10'), capture_output=True, text=True)
+    check(r.returncode == 0 and '/drive_c/users/' in r.stdout, f'lane.py imports without USER ({r.stderr.strip()[-80:]})')
+
+
+# ---------------------------------------------------------------- docslint (BUG-0153)
+def test_docslint():
+    print('docslint: known-issues.md entries have a heading, a body and a ticket id')
+    sys.path.insert(0, os.path.join(ROOT, 'tools'))
+    import docs_lint
+    ok = '## A: x\n<a id="issue-a"></a>\n\n* What happens: y. BUG-0001.\n'
+    check(docs_lint.known_issues_problems(ok) == [], 'a complete entry passes')
+    check(any('no body' in p for p in docs_lint.known_issues_problems('## A: x\n## B: y\n* z BUG-0002\n')),
+          'a heading followed by a heading is flagged')
+    check(any('fragment' in p for p in docs_lint.known_issues_problems(ok + '\n of 20-27 m\n\n* body BUG-0003\n')),
+          'a lost heading (a paragraph starting with a fragment) is flagged')
+    check(any('names no ticket' in p for p in docs_lint.known_issues_problems('## A: x\n\n* y\n')),
+          'an entry without BUG-NNNN is flagged')
+
+
+def test_campaign():
+    print('campaign: the pure logic of coop_campaign.py (plan, stages, checks, findings)')
+    sys.path.insert(0, HERE)
+    import campaign_lib as cl
+    import census
+    check(cl.plan('cell', 'space') == [('play', 'cell'), ('advance', 'cell'), ('play', 'creature'),
+                                       ('advance', 'creature'), ('play', 'tribe'), ('advance', 'tribe'),
+                                       ('play', 'civ'), ('advance', 'civ'), ('play', 'space'), ('finale', 'space')],
+          'the whole game: five stages, four stage changes, the finale')
+    check(cl.plan('tribe', 'civ', finale=True) == [('play', 'tribe'), ('advance', 'tribe'), ('play', 'civ')],
+          'a resumed run starts at its stage, no finale before Space')
+    try:
+        cl.plan('civ', 'cell')
+        check(False, 'a plan that goes backwards is refused')
+    except ValueError:
+        check(True, 'a plan that goes backwards is refused')
+    check(cl.stage_of('0x01654C02 Tribe') == 'tribe' and cl.stage_of('0x00DBDBA1 Editor') is None
+          and cl.stage_of('0x02CCD1D2 GalaxyGameEntry') is None and cl.stage_of('') is None,
+          'game.mode: stages by name, editors and menus are no stage')
+    check(cl.faults_of('total faults: 3 (unique 1)') == 3 and cl.faults_of('no answer') is None, 'exc fault count')
+    r = cl.res_of('shared food=12.5 money=-3\nshared money=3000')
+    check(r == {'food': 12.5, 'money': 3000.0}, f'coop.res parsed ({r})')
+    check(cl.res_mismatch({'money': 3000.0, 'food': 10}, {'money': 3040.0, 'food': 11}) == [],
+          'an income tick between two reads is no mismatch')
+    check(cl.res_mismatch({'money': 3000.0}, {'money': 2000.0}) == [('money', 3000.0, 2000.0)]
+          and cl.res_mismatch({'food': 5.0}, {}) == [('food', 5.0, None)], 'a real difference and a missing total')
+    head = 'census v1 role={r} me={m} mode=Creature modeid=01654C01 world=AABBCCDD t=1.0\n'
+    row = 'obj c{i} key=11111111 alive={a} hp=10 ai=1 own={o} owner=0 pos=({x} 0 0)\n'
+    h = census.Census(head.format(r='host', m=0) + row.format(i=1, a=1, o='npc', x=0) + row.format(i=2, a=1, o='npc', x=500)
+                      + row.format(i=3, a=1, o='npc', x=5) + row.format(i=4, a=0, o='npc', x=6) + 'obj c-1 key=00000001 alive=1 hp=1 ai=1 own=avatar owner=0 pos=(0 0 0)\n')
+    g = census.Census(head.format(r='guest', m=1) + row.format(i=1, a=0, o='proxy', x=0) + row.format(i=9, a=1, o='proxy', x=1)
+                      + 'obj c-1 key=00000001 alive=1 hp=1 ai=1 own=avatar owner=1 pos=(2 0 0)\n')
+    pr = cl.census_problems(h, g)
+    check(any(p.startswith('c1: alive=1') for p in pr), f'census: dead on the guest, alive on the host ({pr})')
+    check(any(p.startswith('c3: the host has it') for p in pr) and not any(p.startswith(('c2', 'c4')) for p in pr),
+          'census: a missing NPC near the guest counts, one 500 m away (not streamed) or a corpse does not')
+    check(any(p.startswith('c9: the guest has it') for p in pr), 'census: a proxy the host does not have')
+    other = census.Census(head.replace('AABBCCDD', '11223344').format(r='guest', m=1))
+    check(len(cl.census_problems(h, other)) == 1, 'census: another world is one problem, not a list')
+    ps = cl.Persist(2)
+    check(ps.update(['a', 'b']) == [] and ps.update(['a']) == ['a'] and ps.update(['a']) == []
+          and ps.update(['b']) == [] and ps.update(['b']) == ['b'],
+          'persist: confirmed once on the second check in a row, a gap resets it')
+    folder = os.path.join(TMP, 'run')
+    t = [1000.0]
+    f = cl.Findings(folder, clock=lambda: t[0])
+    t[0] += 61
+    check(f.add('desync', 'x', 'Bob: kind n out of sync', 'creature/play', ['Alice', 'Bob'], ['log a']), 'a new finding')
+    check(not f.add('desync', 'x', 'again', 'creature/play', ['Bob']), 'the same key again only counts')
+    f.attach('desync', 'x', ['shot b'])
+    md = open(os.path.join(folder, 'findings.md')).read()
+    jl = open(os.path.join(folder, 'findings.jsonl')).read().splitlines()
+    check('Bob: kind n out of sync' in md and '* log a' in md and 'shot b' in md and '(+61 s)' in md
+          and 'stage creature/play' in md, 'findings.md has the text, the time, the stage and the evidence')
+    check(len(jl) == 1 and f.items[0]['repeats'] == 1 and f.summary() == {'desync': 1}, 'one json line, one repeat')
+    # the name's time is Wine's local time (an hour off here): the file time decides
+    names = [('crash-20261029-010000-i13.txt', 5000), ('crash-20261029-030000-i13.txt', 900),
+             ('report-20261029-020000-i27.txt', 1001), ('crash-20261029-030000-i3.txt', 5000),
+             ('sporekit.13.log', 5000), ('SporeCoop-report-20261029-020000-i27.zip', 5000)]
+    got = cl.new_reports(names, 1000, {13, 14, 27, 37})
+    check(got == ['crash-20261029-010000-i13.txt', 'report-20261029-020000-i27.txt'],
+          f'new reports: only the instances of the run, only since the start ({got})')
+
+
+def test_mergelogs():
+    print('mergelogs: two logs merged by the session clock')
+    sys.path.insert(0, os.path.join(ROOT, 'tools'))
+    import io
+    import contextlib
+    import re
+    import merge_logs
+    host = ('10:00:00.000 [INF] coop: before any session\n'
+            '10:00:01.000 [s 0.000] [INF] coop: clock: session clock started\n'
+            '10:00:11.000 [s 10.000] [INF] coop: sync-check: OK with player 1\n'
+            '10:00:20.500 [s 19.500] [WRN] coop: MARK by \'Bob\' (player 1) at s 19.400: only one eats\n'
+            '10:00:30.000 [s 29.000] [INF] coop: host line\n')
+    # the guest's wall clock is 2 h 3 s off; the session clock lines it up
+    guest = ('12:00:05.000 [INF] coop: joining\n'
+             '12:00:06.000 [s 9.000] [INF] coop: clock: the session clock of the host\n'
+             '12:00:07.000 [INF] coop: a line before the clock was set again\n'
+             '12:00:16.400 [s 19.400] [WRN] coop: MARK by \'Bob\' (player 1) at s 19.400: only one eats\n'
+             '12:00:20.000 [s 23.000] [INF] coop: guest line\n')
+    hp, gp = os.path.join(TMP, 'h.log'), os.path.join(TMP, 'g.log')
+    open(hp, 'w').write(host)
+    open(gp, 'w').write(guest)
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        rc = merge_logs.main(['Alice=' + hp, 'Bob=' + gp])
+    lines = [ln for ln in out.getvalue().splitlines() if not ln.startswith('#')]
+    times = [float(ln.split()[0].rstrip('~')) for ln in lines]
+    check(rc == 0 and times == sorted(times) and len(lines) == 7, f'lines in session-time order ({len(lines)} lines)')
+    order = [ln.split()[1] for ln in lines]
+    check(order == ['Alice', 'Bob', 'Alice', 'Bob', 'Alice', 'Bob', 'Alice'], f'host and guest interleaved ({order})')
+    check(not any('before any session' in ln or 'before the clock' in ln for ln in lines), 'lines without a clock left out')
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        merge_logs.main(['--all', 'Bob=' + gp])
+    est = [ln for ln in out.getvalue().splitlines() if 'before the clock' in ln]
+    check(est and est[0].split()[0].endswith('~') and abs(float(est[0].split()[0].rstrip('~')) - 10.0) < 0.01,
+          f'--all places a line without a clock by its neighbours ({est})')
+    two = host + '11:00:00.000 [s 0.000] [INF] coop: clock: session clock started\n11:00:05.000 [s 5.000] [INF] coop: second\n'
+    open(hp, 'w').write(two)
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        merge_logs.main([hp])
+    body = [ln for ln in out.getvalue().splitlines() if not ln.startswith('#')]
+    check(len(body) == 2 and 'second' in body[-1] and out.getvalue().count('# h.log: session') == 2,
+          'a log with two sessions: the last one by default, both listed')
+
+
+def test_worldstate():
+    """worlddiff.diff_state / diff_planet: the detector's world-state and whole-planet rows (coop.wstate)"""
+    # SELFTEST_WORLDDIFF=<dir>: the worlddiff.py of another copy (an old version: the BUG-0595 check fails there)
+    sys.path.insert(0, os.environ.get('SELFTEST_WORLDDIFF') or os.path.dirname(os.path.abspath(__file__)))
+    import worlddiff
+
+    def st(food=15, rel=0.0, q='0.1 0.2 0.9 0.3', traits='1,2,0,0,0', village2=True, goal='1', huts='', pol2='000021CB'):
+        t = ['wstate v1 role=host mode=Tribe modeid=01654C02 world=A3930F03 t=1.0',
+             f'st tod q=({q}) day=960.0', f'st player traits={traits} progress=0.0 total=5.0 social=0.00 combat=0.00',
+             f'st res food={food}', 'st rel lv=-7.00,-3.00,3.00,7.00',
+             f'tribe i=0 player=1 pol=800021CA pos=(406.3 -4.9 302.6) members=3 food={food}.0 rel=nan',
+             f'tribe i=1 player=0 pol={pol2} pos=(327.5 -156.9 352.3) members=4 food=70.0 rel={rel}',
+             f'goal tribe={goal} state=1 pos=(327.5 -156.9 352.3)' if goal == '1' else 'goal tribe=-1 state=-1 pos=(0 0 0)',
+             'pl 018C6D19 pos=(406.3 -4.9 302.6) pol=800021CA', 'pl 52AA6122 pos=(448.7 38.6 241.9) pol=FFFFFFFF']
+        if village2:
+            t.append(f'pl 018C6D19 pos=(327.5 -156.9 352.3) pol={pol2}')
+        t += [ln for ln in huts.split(';') if ln]
+        t.append('end wstate rows=9')
+        return worlddiff.State('\n'.join(t))
+
+    def sigs(h, g):
+        return {f'{w}:{k}' for w, k, _, _ in worlddiff.diff_state(h, g, 'Tribe')}
+    a = st()
+    check(worlddiff.State('nothing').mode is None, 'no wstate answer: no state')
+    check(sigs(a, st()) == set(), 'two equal states: no row')
+    check(sigs(a, st(food=0)) == {'Tribe:state:food'}, f'the guest\'s food 0: Tribe:state:food ({sigs(a, st(food=0))})')
+    check(sigs(a, st(food=16)) == set(), 'a food tick between the two reads is within the tolerance')
+    check('Tribe:state:relation' in sigs(a, st(rel=-5.0)), 'a village aggressive on one game only: Tribe:state:relation')
+    check('All:state:time_of_day' in sigs(a, st(q='0.9 0.1 0.1 0.3')), 'night on one, day on the other: All:state:time_of_day')
+    check(sigs(a, st(traits='0,0,0,0,0')) == {'All:state:stage_done'}, 'stages done lost: All:state:stage_done')
+    check(sigs(a, st(village2=False)) == {'Tribe:planet:village'}, 'a village on one planet only: Tribe:planet:village')
+    check('Tribe:state:goal' in sigs(a, st(goal='-1')), 'the goal on one game only: Tribe:state:goal')
+    check('Tribe:planet_owner:village' in sigs(a, st(pol2='800021CA')),
+          'a village the player\'s on one game only: Tribe:planet_owner:village')
+    # BUG-0595: a guest's Space money before the host's first total reads `money=100000(unsynced)`: the game's
+    # value is 100000 (the same as the host's), not nan
+    sp = 'wstate v1 role={} mode=Space modeid=01654C05 world=80AE3044 t=1.0\nst res money={}\nend wstate rows=1'
+    hs, gs = worlddiff.State(sp.format('host', '100000')), worlddiff.State(sp.format('guest', '100000(unsynced)'))
+    check(gs.res.get('money') == 100000.0, f'an unsynced total is read as its number ({gs.res})')
+    out = {f'{w}:{k}' for w, k, _, _ in worlddiff.diff_state(hs, gs, 'Space')}
+    check(out == set(), f'the same money, one of them unsynced: no Space:state:money row ({out})')
+    gs2 = worlddiff.State(sp.format('guest', '90000(unsynced)'))
+    out = {f'{w}:{k}' for w, k, _, _ in worlddiff.diff_state(hs, gs2, 'Space')}
+    check(out == {'Space:state:money'}, f'other money, unsynced: still a Space:state:money row ({out})')
+    # BUG-0594: the host's game in the end of Tribe (stage_end): its village is taken down, not compared
+    h, g = worlddiff.World('census v1 role=host me=0 mode=Tribe modeid=01654C02 world=A3930F03 t=1.0'), \
+        worlddiff.World('census v1 role=guest me=1 mode=Tribe modeid=01654C02 world=A3930F03 t=1.0')
+    h.state, g.state = st(village2=False), st()
+    h.state.stage_end = True
+    out = [f['sig'] for f in worlddiff.diff(h, g)]
+    check(out == ['apart'], f'the host in the end of Tribe: not the same place ({out})')
+    # BUG-0617: a carried food bundle moves with its member: paired within worlddiff.TOL_CARRIED (the guest's copy of the
+    # member is drawn 1-3.5 m behind), a ground bundle at the static 3 m; food in another container is its own group
+    bun = 'obj g{} key=00000000 alive=1 hp=-1.0 ai=-1 own={} owner=-1 pos=({} 2.0 3.0) noun=018C431C ser={} scale=1.00'
+    head = 'census v1 role={} me={} mode=Tribe modeid=01654C02 world=A3930F03 t=1.0\nme pos=(1.0 2.0 3.0) ok=1'
+    h = worlddiff.World('\n'.join([head.format('host', 0), bun.format(1, 'carried', 10.0, 1), bun.format(2, 'ground', 20.0, 2),
+                                    'end objects=2']))
+    g = worlddiff.World('\n'.join([head.format('guest', 1), bun.format(1, 'carried', 13.0, 7), bun.format(2, 'ground', 20.5, 8),
+                                    'end objects=2']))
+    out = [f['sig'] for f in worlddiff.diff(h, g)]
+    check(not [x for x in out if 'game_bundle' in x], f'carried food 3 m behind its host copy, ground food 0.5 m: no row ({out})')
+    g = worlddiff.World('\n'.join([head.format('guest', 1), bun.format(1, 'ground', 13.0, 7), bun.format(2, 'ground', 24.5, 8),
+                                    bun.format(3, 'held', 30.0, 9), 'end objects=3']))
+    out = sorted(f['sig'] for f in worlddiff.diff(h, g))
+    check(out == ['Tribe:guest_only:game_bundle_held', 'Tribe:host_only:game_bundle_carried', 'Tribe:unmatched:game_bundle'],
+          f'carried on one game only, ground food 4.5 m off, food in another container: their own rows ({out})')
+    # BUG-0489: one gameplay marker more on the host (an invisible spawn point a game's own logic consumes,
+    # docs/re/creature.md#creature-gameplay-markers): no row
+    mk = 'obj g{} key=00000000 alive=1 hp=-1.0 ai=-1 own= owner=-1 pos=({} 2.0 3.0) noun=036BE27E ser={} scale=1.00'
+    hc = 'census v1 role={} me={} mode=Creature modeid=01654C01 world=A3930F03 t=1.0\nme pos=(1.0 2.0 3.0) ok=1'
+    h = worlddiff.World('\n'.join([hc.format('host', 0), mk.format(1, 10.0, 1), mk.format(2, 40.0, 2), 'end objects=2']))
+    g = worlddiff.World('\n'.join([hc.format('guest', 1), mk.format(1, 10.0, 5), 'end objects=1']))
+    out = [f['sig'] for f in worlddiff.diff(h, g)]
+    check(not [x for x in out if 'gameplay_marker' in x], f'a gameplay marker on the host only: no row ({out})')
+    # BUG-0596: a game that lists no object (it loads its world) is not compared
+    obj = 'obj c{} key=2915F01F alive=1 hp=10.0 ai=1 own=npc owner=0 pos=(1.0 2.0 3.0)'
+    h = worlddiff.World('\n'.join(['census v1 role=host me=0 mode=Creature modeid=01654C01 world=A3930F03 t=1.0',
+                                    'me pos=(1.0 2.0 3.0) ok=1'] + [obj.format(i) for i in range(12)] + ['end objects=12']))
+    g = worlddiff.World('census v1 role=guest me=1 mode=Creature modeid=01654C01 world=A3930F03 t=1.0\nend objects=0')
+    out = [f['sig'] for f in worlddiff.diff(h, g)]
+    check(out == ['apart'], f'a guest that lists no object (loading): not compared ({out})')
+    # BUG-0596: a species record the host's game just made: the guest's first dump lacks it, its second (1.5 s after
+    # the host's dump) has it: no row; a record still missing in the second dump: species_only
+    cr = 'wstate v1 role={} mode=Creature modeid=01654C01 world=A3930F03 t=1.0\nst dna v=10.0\n{}end wstate rows=2'
+    rec = 'species 065CBF12/2B978C46/40626200 relation=3 x=0 impressed=1 killed=0\n'
+    hs, gs = worlddiff.State(cr.format('host', rec)), worlddiff.State(cr.format('guest', ''))
+    gs.after = worlddiff.State(cr.format('guest', rec))
+    out = {f'{w}:{k}' for w, k, _, _ in worlddiff.diff_state(hs, gs, 'Creature')}
+    check(out == set(), f'a record on its way to the guest: no species_only row ({out})')
+    gs.after = worlddiff.State(cr.format('guest', ''))
+    out = {f'{w}:{k}' for w, k, _, _ in worlddiff.diff_state(hs, gs, 'Creature')}
+    check(out == {'Creature:state:species_only'}, f'a record the guest still lacks 1.5 s later: species_only ({out})')
+    # BUG-0657: a kill the host's game counted, the guest's a moment later: no species_killed row when the guest's second
+    # dump has it; a count still different there: species_killed
+    k1, k0 = rec.replace('killed=0', 'killed=1'), rec
+    hs, gs = worlddiff.State(cr.format('host', k1)), worlddiff.State(cr.format('guest', k0))
+    gs.after = worlddiff.State(cr.format('guest', k1))
+    out = {f'{w}:{k}' for w, k, _, _ in worlddiff.diff_state(hs, gs, 'Creature')}
+    check(out == set(), f'a kill on its way to the guest: no species_killed row ({out})')
+    gs.after = worlddiff.State(cr.format('guest', k0))
+    out = {f'{w}:{k}' for w, k, _, _ in worlddiff.diff_state(hs, gs, 'Creature')}
+    check(out == {'Creature:state:species_killed'}, f'a kill the guest still lacks 1.5 s later: species_killed ({out})')
+    # BUG-0657: Space: a planet's city in the host's game only (its camera on the planet, the guest's in orbit) is level of
+    # detail, not a desync; a ship type in one game only still is
+    sh = 'census v1 role={} me={} mode=Space modeid=01654C05 world=80AE3044 t=1.0\nme pos=(1.0 2.0 3.0) ok=1'
+    city = 'obj o{} key=00000000 alive=1 hp=-1.0 ai=-1 own= owner=-1 pos=(5.0 2.0 3.0) noun={} ser={} scale=1.00'
+    UFO = '018EBADC'
+    h = worlddiff.World('\n'.join([sh.format('host', 0), city.format(1, UFO, 1), city.format(2, '0436F342', 2),
+                                    city.format(3, '024630D7', 3), f'nouns {UFO}=1 0436F342=9 018C7C97=9 024630D7=1',
+                                    'end objects=3']))
+    g = worlddiff.World('\n'.join([sh.format('guest', 1), city.format(1, UFO, 5), f'nouns {UFO}=1', 'end objects=1']))
+    out = sorted(f['sig'] for f in worlddiff.diff(h, g))
+    check('Space:noun_only_host:turret' not in out and 'Space:noun_only_host:default_beam_projectile' in out,
+          f'Space: a turret of a planet in the host game only is level of detail, a beam is not ({out})')
+    # BUG-0662: Cell: during a level change each game's positions are in its own world scale (census `me ... wscale=`):
+    # the guest's are compared in the host's scale; a cell off by the scale alone is no row, a cell really 10 m off is
+    ch = 'census v1 role={} me={} mode=Cell modeid=01654C00 world=00000000 t=1.0\nme pos=({:.2f} {:.2f} 0.0) ok=1 wscale={}'
+    cl = 'obj l{} key=0A000001 alive=1 hp=10.0 ai=1 own={} owner=-1 pos=({:.2f} {:.2f} 0.0) noun=00000000 ser=0 scale={:.3f}'
+    k = 1.15  # guest scale / host scale: a guest position and cell size are the host's / k
+    h = worlddiff.World('\n'.join([ch.format('host', 0, 140.0, 70.0, 1.0), cl.format(1, 'npc', 140.0, 70.0, 0.9),
+                                    cl.format(2, 'npc', 150.0, 80.0, 0.9), cl.format(3, 'npc', 130.0, 60.0, 0.9),
+                                    'end objects=3']))
+    g = worlddiff.World('\n'.join([ch.format('guest', 1, 140.0 / k, 70.0 / k, k),
+                                    cl.format(1, 'proxy', 140.0 / k, 70.0 / k, 0.9 / k),
+                                    cl.format(2, 'proxy', 150.0 / k + 10.0, 80.0 / k, 0.9 / k),
+                                    cl.format(3, 'proxy', 130.0 / k, 60.0 / k, 0.5), 'end objects=3']))
+    found = worlddiff.diff(h, g)
+    rows = [f['text'] for f in found if f['sig'] == 'Cell:pos:cell']
+    check(len(rows) == 1 and rows[0].startswith('cell 2:'),
+          f'Cell: positions compared in one world scale: the cell off by the scale only is no row, the one 10 m off is ({rows})')
+    rows = [f['text'] for f in found if f['sig'] == 'Cell:scale:cell']
+    check(len(rows) == 1 and rows[0].startswith('cell 3 '),
+          f'Cell: sizes compared in one world scale: a size off by the scale only is no row, a real one is ({rows})')
+    g.wscale = None  # a dump without the scale (an older coop.dll): raw positions and sizes, every cell differs
+    n = {f['sig']: f['n'] for f in worlddiff.diff(h, g)}
+    check(n.get('Cell:pos:cell') == 3 and n.get('Cell:scale:cell') == 3, f'Cell: no scale in a dump: raw positions and sizes compared ({n})')
+    # through diff(): the state rows come with the area compare, also when there is no centre
+    h, g = worlddiff.World('census v1 role=host me=0 mode=Tribe modeid=01654C02 world=A3930F03 t=1.0'), \
+        worlddiff.World('census v1 role=guest me=1 mode=Tribe modeid=01654C02 world=A3930F03 t=1.0')
+    h.state, g.state = a, st(food=0)
+    out = [f['sig'] for f in worlddiff.diff(h, g)]
+    check(out == ['Tribe:state:food'], f'diff() without a centre gives the state rows ({out})')
+
+
+# ---------------------------------------------------------------- test_lint (BUG-0430)
+def test_trail():
+    """BUG-0916: body_trail.since ends, keeps no row twice and is bounded, on a model of the game's `coop.bodyrec
+    since` (mods/coop/coop.cpp: rows after t0 on the full double, times printed with 4 decimals, n rows a page)"""
+    print('trail: the detector\'s bodyrec read ends and is bounded (BUG-0916)')
+    # SELFTEST_BODYTRAIL=<dir>: the body_trail.py of another copy (an old version: the check fails there)
+    sys.path.insert(0, os.environ.get('SELFTEST_BODYTRAIL') or os.path.dirname(os.path.abspath(__file__)))
+    import bisect
+    import body_trail
+
+    class Game:
+        """frames of `per` rows every dt s (4 players first, then cells), a ring of `ring` rows that goes on
+        filling `rate` frames per call (the game plays while the test reads)"""
+        def __init__(self, per, frames, dt=0.0151234567, ring=400000, rate=0, limit=4000):
+            self.per, self.dt, self.ring, self.rate, self.limit = per, dt, ring, rate, limit
+            self.t = [1000.0 + i * dt for i in range(frames)]
+            self.calls = 0
+
+        def call(self, line):
+            w = line.split()
+            self.calls += 1
+            if self.calls > self.limit:
+                raise RuntimeError('the read did not end')
+            for _ in range(self.rate):
+                self.t.append(self.t[-1] + self.dt)
+            del self.t[:max(0, len(self.t) - self.ring // self.per)]
+            t0, n, step = float(w[2]), int(w[3]), float(w[4])
+            out, kept = [], -1e300
+            for ft in self.t[bisect.bisect_right(self.t, t0):]:
+                if ft < kept + step:
+                    continue
+                kept = ft
+                for k in range(self.per):
+                    if len(out) >= n:
+                        break
+                    out.append(f'{ft:.4f} {"p" if k < 4 else "c"}{k} 1.000 2.000 3.000')
+                if len(out) >= n:
+                    break
+            return {'ok': True, 'out': '\n'.join(out) + '\n'}
+
+    def read(g, **kw):
+        try:
+            try:
+                rows = body_trail.since(g, 999.0, **kw)
+            except TypeError:  # (an old copy: no kinds / limits)
+                rows = body_trail.since(g, 999.0)
+        except RuntimeError as e:
+            return None, str(e)
+        return rows, getattr(body_trail.since, 'cut', '')
+
+    old = os.environ.pop('SPORE_BODYTRAIL_OLD_SINCE', None)
+    try:
+        # the campaign's host in Cell: 1100 rows a frame, one whole frame in a page of 2000
+        g = Game(1100, 300)
+        rows, cut = read(g, kinds='p')
+        frames = sorted({r[0] for r in rows or []})
+        check(rows is not None and not cut and len(rows) == 4 * len(frames) and len(frames) > 60,
+              f'1100 rows a frame: the read ends with every kept frame once, players only '
+              f'({len(rows or [])} rows of {len(frames)} frames in {g.calls} calls, cut {cut!r})')
+        rows, cut = read(Game(1100, 300))
+        check(rows is not None and len(rows) == len({(r[0], r[1]) for r in rows}),
+              f'every kind kept: no row twice ({len(rows or [])} rows)')
+        # a frame larger than the page: read whole with a larger page
+        rows, cut = read(Game(2600, 40), kinds='pc')
+        per = {}
+        for r in rows or []:
+            per[r[0]] = per.get(r[0], 0) + 1
+        check(rows is not None and per and set(per.values()) == {2600},
+              f'2600 rows a frame: whole frames with a larger page ({len(per)} frames, sizes {sorted(set(per.values()))})')
+        # the game goes on recording faster than the test reads: the read is cut, not endless
+        g = Game(1100, 300, rate=40)
+        rows, cut = read(g, kinds='p', max_pages=30)
+        check(rows is not None and cut and g.calls <= 31 and len(rows) <= 31 * 8000,
+              f'a game that records faster than it is read: cut after {g.calls} calls ({cut!r}), {len(rows or [])} rows')
+        rows, cut = read(Game(300, 2000), max_rows=5000)
+        check(rows is not None and cut and len(rows) < 5000 + 2000, f'the row limit holds ({len(rows or [])} rows, {cut!r})')
+        # the old loop on the same game: it never ends (the model stops it after 4000 calls)
+        os.environ['SPORE_BODYTRAIL_OLD_SINCE'] = '1'
+        g = Game(1100, 300)
+        rows, why = read(g)
+        check(rows is None and g.calls > 4000, f'the old loop (SPORE_BODYTRAIL_OLD_SINCE=1) does not end on it ({why})')
+    finally:
+        os.environ.pop('SPORE_BODYTRAIL_OLD_SINCE', None)
+        if old is not None:
+            os.environ['SPORE_BODYTRAIL_OLD_SINCE'] = old
+
+
+def test_testlint():
+    print('testlint: a game test in no suite, a check on a mod counter')
+    root = os.path.join(TMP, 'tl')
+    for d in ('tools/tests', 'mods/coop'):
+        os.makedirs(os.path.join(root, d))
+    shutil.copy(os.path.join(ROOT, 'tools', 'tests', 'test_lint.py'), os.path.join(root, 'tools', 'tests', 'test_lint.py'))
+    t = lambda *a: os.path.join(root, 'tools', 'tests', *a)
+    open(t('suite.py'), 'w').write("T = [dict(cmd='python3 tools/tests/coop_a.py')]\n")
+    open(os.path.join(root, 'mods', 'coop', 'x.cpp'), 'w').write(
+        'void f(char* b) { snprintf(b, 99, "zz_sent=%u zz_hp=%.1f", g_zz_sent, F<float>(p, 4)); }\n')
+    open(t('coop_a.py'), 'w').write("import coop_lib\ndef main():\n    ck(hp(c) > 1, 'the game hp')\n")
+    open(t('coop_lib.py'), 'w').write('x = 1\n')
+    open(t('coop_b.py'), 'w').write("# suite: none (a probe)\ndef main():\n"
+                                     "    n = num(r'zz_sent=(\\d+)', c.call('coop.x')['out'])\n"
+                                     "    ck(n > 0, 'sent')\n    ck(num(r'zz_hp=(\\d+)', s) > 0, 'hp')\n")
+    open(t('coop_c.py'), 'w').write('x = 1\n')
+    run = lambda: subprocess.run([sys.executable, '-I', t('test_lint.py'), '--root', root], capture_output=True, text=True)
+    r = run()
+    check('coop_c.py: in no lab suite' in r.stdout, 'a game test in no suite and imported by none is flagged')
+    check('coop_a.py: in no' not in r.stdout and 'coop_lib.py' not in r.stdout and 'coop_b.py: in no' not in r.stdout,
+          'a suite test, its library and a `# suite: none (<reason>)` probe pass')
+    check('coop_b.py:4: the check rests on the mod\'s counter(s) zz_sent' in r.stdout and 'coop_b.py:5' not in r.stdout,
+          f'a check on a mod counter is flagged, one on a value the mod reads from the game is not ({r.stdout[-300:]})')
+    src = open(t('coop_b.py')).read().replace("'sent')", "'sent')  # counter: the message is the point")
+    open(t('coop_b.py'), 'w').write(src)
+    os.remove(t('coop_c.py'))
+    r = run()
+    check(r.returncode == 0, f'with `# counter: <reason>` it passes ({r.stdout.strip().splitlines()[-1:]})')
+
+
+# ---------------------------------------------------------------- laa (BUG-0862)
+def fake_exe(path, bind=False, checksum=True):
+    """a minimal PE32 (i386) with one or two sections and a valid PE checksum"""
+    import struct
+    names = [b'.text', b'.bind'] if bind else [b'.text']
+    b = bytearray(0x400 + 0x200 * len(names))
+    b[0:2] = b'MZ'
+    struct.pack_into('<I', b, 0x3C, 0x80)
+    b[0x80:0x84] = b'PE\0\0'
+    struct.pack_into('<HHIIIHH', b, 0x84, 0x14C, len(names), 0x5F000000, 0, 0, 224, 0x0102)
+    opt = 0x98
+    struct.pack_into('<H', b, opt, 0x10B)
+    struct.pack_into('<I', b, opt + 28, 0x400000)
+    for i, n in enumerate(names):
+        o = opt + 224 + 40 * i
+        b[o:o + 8] = n.ljust(8, b'\0')
+        struct.pack_into('<IIII', b, o + 8, 0x200, 0x1000 * (i + 1), 0x200, 0x400 + 0x200 * i)
+        b[0x400 + 0x200 * i:0x400 + 0x200 * i + 4] = bytes([0x90, 0x90, 0xC3, i])
+    if checksum:
+        sys.path.insert(0, os.path.join(ROOT, 'tools'))
+        import laa as laa_mod
+        struct.pack_into('<I', b, opt + 64, laa_mod.pe_checksum(bytes(b), opt + 64))
+    open(path, 'wb').write(b)
+    return bytes(b)
+
+
+def test_laa():
+    print('laa: the Large Address Aware tool (BUG-0862)')
+    import hashlib
+    import struct
+    if not os.path.exists(LAATOOL):
+        check(False, f'{os.path.relpath(LAATOOL, ROOT)} exists (inspect / set / restore the LAA flag)')
+        return
+    exe = os.path.join(TMP, 'SporeApp.exe')
+    orig = fake_exe(exe)
+
+    def run(*a):
+        return subprocess.run([sys.executable, '-I', LAATOOL, *a], capture_output=True, text=True)
+    r = run('status', exe)
+    check(r.returncode == 0 and 'Large Address Aware: no' in r.stdout, 'status: a fresh exe is not LAA')
+    r = run('set', exe)
+    new = open(exe, 'rb').read()
+    check(r.returncode == 0, f'set: exit 0 ({r.stdout.strip().splitlines()[:1]})')
+    ch = struct.unpack_from('<H', new, 0x96)[0]
+    check(ch & 0x20 and ch & ~0x20 == 0x0102, f'set: the flag is on, the other Characteristics bits kept (0x{ch:04x})')
+    diff = [i for i in range(len(orig)) if orig[i] != new[i]] if len(orig) == len(new) else ['size']
+    check(len(new) == len(orig) and set(diff) <= {0x96, 0x97, 0x98 + 64, 0x98 + 65, 0x98 + 66, 0x98 + 67},
+          f'set: only Characteristics and CheckSum changed (bytes {diff})')
+    sys.path.insert(0, os.path.dirname(LAATOOL))
+    import laa as laa_mod
+    check(struct.unpack_from('<I', new, 0x98 + 64)[0] == laa_mod.pe_checksum(new, 0x98 + 64), 'set: the PE checksum is valid')
+    bak = exe + '.pre-laa'
+    check(os.path.exists(bak) and open(bak, 'rb').read() == orig, 'set: the backup is the original')
+    check(open(bak + '.sha256').read().split()[0] == hashlib.sha256(orig).hexdigest(), 'set: the backup\'s .sha256')
+    r = run('set', exe)
+    check(r.returncode == 0 and 'already' in r.stdout and open(exe, 'rb').read() == new, 'set again: nothing changes')
+    r = run('restore', exe)
+    check(r.returncode == 0 and open(exe, 'rb').read() == orig and not os.path.exists(bak), 'restore: the original is back, the backup gone')
+    # a damaged backup is refused
+    run('set', exe)
+    with open(bak, 'r+b') as f:
+        f.seek(0x400)
+        f.write(b'\xcc')
+    r = run('restore', exe)
+    check(r.returncode == 1 and open(exe, 'rb').read() == new, 'restore: a backup that does not match its .sha256 is refused')
+    # Steam's DRM wrapper (.bind): refused without --force
+    steam = os.path.join(TMP, 'steam.exe')
+    s0 = fake_exe(steam, bind=True)
+    r = run('set', steam)
+    check(r.returncode == 1 and open(steam, 'rb').read() == s0 and not os.path.exists(steam + '.pre-laa'), 'set: a .bind exe is refused')
+    r = run('set', steam, '--force')
+    check(r.returncode == 0 and struct.unpack_from('<H', open(steam, 'rb').read(), 0x96)[0] & 0x20, 'set --force: a .bind exe gets the flag')
+    # not a PE file
+    junk = os.path.join(TMP, 'junk.exe')
+    open(junk, 'wb').write(b'not an exe')
+    check(run('set', junk).returncode == 1 and open(junk, 'rb').read() == b'not an exe', 'set: a file that is no exe is refused')
+
+
+# ---------------------------------------------------------------- symlist (BUG-0851)
+def test_symlist():
+    print('symlist: the uninstall knows every symbol file a release installs (BUG-0851)')
+    import glob
+    import re
+    h = open(os.path.join(ROOT, 'updater', 'winupdate.h')).read()
+    m = re.search(r'kSymbolFiles\[\]\s*=\s*\{([^}]*)\}', h)
+    listed = set(re.findall(r'"([^"]+)"', m.group(1))) if m else set()
+    shipped = {os.path.basename(p) for p in glob.glob(os.path.join(ROOT, 'data', 'symbols', '*.sym'))}
+    check(bool(m), 'updater/winupdate.h has upd::kSymbolFiles')
+    check(shipped <= listed, f'every data/symbols/*.sym is listed (missing: {sorted(shipped - listed)})')
+    bat = open(os.path.join(ROOT, 'installer', 'uninstall.bat')).read()
+    check(all(n in bat for n in shipped), 'uninstall.bat names every data/symbols/*.sym')
+
+
+def test_bootfault():
+    """BUG-0967: Checks.faults lets only the game's boot audio fault 0x011ECE4F pass, printed without the count the
+    lab reads; any other fault (also next to it) fails as before"""
+    import contextlib
+    import re
+    import io
+    sys.path.insert(0, os.path.join(ROOT, 'tools', 'tests'))
+    import twoinst
+    boot = '  0xC0000005 x1 at 0x011ECE4F GetTickCount_0+0x61F data=0x00000120 tid=220 (main)'
+    other = '  0xC0000005 x1 at 0x00C0DB23 ? data=0x00000004 tid=220 (main)'
+
+    class Con:
+        def __init__(self, out):
+            self.out = out
+
+        def call(self, cmd):
+            return {'out': self.out}
+
+    for out, want_ok, what in (('total faults: 1\n' + boot, True, 'the boot audio fault alone'),
+                               ('total faults: 2\n' + boot + '\n' + other, False, 'with another fault'),
+                               ('total faults: 1\n' + other, False, 'another fault alone'),
+                               ('total faults: 0', True, 'no fault')):
+        ck = twoinst.Checks.__new__(twoinst.Checks)
+        ck.ok = True
+        buf = io.StringIO()
+        saved = list(twoinst.Monitor.events), list(twoinst.FIXTURE_BAD)
+        twoinst.Monitor.events[:] = []
+        twoinst.FIXTURE_BAD[:] = []
+        with contextlib.redirect_stdout(buf):
+            ck.faults(host=Con(out))
+        twoinst.Monitor.events[:], twoinst.FIXTURE_BAD[:] = saved
+        counted = re.search(r'\bfaults: total faults: (\d+)', buf.getvalue())
+        check(ck.ok == want_ok, f'faults check, {what}: ok={ck.ok}')
+        check(want_ok == (not counted or counted.group(1) == '0'), f'faults line the lab reads, {what}')
+
+
+# ---------------------------------------------------------------- wt_gc (BUG-1127)
+def test_wtgc():
+    """BUG-1127: wt_gc.py removes only merged, clean, unused, old worktrees (and merged branches), never with a dry
+    run; a tree in use (a process in it, a held lab lane lock), with uncommitted work, unmerged, kept by a glob or
+    recently changed stays"""
+    print('wtgc: wt_gc.py on a temporary repository')
+    import importlib.util
+    spec = importlib.util.spec_from_file_location('wt_gc', WTGC)
+    gc = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(gc)
+    env = dict(os.environ, GIT_AUTHOR_NAME='t', GIT_AUTHOR_EMAIL='t@t', GIT_COMMITTER_NAME='t',
+               GIT_COMMITTER_EMAIL='t@t')
+    base = os.path.join(TMP, 'w')
+    repo = os.path.join(base, 'repo')
+    os.makedirs(repo)
+    g = lambda *a, cwd=repo: subprocess.run(['git', '-C', cwd, *a], env=env, capture_output=True, text=True,
+                                            check=True).stdout
+    g('init', '-q', '-b', 'main')
+    open(os.path.join(repo, '.gitignore'), 'w').write('build/\nout/\n')
+    open(os.path.join(repo, 'a.txt'), 'w').write('a')
+    g('add', '-A')
+    g('commit', '-qm', 'init')
+    wt = lambda b: os.path.join(base, 'wt', b.replace('/', '-'))
+    for b in ('fix/a', 'fix/b', 'fix/c', 'fix/d', 'fix/h', 'x/keep-1', 'rel/1'):
+        g('worktree', 'add', '-q', wt(b), '-b', b)
+    g('branch', 'fix/f')
+    open(os.path.join(wt('fix/c'), 'c.txt'), 'w').write('c')  # an unmerged commit
+    g('add', '-A', cwd=wt('fix/c'))
+    g('commit', '-qm', 'c', cwd=wt('fix/c'))
+    open(os.path.join(wt('fix/b'), 'new.txt'), 'w').write('work')  # untracked: uncommitted work
+    os.makedirs(os.path.join(wt('fix/a'), 'build'))
+    open(os.path.join(wt('fix/a'), 'build', 'blob'), 'wb').write(os.urandom(200_000))
+    os.makedirs(os.path.join(wt('fix/a'), 'out', 'lab', '20260101-000000'))
+    busy = subprocess.Popen(['sleep', '60'], cwd=wt('fix/d'))  # an agent / lab in fix/d
+    # a lab run of fix/h holds a lane lock (the lock files sit next to the lane-1 game folder: the main
+    # checkout's parent's parent)
+    lock = os.path.join(TMP, '.lab-run-lane7.lock')
+    holder = subprocess.Popen([sys.executable, '-c', 'import fcntl, os, sys, time\n'
+                               f'f = open({lock!r}, "a+"); fcntl.flock(f, fcntl.LOCK_EX)\n'
+                               'f.write(f"run 1 pid {os.getpid()} since 00:00\\n"); f.flush()\n'
+                               'print("held", flush=True); time.sleep(60)'],
+                              cwd=wt('fix/h'), stdout=subprocess.PIPE, text=True)
+    holder.stdout.readline()
+    try:
+        here = os.getcwd()
+        os.chdir(TMP)
+        later = time.time() + 72 * 3600
+        p = gc.plan(repo, keep=['x/keep-*'], now=later)
+        gone = {w['branch'] for w in p['remove']}
+        why = dict((k.split(' [')[1].rstrip(']'), v) for k, v in p['kept'])
+        check(gone == {'fix/a'}, f'only the merged, clean, unused, old tree goes ({sorted(gone)})')
+        check(why.get('fix/b', '').startswith('uncommitted'), f'uncommitted work stays ({why.get("fix/b")})')
+        check(why.get('fix/c', '').startswith('not merged'), f'an unmerged branch stays ({why.get("fix/c")})')
+        check(why.get('fix/d', '').startswith('in use'), f'a tree a process uses stays ({why.get("fix/d")})')
+        check(why.get('fix/h', '').startswith('a lab run holds'), f'a held lane lock keeps it ({why.get("fix/h")})')
+        check(why.get('x/keep-1', '').startswith('kept branch') and why.get('rel/1', '').startswith('kept branch'),
+              'a --keep glob and rel/* stay')
+        check(set(p['branches']) == {'fix/a', 'fix/f'}, f'merged branches to delete: fix/a, fix/f ({p["branches"]})')
+        check('fix/c' in p['unmerged'], 'the unmerged branch is listed for a person')
+        check(p['remove'][0].get('bytes', 0) >= 200_000, f'the size of build/ and out/ is counted '
+              f'({p["remove"][0].get("bytes")})')
+        now = gc.plan(repo, keep=['x/keep-*'], sizes=False)
+        check(not now['remove'] and dict((k.split(' [')[1].rstrip(']'), v) for k, v in now['kept'])
+              .get('fix/a', '').startswith('changed'), 'a tree changed in the last 48 hours stays')
+        r = subprocess.run([sys.executable, '-I', WTGC, '--repo', repo, '--keep', 'x/keep-*', '--min-age', '0'],
+                           capture_output=True, text=True)
+        check(r.returncode == 0 and 'dry run' in r.stdout and os.path.isdir(wt('fix/a'))
+              and 'fix/f' in g('branch'), f'the dry run changes nothing ({r.stdout.strip().splitlines()[-1:]})')
+        r = subprocess.run([sys.executable, '-I', WTGC, '--repo', repo, '--keep', 'x/keep-*', '--min-age', '0',
+                            '--apply'], capture_output=True, text=True)
+        branches = g('branch', '--format=%(refname:short)').split()
+        check(r.returncode == 0 and not os.path.exists(wt('fix/a')) and 'fix/a' not in branches
+              and 'fix/f' not in branches, f'--apply removes the tree and both branches ({r.stdout[-300:]})')
+        check(all(os.path.isdir(wt(b)) for b in ('fix/b', 'fix/c', 'fix/d', 'fix/h', 'x/keep-1', 'rel/1'))
+              and 'fix/c' in branches and 'fix/b' in branches, 'every kept tree and branch is still there')
+    finally:
+        os.chdir(here)
+        for pr in (busy, holder):
+            pr.kill()
+            pr.wait()
+
+
+CHECKS = {'noenv': test_noenv, 'docslint': test_docslint, 'kill': test_kill, 'fixture': test_fixture, 'headless': test_headless, 'tickets': test_tickets,
+          'tickets_check': test_tickets_check, 'relint': test_relint,
+          'release': test_release, 'triage': test_triage, 'campaign': test_campaign, 'mergelogs': test_mergelogs,
+          'worldstate': test_worldstate, 'testlint': test_testlint,
+          'trail': test_trail, 'laa': test_laa, 'symlist': test_symlist, 'bootfault': test_bootfault,
+          'wtgc': test_wtgc}
+
+if __name__ == '__main__':
+    if sys.argv[1:2] == ['--kill-inside']:
+        TMP = sys.argv[2]
+        kill_inside()
+        sys.exit(1 if fails else 0)
+    want = sys.argv[1:] or list(CHECKS)
+    for c in want:
+        TMP = tempfile.mkdtemp(prefix=f'sk-selftest-{c}-')
+        try:
+            CHECKS[c]()
+        finally:
+            shutil.rmtree(TMP, ignore_errors=True)
+    print(f'tools_selftest: {len(want)} check(s), {len(fails)} failure(s)')
+    sys.exit(1 if fails else 0)

@@ -1,5 +1,42 @@
 # 4. Netcode
 
+## Fork and upstream protocol scope
+<a id="netcode-protocol-scope"></a>
+
+The source integration candidate is `0.7.15.0-ga-editor-preview.16`, protocol **30**,
+based on pinned upstream `v0.7.15`. Source synchronization leaves the installed
+preview unchanged. Every participant needs the matching fork protocol and wire
+families. Upstream protocol 7 and earlier fork protocols are incompatible.
+
+Upstream retains `MSG_HOST_BUSY=70` and `MSG_TRIBE_ANIM=71`. The fork uses
+`MSG_ADVENTURE=72`, `MSG_EDITOR=73` and `MSG_ACTIVITY=55`, declared and routed
+through `net/messages.def`. The strict 103-byte PlayerState preserves the complete
+adventure run, captain selection and movement generation after upstream scale,
+AGL and body fields. Truncated upstream prefixes are rejected.
+
+Session family **2.0**, Adventure family **11 / 1.0**, and Editor family **12 / 1.0**
+are mandatory in both HELLO and WELCOME, including menus and independent creation
+editors. Missing, malformed, duplicate or incompatible family declarations are
+rejected before admission or replacement of an accepted participant. The optional
+campaign `net.family_check` switch cannot disable this fork boundary. Both GA
+families use `STAGE_ALWAYS`; their coordinators retain role and project/run checks.
+Native adventure saves, editor checkpoints and recovery formats are unchanged.
+
+Protocol 25 requires Extended Complexity policy 2, whose Native adapter keeps
+marker storage stable before binding actors. Known policy-1 capability values
+remain decodable by updated clients, allowing NativeDefault edits with retired
+or mismatched capability values; they never establish an Extended cohort, even
+when every participant advertises policy 1. This is not executable compatibility
+with protocol-24 clients. The authored Saved, checkpoint and journal formats are
+unchanged; marker capacity is transient Native storage.
+
+The published GA gameplay release 0.7.4.0 uses protocol 15. Sections marked
+protocol 8, 10 or 12 below retain the historical preview contract and evidence.
+The upstream transport and capability notes retain their protocol 7 context;
+their older-peer compatibility claims do not permit an upstream or older fork
+client to join the integration candidate. Merging source does not update an
+installed game or establish new native/platform acceptance.
+
 ## Adventure preparation (protocol 8)
 
 Reliable MSG_ADVENTURE subkind14 carries the host's preparation view: run,
@@ -29,14 +66,17 @@ it builds both as a Windows DLL and **natively on Linux** (unit tests, `fakepeer
 
 ```
 u32  magic   'SPCO'
-u16  proto   protocol version (10)
+u16  proto   protocol version (25; uninstalled upstream-integration candidate)
 u32  conn    connection id: the guest picks a new random one for every join (protocol 6)
 u16  seq     packet number (for ack)
 u16  ack     last received seq
 u128 ackbits bitmask of the previous 128 (2 x u64, protocol 5)
 u8   count   number of messages
-[messages: u8 type, u8 channel, u16 len, payload]
+[messages: u8 type, u8 channel, u16 len, u16 rel_id (reliable only), payload]
 ```
+
+Protocol 7 added the Space extensions. A packet with another header protocol is dropped before
+the handshake; `REJ_VERSION` applies to a mismatched protocol inside an otherwise valid `HELLO`.
 
 Reliability uses a "seq/ack/ackbits" scheme: each reliable message remembers which
 packets it was sent in, and is resent until a packet is acknowledged (RTO ≈ 1.5·RTT, min. 100 ms).
@@ -64,29 +104,169 @@ then the rest of the unreliable queue is dropped (stale by the next frame). Big 
 
 ## 4.3 Messages
 
-| Type | Channel | Contents |
-|---|---|---|
-| `HELLO` | R | mod version, exe build-id, nickname |
-| `WELCOME` | R | player id, world id (save hash), host tick, player list |
-| `REJECT` | R | reason (version, no free slots, different exe) |
-| `PLAYER_JOIN/LEAVE` | R | id, nickname, appearance |
-| `PLAYER_STATE` | U | id, tick, position (3×f32), orientation, velocity, movement flags, health, species, **mode** and **place** (protocol v2: a puppet is visible only in the same mode and place) |
-| `ANIM` | R | animation played by the player's creature (jump, attack, social); the host relays it |
-| `NPC_SPAWN` | R | net-id, species key (ResourceKey), scale, flags (dead / "family" / impressed), position, HP |
-| `NPC_STATE` | U | 10 Hz, batches of ~25: net-id, position, orientation, velocity, HP, flags |
-| `NPC_DESPAWN` | R | net-id: left the 110 m radius (+20 m hysteresis) or disappeared |
-| `DAMAGE_REQ` | R | guest → host: my hit on an NPC (net-id, damage, type) |
-| `DAMAGE` | R | host → guest: an NPC hit you (damage, type, attacker net-id) |
-| `DNA` / `DNA_ADD` | R | shared DNA total from the host / gain earned by a guest (also the DNA a guest earned alone while the host was in the main menu) |
-| `SPECIES` | R | host → guests: the creature stage's species relationship table (per species: relation, impressed, killed), on change and every 10 s; the guest writes it into its own and refreshes its goal cards |
-| `SOCIAL` | R | guest → host: a social ability on a mirrored NPC (net-id, ability type); host → guest: rounds done / needed; host → all: the result (impressed or refused, reaction animation, DNA); any → host: a goal card's ally / extinction reward (species, outcome, DNA), paid once |
-| `RES` / `RES_ADD` | R | shared resource (u8 id: 1 tribe food, 2 civilization money, 3 empire money; f64): total from the host / change on a guest |
-| `PING_MARK` | R | "look here" marker: author id, point, mode; the host forwards it to the others |
-| `WORLD_TIME` | U | once per second: quaternion of the sky object (time of day) |
-| `WORLD_OFFER/FILE/CHUNK/DONE` | R | transfer of the host's save in 1 KB chunks, at most 160 unacknowledged messages (600 when the round trip is under 40 ms) |
-| `CHAT` | R | id, UTF-8 text |
-| `PING/PONG` | U | timestamp → RTT in the status |
-| `BYE` | U | reason; sent in three packets on leave (protocol 6: a reliable one waited behind any lost earlier message) |
+The tables below are generated from `mods/coop/net/messages.def` and `mods/coop/net/space_kinds.def` (B3 of 0.7.15,
+[the manifest](#netcode-manifest)); `make test` fails when they differ. "Sent by" is who sends the type on the wire
+(the host relays what guests send to each other); "Handled by" is the route of session_glue.cpp's dispatch (`(host)`
+/ `(guest)`: only that game's dispatch takes it). The payload layouts are in `net/protocol.h` (its structs and the
+payload notes above `enum MsgType`) and in the modules' wire code.
+
+<!-- manifest tables: generated by tools/msg_manifest.py docs, do not edit -->
+
+| Id | Type | Ch | Sent by | Class | Handled by | Family | Contents |
+|---|---|---|---|---|---|---|---|
+| 1 | `HELLO` | R | guest | Session | Session (net) | session | u16 protocol, u32 exe build id, str8 name; then u32 caps and their payloads (#netcode-hello-caps) |
+| 2 | `WELCOME` | R | host | Session | Session (net) | session | u8 your id, u32 world id, u8 n, n x {u8 id, str8 name}; then u32 caps and their payloads |
+| 3 | `REJECT` | R | host | Session | Session (net) | session | u8 reason (1 version, 2 full, 3 another exe build, 4 started, 5 kicked), str8 text |
+| 4 | `PLAYER_JOIN` | R | host | Session | Session (net) | session | u8 id, str8 name, str8 version |
+| 5 | `PLAYER_LEAVE` | R | host | Session | Session (net) | session | u8 id, u8 reason |
+| 6 | `PLAYER_STATE` | U | any | Session | Session (net) | session | a player's own creature: pose, flags, health, species, mode, world, scale, agl, body, adventure run, captain identity, movement generation (103 bytes; the host relays it) |
+| 7 | `CHAT` | R | any | Session | Session (net) | session | u8 id, str16 text (the host relays it) |
+| 8 | `PING` | U | guest | Session | Session (net) | session | unused: nothing sends it, the host answers one with a PONG |
+| 9 | `PONG` | U | host | Session | Session (net) | session | unused: the answer to PING |
+| 10 | `BYE` | U | any | Session | Session (net) | session | leaving (three packets) |
+| 11 | `ABILITY` | R | any | Session | Session (net) | session | reserved, never sent or handled |
+| 12 | `DAMAGE` | R | any | Session | Npc | npc | host -> guest: an NPC hit you; guest -> host: friendly fire on a player (F3) |
+| 13 | `NPC_STATE` | U | host | Module | Npc | npc | u32 time, u8 n, n x NpcState (+ agl trailer) |
+| 14 | `WORLD_OFFER` | R | host | Session | World (guest) | world | the host's save follows: u32 world, u32 size, u16 files, str8 planet |
+| 15 | `WORLD_FILE` | R | host | Session | World (guest) | world | a file header: u16 index, u32 size, str8 path |
+| 16 | `WORLD_CHUNK` | R | host | Session | World (guest) | world | file data: u16 index, u32 offset, u16 n, bytes |
+| 17 | `WORLD_DONE` | R | host | Session | World (guest) | world | end of the transfer |
+| 18 | `ANIM` | R | any | Session | Anim | creature | an animation of a player's own creature (the host relays it) |
+| 19 | `NPC_SPAWN` | R | host | Module | Npc | npc | start mirroring an NPC (NpcSpawn) |
+| 20 | `NPC_DESPAWN` | R | host | Module | Npc | npc | stop mirroring an NPC: u16 id |
+| 21 | `DAMAGE_REQ` | R | guest | Module | Npc | npc | my hit on an NPC: u16 id, f32 damage, i32 type |
+| 22 | `WORLD_TIME` | U | host | HostWorld | WorldTime (guest) | creature | the time of day: the sky's quaternion |
+| 23 | `DNA` | R | host | HostWorld | Dna (guest) | creature | the shared DNA total (f32), u8 n x {cause, player, f32} (dna_ledger.h), u8 pace |
+| 24 | `DNA_ADD` | R | guest | Session | DnaAdd (host) | creature | DNA a guest earned or spent (f32 delta) |
+| 25 | `RES` | R | host | Session | Shared | shared | a shared resource total (u8 id, f64) |
+| 26 | `RES_ADD` | R | guest | Session | Shared | shared | a guest's change of a shared resource (u8 id, f64 delta) |
+| 27 | `PING_MARK` | R | any | Session | PingMark | session | a look-here marker: u8 origin, vec3, u32 mode (the host relays it) |
+| 28 | `READY` | R | guest | Session | Ready (host) | session | u8 ready |
+| 29 | `LOBBY` | R | host | Session | Lobby (guest) | session | u8 n, {u8 id, u8 ready, u16 rtt}, roles (lobby.h) |
+| 30 | `NOTICE` | R | any | Session | Notice | session | str8 text everybody sees (the host relays it) |
+| 31 | `TRIBE_STATE` | U | host | HostWorld | Tribe | tribe | tribes and citizens snapshot (chunked) |
+| 32 | `TRIBE_CMD` | R | guest | HostWorld | Tribe | tribe | an order for the guest's own tribe members |
+| 33 | `CELL_STATE` | U | host | HostWorld | Cell | cell | NPC cells and food snapshot (chunked) |
+| 34 | `CELL_HIT` | R | any | HostWorld | Cell | cell | guest -> host: u32 host cell index, u8 damage, u8 type (host -> guest only from the test command coop.pool hurt) |
+| 35 | `CELL_EAT` | R | guest | HostWorld | Cell | cell | u32 host cell index the guest ate or destroyed |
+| 36 | `CELL_FOOD` | R | any | HostWorld | Cell | cell | host: i32 food, i32 plant; guest: i32 delta, u8 plant |
+| 37 | `CIV_STATE` | U | host | HostWorld | Civ | civ | cities and vehicles snapshot (chunked) |
+| 38 | `CIV_CMD` | R | any | Module | Civ | civ | guest -> host: a vehicle order, move, purchase or building; host -> guest: a specialty ask, a Space planner building |
+| 39 | `CIV_BUILD` | R | host | HostWorld | Civ | civ | a building appeared in a city, a city founded, the trade routes |
+| 40 | `UFO_STATE` | U | host | Module | Squadron | space | NPC ships near the guest (chunked) |
+| 41 | `UFO_HIT` | R | guest | Module | Squadron | space | u16 ship id, f32 damage, i32 type, vec3 dir |
+| 42 | `UFO_DAMAGE` | R | host | Module | Squadron | space | f32 damage, i32 type, vec3 dir, u16 attacker ship id |
+| 43 | `VOTE` | R | host | Session | Vote (guest) | creature | the evolution vote: u8 active, u8 seconds, str8 text, u32 editor, u8 flags |
+| 44 | `CELL_KO` | R | any | HostWorld | Cell | cell | u8 player, u8 state, u8 tenths left, u8 revive progress (the host relays it) |
+| 45 | `CREATION` | R | any | Session | Creation | creations | reliable chunks of a player's creation |
+| 46 | `ROLE` | R | guest | Session | Role (host) | civ | u8 role (Civilization: none, military, economic, religious) |
+| 47 | `CIV_ALARM` | R | host | HostWorld | Civ | civ | u8 city index, u8 kind, u8 owner |
+| 48 | `SPACE` | R | any | Module | Space | space | u8 kind (space_kinds.def), u8 origin, payload (the host relays it) |
+| 49 | `CELL_BITTEN` | R | guest | HostWorld | Cell | cell | u32 host cell index of the NPC whose mirror bit the guest |
+| 50 | `SPECIES` | R | host | HostWorld | Social | creature | the Creature stage's species relationship table |
+| 51 | `SOCIAL` | R | any | HostWorld | Social | creature | u8 kind: a social act, its progress, its result, a goal reward |
+| 52 | `NEST` | RU | any | HostWorld | Nest | creature | u8 kind: the eggs at the host's nests, an egg a guest ate |
+| 53 | `PARTS` | R | any | HostWorld | Parts | creature | the party's collected creature parts |
+| 54 | `WOBJ` | RU | any | Module | Wobj | npc | u8 kind: host-owned world objects (snapshot), a guest's request |
+| 55 | `ACTIVITY` | R | guest | Session | Activity (host) | editor | actual native mode and participant-local editor activity |
+| 56 | `FIELDS` | U | host | HostWorld | Fields | npc | replicated state fields of mirrored objects (fields.h) |
+| 57 | `NPC_RESYNC` | R | guest | Module | Npc | npc | u8 n, n x u16 NPC ids the guest has states and no spawn of |
+| 59 | `NPC_ANIM` | RU | host | Module | Npc | npc | animations the host's NPCs and tribe members started or play now |
+| 60 | `DIAG` | RU | any | Session | Diag | session | support diagnostics (net/diagmsg.h): u8 kind, payload |
+| 61 | `EFFECT` | R | any | Module | Effect | creature | a player's creature started or stopped an effect (the host relays it) |
+| 62 | `WSTATE` | U | host | HostWorld | Wsync | npc | host-owned world state rows (wsync.h) |
+| 63 | `PLAYER_RULE` | RU | any | HostWorld | PlayerRule | npc | u8 kind: the game's rules one game decides on the other's creature (a stun) |
+| 64 | `MIRROR_FX` | RU | host | HostWorld | MirrorFx | npc | what the host's game did to a mirrored creature (effect, voice, sprint) |
+| 65 | `NPC_MEAT` | RU | any | Module | Npc | npc | u8 kind: the meat left on killed NPCs, what a guest ate of it |
+| 66 | `SETTINGS` | R | host | Session | Settings | session | the session settings (settings_core.h) |
+| 67 | `COLORS` | R | any | Session | Colors | session | u8 kind: the player colour table, a guest's choice |
+| 68 | `REPORT` | R | any | Session | Report | session | the session report (net/sreport.h) |
+| 69 | `HOST_WORLD` | R | host | Session | HostWorld | session | u32 world: the host's save changed (BUG-0933) |
+| 70 | `HOST_BUSY` | R | host | Session | HostBusy (guest) | session | the host's game is paused, in an editor or away (busy_model.h, 14 bytes v1: u8 version, u8 state, u16 why, u32 mode, u32 world, u16 seq; BUG-1142) |
+| 71 | `TRIBE_ANIM` | RU | host | Module | Tribe (guest) | tribe | u8 kind (wire/tribe_anim.h), payload: the tribe members' animations, holds, air height, the theme and party music, the game-over and pause waits (MSG_NPC_ANIM's kinds 2-16, 20, 21 for a peer before tribe 1.1, BUG-1160) |
+| 72 | `ADVENTURE` | R | any | Session | Adventure | adventure | u8 subkind, run-scoped adventure coordination; 64..71 resource transfer |
+| 73 | `EDITOR` | R | any | Session | Editor | editor | project/epoch-scoped collaborative authoring |
+
+| Family | Id | Rev | Used in | Covers |
+|---|---|---|---|---|
+| session (session) | 1 | 2.0 | every stage and the menus | `HELLO`, `WELCOME`, `REJECT`, `PLAYER_JOIN`, `PLAYER_LEAVE`, `PLAYER_STATE`, `CHAT`, `PING`, `PONG`, `BYE`, `ABILITY`, `PING_MARK`, `READY`, `LOBBY`, `NOTICE`, `DIAG`, `SETTINGS`, `COLORS`, `REPORT`, `HOST_WORLD`, `HOST_BUSY` |
+| world (world transfer) | 2 | 1.0 | every stage and the menus | `WORLD_OFFER`, `WORLD_FILE`, `WORLD_CHUNK`, `WORLD_DONE` |
+| creature (Creature) | 3 | 1.0 | Creature | `ANIM`, `WORLD_TIME`, `DNA`, `DNA_ADD`, `VOTE`, `SPECIES`, `SOCIAL`, `NEST`, `PARTS`, `EFFECT` |
+| npc (mirrored creature and world state) | 4 | 1.0 | Creature, Tribe, Civilization | `DAMAGE`, `NPC_STATE`, `NPC_SPAWN`, `NPC_DESPAWN`, `DAMAGE_REQ`, `WOBJ`, `FIELDS`, `NPC_RESYNC`, `NPC_ANIM`, `WSTATE`, `PLAYER_RULE`, `MIRROR_FX`, `NPC_MEAT` |
+| cell (Cell) | 5 | 1.0 | Cell | `CELL_STATE`, `CELL_HIT`, `CELL_EAT`, `CELL_FOOD`, `CELL_KO`, `CELL_BITTEN` |
+| tribe (Tribe) | 6 | 1.1 | Tribe | `TRIBE_STATE`, `TRIBE_CMD`, `TRIBE_ANIM` |
+| civ (Civilization) | 7 | 1.0 | Civilization, Space | `CIV_STATE`, `CIV_CMD`, `CIV_BUILD`, `ROLE`, `CIV_ALARM` |
+| space (Space) | 8 | 1.2 | Space | `UFO_STATE`, `UFO_HIT`, `UFO_DAMAGE`, `SPACE` |
+| shared (shared resources) | 9 | 1.0 | Tribe, Civilization, Space | `RES`, `RES_ADD` |
+| creations (creations) | 10 | 1.0 | every stage and the menus | `CREATION` |
+| adventure (Galactic Adventures) | 11 | 1.0 | every stage and the menus | `ADVENTURE` |
+| editor (shared Adventure Editor) | 12 | 1.0 | every stage and the menus | `ACTIVITY`, `EDITOR` |
+
+| `MSG_SPACE` kind | Feature | Name | Sent by |
+|---|---|---|---|
+| 1 | spacecoop | `K_DOWN` | any |
+| 2 | spacecoop | `K_RAID` | any |
+| 3 | spacecoop | `K_MISSION` | any |
+| 4 | spacecoop | `K_TERRA` | any |
+| 5 | spacecoop | `K_GIFT` | any |
+| 6 | spacecoop | `K_GIFT_BACK` | any |
+| 7 | spacecoop | `K_SCULPT` | any |
+| 8 | spacecoop | `K_COLOUR` | any |
+| 9 | spacecoop | `K_TERRA_REC` | any |
+| 10 | map | `K_ROSTER` | any |
+| 11 | map | `K_ROSTER_REQ` | any |
+| 12 | map | `K_KEPT` | host |
+| 13 | map | `K_KEPT_DONE` | guest |
+| 14 | map | `K_COLONY` | guest |
+| 15 | map | `K_KEPT_COLONY` | host |
+| 20 | contracts | `K_STATE` | host |
+| 21 | contracts | `K_ACCEPT` | guest |
+| 22 | contracts | `K_RESULT` | host |
+| 30 | diplomacy | `K_EVENT` | any |
+| 31 | diplomacy | `K_STATE` | any |
+| 32 | diplomacy | `K_SNAP` | host |
+| 33 | diplomacy | `K_ASK` | guest |
+| 34 | diplomacy | `K_CONTACT` | any |
+| 40 | finale | `K_STATE` | any |
+| 41 | finale | `K_WAIT` | any |
+| 42 | finale | `K_REACHED` | any |
+| 50 | rivalry | `K_STATE` | host |
+| 51 | rivalry | `K_REQ` | guest |
+| 52 | rivalry | `K_EVENT` | host |
+| 53 | rivalry | `K_HIT` | any |
+| 54 | rivalry | `K_MONEY` | any |
+| 55 | rivalry | `K_MERGE_FIX` | guest |
+| 56 | rivalry | `K_ASK` | guest |
+| 57 | rivalry | `K_SET` | host |
+| 60 | allies | `K_RAIDS` | any |
+| 61 | allies | `K_DEFENDED` | any |
+| 70 | trade | `K_TOOL` | any |
+| 71 | trade | `K_TOOL_ACK` | any |
+| 72 | trade | `K_SELL` | any |
+| 73 | trade | `K_SELL_ACK` | any |
+| 74 | trade | `K_OFFER` | any |
+| 75 | trade | `K_OFFER_ACK` | any |
+| 76 | trade | `K_OFFER_CANCEL` | any |
+| 77 | trade | `K_INV` | guest |
+| 78 | trade | `K_INV_KEPT` | host |
+| 79 | trade | `K_INV_DONE` | guest |
+| 80 | planets | `K_SPICE` | host |
+| 81 | planets | `K_SPICE_TAKEN` | guest |
+| 85 | badges | `K_BADGES` | guest |
+| 86 | badges | `K_BADGES_KEPT` | host |
+| 87 | badges | `K_BADGES_DONE` | guest |
+| 90 | eco | `K_ECO` | any |
+
+Feature ranges: spacecoop 1..9, map 10..19, contracts 20..29, diplomacy 30..39, finale 40..49, rivalry 50..59, allies 60..69, trade 70..79, planets 80..84, badges 85..89, eco 90..94; 95..255 free.
+
+<!-- end of manifest tables -->
+
+CORRECTION (2026-10-28, fix/w3-net, BUG-0144): the rows `HELLO`, `WELCOME`, `PLAYER_JOIN/LEAVE`
+and `PING/PONG` described fields and messages the protocol never had (a mod version, a host tick,
+an appearance, a PING sender); they now list what the `write()` methods in `net/protocol.h` send.
+CORRECTION (2026-11-15, feat/w51-manifest, BUG-1136): the hand-written table listed 22 of the 67 types and was out of
+date again (HELLO "no mod version" although CAP_VERSION exists since 0.7.4, REJECT without reasons 4 and 5); it is
+replaced by the tables generated from the manifest.
 
 ## 4.4 Rates and smoothing
 
@@ -111,8 +291,18 @@ then the rest of the unreliable queue is dropped (stale by the next frame). Big 
 * Handshake: `HELLO` → `WELCOME`/`REJECT`; `HELLO` is resent like any reliable message for up to 10 s.
 * Leave: `BYE`; the host drops the peer at once. A lost `BYE` costs nothing on a rejoin (the new
   connection id replaces the peer), otherwise the peer times out.
-* No packets for 5 s → "connection unstable", 15 s → disconnect.
-* `coop status` shows RTT, packet loss, and each player's state.
+* ~ superseded (2026-10-28): No packets for 5 s → "connection unstable", 15 s → disconnect.
+* ~ superseded (2026-10-28): `coop status` shows RTT, packet loss, and each player's state.
+* CORRECTION (2026-10-28, fix/w3-net, BUG-0069): no packets for 30 s (`Session::timeout_ms`,
+  session.h: the game can block that long while saving or loading) → disconnect ("connection to
+  host lost (timeout)" on a guest, the peer dropped on the host). A guest without `WELCOME` after
+  10 s gives up ("no answer from host (timeout)"); the host drops a peer it has not accepted after
+  10 s. There is no "unstable" state. `coop status` prints per peer `rtt`, `last` (ms since the
+  last packet), `sent`, `recv`, `acked`, `resend` and `pending` (reliable messages not acked
+  yet), not a loss figure.
+* The first packet of a connection has seq 1 (BUG-0030): a peer that has received nothing writes
+  ack 0 with no ack bits, which acknowledges nothing (with a first packet of seq 0 it acknowledged
+  the host's lost `WELCOME`, and the join timed out).
 
 ### Measured over netem (2026-10-23, tribe save of 3.8 MB, `coop_rejoin_net.py`, lane 2)
 
@@ -319,3 +509,505 @@ The existing PlayerState and adventure/captain resource bundle formats remain
 unchanged. Pause pose admission retains health/identity fields and sender-time
 ordering while rejecting spatial changes during the hold; interpolation resets
 preserve the separate authoritative teleport-generation fence.
+
+## Messages from other players (2026-10-27, fix/w1-net)
+<a id="netcode-untrusted"></a>
+
+Every handler treats a message from another player as untrusted: it reads the whole message and
+checks it (`r.ok()` after the last field, counts and indices against what this machine has, sizes
+against the buffer they describe, numbers finite and in range, player ids against the session)
+before it changes anything, and a snapshot chunk that does not parse does not count for its cycle.
+A message is used and passed on only when it fits the player it came from. Shared checks: `mods/coop/net/validate.h` (unit tests
+`tests/validate_tests.cpp`); in game: `coop_net_robust.py`
+([06-testing](06-testing.md#testing-net-robust)).
+
+## Big messages, late states, clocks and ids (2026-10-28, fix/w2-net)
+<a id="netcode-w2"></a>
+
+* **Reliable messages above one packet are split** (BUG-0034). A reliable payload fits a packet up
+  to 1163 bytes (1200 minus the 31-byte header and 6 bytes of message header). A bigger one is cut
+  into pieces of that size by `Connection::send_reliable`, each its own reliable message with flag
+  bit 2 ("more pieces follow") on all but the last; the receiver joins them in order (reliable
+  delivery is ordered) and delivers one message. Limit `kMaxReliable` = 1 MB per message (a sender
+  refuses more, a receiver drops what goes past it). Before, such a message was never sent, blocked
+  every reliable message after it and made every flush send a full burst of empty packets (5000
+  packets/s on a LAN). Old peers (protocol 7, no change of `kProtoVersion`) deliver the pieces as
+  separate messages, which their parsers reject; they stalled on such a message anyway.
+* **A guest ignores the state of a player not in its roster** (BUG-0109). The host relays a guest's
+  state unreliably behind the frame's snapshot chunks, so the last state of a leaving guest could
+  arrive after the reliable `PLAYER_LEAVE` and made a ghost partner (in Space a "partner" that
+  disabled instead of killed and repaired the ship). `player_join` also drops an old entry of the
+  id (its puppet, its snapshot buffer).
+* **Clock offset over a window** (BUG-0133, `net::ClockOffset` in interp.h): local time minus sender
+  time of the fastest snapshots, the minimum of 1 s buckets over the last 3 s. A faster snapshot is
+  taken at once; a higher minimum (the latency rose) is followed at 0.25 s per second, so the render
+  clock slows down and never jumps back. After +300 ms of latency puppets and NPC proxies
+  interpolate again after ~3.4 s (before: 50 s of 20 Hz steps).
+* **Ship and vehicle snapshots carry the host's time** (BUG-0122): a u32 `now_ms()` after the last
+  entry of each `MSG_UFO_STATE` / `MSG_CIV_STATE` chunk (`net::snapshot_time` finds it by the entry
+  size; older guests ignore it, older hosts do not send it and the guest falls back to the arrival
+  time). `VelocityEstimate::update(p, now, sender_s)` divides by the host's interval and ages the
+  snapshot in host time mapped by a `ClockOffset`. One packet 75 ms late: 0.1 units of error at
+  100 u/s (before 22).
+* **Net ids of host objects** (BUG-0154): `net::alloc_id` (net/ids.h) skips ids in use and 0, for
+  ships (squadron.cpp), civ vehicles (civ.cpp, both places) and tribe members (tribe.cpp).
+* **A player's creations leave with the player** (BUG-0076): `creations::on_player_leave` forgets the
+  owner's bundles (host store, received pieces, applied keys), so the next player of the id is shown
+  with its own creature or the world's species, and later joiners do not get the old one.
+* Fix switches (tests): `coop.fix net.big_reliable|net.state_roster|net.offset_window|net.sender_time|core.id_reuse|core.creations_leave off|on`;
+  unit tests: `net_tests --nofix` runs the wave 2 cases on the code before the fixes (they fail).
+
+## Decoder fuzzing and the transport seam (2026-10-28, fix/w4-census)
+<a id="netcode-fuzzing"></a>
+
+`tests/fuzz_decoders.cpp` runs in `make test` (AddressSanitizer + UBSan, fixed seeds, about 3 s;
+compiling it takes longer than running it). It feeds everything portable that parses bytes from
+another player or from the internet:
+
+* every `protocol.h` struct and the MSG_NPC_STATE batch: write/read round trip, every strict prefix
+  rejected, 6000 mutations each (bit flips, interesting bytes, truncation, insertion, deletion,
+  0xFFFF lengths); an accepted mutation must encode and decode to itself;
+* `read_lobby` (both `fix` modes), `chunk_add` (MSG_CREATION pieces: shuffled, repeated, forged
+  offsets and totals), `snapshot_time`, the UTF-8 helpers and `str8`/`str16`;
+* RefPack, DBPF (`Package`, `index_info`/`parse_index`, `find_keys`, `metadata_names`, header
+  fields aimed at), the update pack and the release JSON / SHA256SUMS parsers;
+* random and mutated datagrams into `Connection::on_packet` and into a host and a guest `Session`.
+
+The Session runs over `Session::set_transport()` (`net/transport.h`: the UDP socket by default, a
+queue in the test) with `Session::clock` (nullptr: `now_ms()`), so no socket and no real time is
+involved. `fuzz_decoders --seed S --iters N` runs longer; built with `-DFUZZ_LIBFUZZER
+-fsanitize=fuzzer,address` (clang) the same file is a libFuzzer target (first byte picks the decoder).
+Checked that it catches real mistakes: removing the `o + 3 > n` check of the RefPack 3-byte code or
+the `r.left() < len` check of `on_packet` makes it fail with a heap-buffer-overflow.
+
+Not covered: the `on_message` handlers of the Tribe, Civ, Cell and NPC modules read their payloads next to game
+calls and do not build without the game; their common checks live in `validate.h` (tests/validate_tests.cpp). The
+Space features and the shared pools decode into portable structs since 0.7.15 (fuzzed: see
+[wire structs](#netcode-wire-structs)).
+
+Found on the way: `Reader::raw(nullptr, 0)` (an empty payload read into an empty vector's `data()`)
+passed nullptr to memcpy (undefined behaviour, harmless on the compilers we use): it skips the copy
+now. A RefPack stream that lacks only its final bare stop code (0xFC) is accepted, because the
+decoder stops at the declared size; that is intended (the data is complete).
+
+## HELLO / WELCOME caps and the rejoin token (2026-10-28, fix/w5-net)
+<a id="netcode-hello-caps"></a>
+
+Protocol 7 stays. HELLO (`proto u16, build u32, name str8`) and WELCOME (`your_id u8, world u32,
+players`) get an extension appended after their 0.7.2 fields, which every older reader ignores
+(their `read()` never checked for trailing bytes): `u32 caps`, then the payload of each set bit in
+ascending bit order (BUG-0219).
+
+| bit | name | payload | meaning |
+| --- | --- | --- | --- |
+| 0 | `CAP_SPLIT` | none | joins split reliable messages (the BUG-0034 receiver) |
+| 1 | `CAP_TOKEN` | `u64` | HELLO only: the rejoin token (BUG-0235); never in WELCOME or anything relayed |
+| 2 | `CAP_VERSION` | HELLO: `str8`; WELCOME: `str8` + `u8 n` + n x (`u8 id`, `str8`) | the versions (`coop X, SporeKit Y, <game build> <exe hash 8>`) of the sender and, in WELCOME, of the players the host knows (0.7.4, feat/w7-trace; see #netcode-versions-masks) |
+
+* A message without the extension reads as caps 0: 0.7.2.x, 0.7.3.0 and fakepeer. A short payload
+  means "absent", not a failed read. Unknown bits and trailing bytes are ignored. A new field takes
+  the next bit and appends its payload after those of the lower bits; never insert a field before
+  the extension. `tests/fuzz_decoders.cpp` checks both shapes (`hello_welcome_ext`, and a prefix
+  that still holds the base fields must be read).
+* `Connection::peer_split` (false until the handshake) comes from the guest's HELLO on the host and
+  from WELCOME on the guest. A reliable message above one packet (`Connection::kMaxSingle` = 1163
+  bytes of payload) goes out in pieces only to such a peer; to an older one it is not sent and
+  counted (`too_big_old`, a line `older peer N: too_big_old=.. frag_lost=..` after the session
+  block of `coop.status`); pieces from a peer that never announced splitting are dropped
+  (`frag_lost`). Chat lines to an older peer are cut between characters to `kMaxSingle - 3` bytes,
+  per peer (the host's relay too). One notice names an older player at each join.
+* What a mixed session loses (0.7.2.x / 0.7.3.0 with a newer version): chat lines above about 1160
+  bytes arrive cut, a Creature species table of 42 or more records does not reach the older player.
+  0.7.3.0 is "older" here too (it has no caps), although it could join pieces.
+* Rejoin token: `mods/coop/rejoin.cpp`, `<AppData>\SporeCoop\rejoin-<instance>-<slot>.txt` in the
+  profile's AppData (lanes: in the lane's bottle), the first slot the game can open exclusively, kept
+  open for the process. A join sends the token in the file (a crash left it) or writes a fresh one;
+  a clean leave, the session end and the unload empty it. The host's HELLO handler drops an accepted
+  entry with the same token that has been silent for 2 s before the full check and before WELCOME
+  (PLAYER_LEAVE(old) goes out before PLAYER_JOIN(new)). Without a token nobody is replaced.
+  Switches: `coop.fix net.peer_caps`, `net.rejoin_token` (off = the 0.7.3.0 name rule of BUG-0209),
+  `core.rejoin_name` (off = never replace), `pool.meals_trim`. `net_tests --off <peer_caps|rejoin_token|addr_label|update_paths>`
+  turns one switch off.
+
+## Peer versions and masked addresses in logs (2026-10-29, feat/w7-trace)
+<a id="netcode-versions-masks"></a>
+
+* `CAP_VERSION` (bit 2 of the HELLO / WELCOME caps): `Session::version` goes out in HELLO; the host
+  keeps it per peer (`Peer::version`, `PlayerInfo::version`), sends its own and the known players'
+  in WELCOME and appends the newcomer's to PLAYER_JOIN (`str8` after the 0.7.2 fields: older
+  readers ignore it; an empty or missing one is "unknown (pre-0.7.4)"). A payload that does not
+  read leaves the message readable without versions. Both sides log every partner's versions on a
+  join (`net: player N 'X' joined from ...: coop ...`, `session: ...`), `coop.status` lists them
+  (`version N 'X': ...`), the trace repeats them once a minute; a different SporeCoop or SporeKit
+  version is a warning line, a different SporeCoop version also a notice in the chat. The exe build
+  itself must match already (REJ_BUILD).
+* Addresses: `Endpoint::masked()` / `net::mask_ip` (net/ipmask.h) for every log line, `coop.status`
+  and the chat log that goes into problem reports: loopback as is, LAN / VPN ranges by class
+  (`192.168.x.x:47810`, `10.x.x.x`, `172.N.x.x`, `100.64.x.x (VPN/CGNAT)`), a public address as
+  `public #ABCD` (16 bits of FNV-1a: tells players apart, not where they are). A host name looked
+  up for a join is logged by its length only. The full address stays in the session (and in the
+  co-op window, which the player sees). Tests: `net_tests` `test_peer_versions`, `test_ip_mask`;
+  `fuzz_decoders` PLAYER_JOIN with and without the version.
+
+## Support diagnostics: MSG_DIAG (2026-10-29, feat/w7-diag)
+<a id="netcode-diag"></a>
+
+* `MSG_DIAG = 60`, `u8 kind` + payload (`net/diagmsg.h`): clock request / answer (guest <-> host,
+  unreliable; the guest keeps the answer with the shortest round trip of the last 12), bug mark
+  (any -> host -> all, reliable, `u8 origin, f64 session time, str8 name, str8 text`; the host sets
+  origin and name), digest request / digest / result of the sync self-check (reliable; a Cell
+  digest is ~6 KB: split for peers with `CAP_SPLIT`). An older SporeCoop drops the unknown type
+  (host: `cb.custom` falls through; guest: `world::on_message` ignores it): no protocol bump.
+* `ConnStats` gained `bytes_sent`, `bytes_recv`, `lost` (a sent packet that an ack 32 to 128
+  packets later does not have; further back the ack bits say nothing, so a bulk transfer that
+  outruns them counts nothing) and the round-trip samples of a window (`rtt_min/max/sum/n`,
+  `take_window()`). `Session::conn_to(id)` gives the connection for the statistics.
+
+## Local addresses and Wine's nsi (2026-10-29, fix/w8-adapters)
+<a id="netcode-wine-nsi"></a>
+
+What the co-op window's "Friends connect to" line and the LAN scan's subnet broadcast targets need
+is the PC's IPv4 addresses with their prefix lengths: `GetAdaptersAddresses(AF_INET)`
+(`mods/coop/adapters.cpp`, BUG-0286).
+
+* ✔ Wine 10.0 (Bottles, lab lanes): two games of **one Wine prefix** that call
+  `GetAdaptersAddresses` at the same moment crash. `coop.adapters stress 300` on both games of a
+  lane at once (old synchronous path) crashed one within seconds (lab run 20261029-193811: heap
+  fault in ntdll on the main thread); a worker lookup 4 ms after start-up, when host and guest
+  started together, faulted in ucrtbase memcpy in 3 of 3 cold starts of the creature fixture.
+* ✔ Mechanism (Wine 10.0 source, `dlls/nsi/nsi.c` `NsiEnumerateObjectsAllParametersEx`): after
+  the `IOCTL_NSIPROXY_WINE_ENUMERATE_ALL` call it takes `params->count = *(DWORD *)out` and
+  copies `count * size` bytes for each table without checking it against the count it asked for.
+  When the reply's count is garbage (observed: 0xC8F00180 bytes for one table), memcpy runs off the
+  malloc'd `out` buffer: a fault on the first read when ucrt copies backwards (destination above
+  the source, the player crash: nothing written), or a heap overwrite first when it copies forwards
+  (the later heap faults). Why the reply is garbage when two processes ask together is not known
+  (? the shared nsiproxy.sys in the prefix's winedevice.exe).
+* ✔ Negative: two threads of **one** game looking up together (GetAdaptersAddresses AF_INET and
+  AF_UNSPEC, GetAdaptersInfo, gethostbyname of the own host name), 1500 times: no fault. 1000
+  serial lookups in one game while sessions open and close: no fault.
+* ✔ A per-prefix named mutex (`Local\SporeCoop.nsi`) around each lookup was **not enough**: with
+  the two games taking turns, `coop_adapters.py` still lost a game twice in a row (lab runs
+  20261029-194630: a fault in d3d9.dll on a render thread, no report; 20261029-195441: a silent
+  exit), so the garbage reply is not only about two requests at the same instant. Not analysed
+  further.
+* The mod's rule (`mods/coop/adapters.cpp`): never on the main thread, never at start, at most
+  every 5 min when the window or the LAN scan asks. **Under Wine** (ntdll exports
+  `wine_get_version`) it never calls iphlpapi: the address a UDP socket connected to 8.8.8.8 /
+  192.168.255.254 / 10.255.255.254 would send from (`connect` on UDP sends nothing) plus
+  `getaddrinfo(gethostname())` (Wine 10.0 resolves that on the Unix side; only `gethostbyname` of
+  the own name goes through `GetAdaptersInfo`). No prefix length there: a private address gets a
+  /24 subnet broadcast. On Windows `GetAdaptersAddresses` with the `ERROR_BUFFER_OVERFLOW` retry,
+  under the mutex. Both run under a fault guard (a vectored handler sends the faulting worker to
+  a landing function that releases the mutex and ends the thread; the list keeps its last value
+  and no lookup runs again in that game). Other nsi users in the game are not covered: Wine's
+  own ws2_32 (`gethostbyname` of the own host name, `SIO_ROUTING_INTERFACE_QUERY`), winhttp's
+  proxy detection.
+
+## Per-player state registry (2026-11-07, fix/w46-k2a-state)
+<a id="netcode-player-life"></a>
+
+Player ids are reused within a session (net/session.cpp `alloc_id`: the lowest free id), so the next player to join
+gets a departed player's id (BUG-0422 class). Every module that keeps a map keyed by a player id registers it in
+`mods/coop/player_life.h` with `PLAYER_STATE("module", forget, held)` next to the map; coop.cpp calls
+`player_life::forget_all(id)` on every leave and every join (`core.player_forget`). `coop.players held <id>` lists what
+the modules still hold (tests: coop_player_forget). Registered in 0.7.11 (BUG-0706): spacecoop (last star, down
+timer: Jump-to went to the departed player's star), space_rivalry (budget, merge credit), space_map (rosters,
+"seen" players), space_finale, tribe (chief, pincer hits), civ (siege hits), fields (values last sent to a guest),
+creations (designs answered to a guest), realign, effects. Not registered on purpose: diag_sync's guest checks (its
+rejoin grace keeps them), player_rules' carried objects (released by their own rest rule).
+
+## World effects carry their height over the sender's ground (2026-11-07, fix/w46-k2a-state)
+<a id="netcode-effect-agl"></a>
+
+MSG_EFFECT pool 5 (a world effect: hit impacts, splashes, the sea monster) appends an f32 after the 0x44-byte
+transform: the effect's height over the sender's ground (cPlanetModel::GetHeightAt; kNoAgl when unknown or more than
+30 m off). The receiver (and the host's relay to guest 3+) puts the effect at that height over its own ground, the
+rule every remote body follows (BUG-0425); older SporeCoop stops reading before the trailer. `effects.ground`
+(BUG-0608). Test: coop_effect_ground (an effect sent as from a host whose ground lies 5 m higher).
+
+## Input from the network: names, discovery, half-open peers, restarts (2026-11-12, fix/w48-net)
+<a id="netcode-network-input"></a>
+
+Package N1 of 0.7.13. Everything below is portable code in `mods/coop/net/` with a net_tests case that fails with its
+switch off (`net_tests --off <name>`, and with `--nofix`).
+
+* **Names** (BUG-0774, `net.name_clean`): every name that comes from another machine is cut to one clean line by
+  `utf8::clean_text` / `utf8::net_name` (net/utf8.h): no C0 / C1 control characters, DEL, U+2028 / U+2029, no bytes
+  that are not UTF-8 (stray continuation bytes, cut or overlong sequences, surrogates), at most 24 code points for a
+  name. Where: the host on a HELLO (before the rejoin, late-join and unique-name rules compare it), the guest on
+  WELCOME (the roster, the host's name) and PLAYER_JOIN, the LAN list on a DiscoverReply (name, info line cut to 64),
+  world.cpp on a WorldOffer's planet name (it goes into the co-op slot's marker file, `sporecoop.txt`) and on the log
+  line of a refused file name. Peer version texts are cut to 120. An empty result is "guest<id>" / "host".
+  Compatible with 0.7.12: its local names are already clean (`utf8::player_name`), so both sides agree.
+* **LAN discovery** (BUG-0776, `net.lan_only_disc`): the host answers a discovery query only from loopback, the
+  private ranges, link-local, 100.64/10 or a subnet of one of its own adapters (`Session::lan_broadcasts`, set by
+  coop.cpp from `adapters::list()`: Radmin VPN 26/8, Hamachi 25/8), and at most `kDiscoverPerSecond` (20) times a
+  second over all senders. `net::local_source` (net/ipmask.h) takes the subnet of a broadcast address as its
+  trailing one bits (at most one bit wider than the real mask). `coop.status` on the host: a line
+  `refused: discovery=N (answered M) ...` once something was refused. A 0.7.12 guest on the LAN still finds the
+  host; a scan over the internet to a forwarded port gets no answer (direct join by address is unchanged).
+* **Half-open peers** (BUG-0778, `net.halfopen_cap`): a datagram from an endpoint without a peer (or with another
+  connection id than its peer's) opens a peer only when it carries a reliable HELLO that reads
+  (`Session::carries_hello`); else it is dropped (`no_hello=` in the line above) and replaces nobody. A peer that is
+  still not accepted after its HELLO was handled is a refused one waiting for its REJECT: when its address holds
+  `kHalfOpenPerIp` (4) of them or the table holds `kMaxPeers` (16), the oldest goes (`half_open_evicted=`), not
+  retired, so that game gets its REJECT again on its next HELLO. A 0.7.12 guest's first datagram is its HELLO, so it
+  joins as before.
+* **A new session inside a delivery callback** (BUG-0861, `net.restart_gen`): `host()` / `join()` from a callback
+  (cb.connected, cb.player_leave, cb.custom ...) used to defer the old session's leave to the end of the delivery,
+  which then closed the new session. Now `restart_leave()` ends the old session at once (BYE, transport closed) but
+  keeps its peers in `zombies_` until `Connection::on_packet` has returned (BUG-0029: that Connection is still
+  running), a pending leave and its cb.disconnected of the old session are dropped (logged), and a generation counter
+  (`gen_`, bumped by host, join and every end of a session) stops the rest of that packet and that frame's update
+  for the old session. A plain `leave()` in a callback is deferred as before.
+
+## Join rules and input checks of 0.7.14 N2 (2026-11-13, fix/w49-net)
+<a id="netcode-n2-join-input"></a>
+
+* **Coming back after the start** (BUG-1001, `net.join_seen`; the owner's rule, plan 0.7.14 decision 7): with
+  all.late_join off (`Session::join_closed`) the host admits after the start only a player it had admitted before.
+  With the rejoin token rule on (the default) and a token in the HELLO: only by that token (`seen_tokens_`, every token
+  admitted since `host()`, and no live entry holds it now); a crash rejoin replaces its silent entry by token as before
+  (BUG-0235). Without a token (an older SporeCoop, or `net.rejoin_token` off): by the HELLO name, only when nobody of
+  that name is in the session and the name dropped within `kRejoinNameMs` (10 min). A name alone never passes, and
+  the player limit counts every live entry (a silent one of the same name only when the name rule of
+  `net.rejoin_token off` retires it in the same HELLO). Names are compared in one form: `Peer::hello_name`, the cleaned
+  HELLO name before " 2" / "guest<id>".
+* **The token on a leave** (BUG-1001): `rejoin::clear(true)` on a leave and on a lost session keeps the token in
+  memory for the same host address string and the same name (up to 8 such pairs; never in the file, never sent to
+  another host or under another name), so a player who left comes back as itself while late join is off. Another name
+  from the same game is a new player. Before, every leave emptied the token (BUG-0235) and the name rule let anybody
+  of that name back.
+  CORRECTION (2026-11-15, fix/w51-space2): "never in the file" holds for the slot file only. Since BUG-1135
+  (`net.rejoin_disk`) the kept token also goes into `rejoin-<instance>-<slot>-kept.txt` beside the slot, so a restart
+  keeps it: see [netcode-rejoin-restart](#netcode-rejoin-restart).
+* **A rejoin through the same address and port without a token** waits until the old connection has been silent for
+  2 s (about 2 s longer than before; the joining game sends its HELLO again).
+* **A WELCOME over one packet** (BUG-1005, `net.welcome_split`): a joining guest whose HELLO announced CAP_SPLIT joins
+  the pieces of the host's reply (`peer_split` set in `start_hello`, the WELCOME then sets the host's real caps).
+  Reachable with long names (24 emoji are 96 bytes) and long version texts (255 bytes each) in a 4-player roster
+  (about 1430 bytes against the 1163-byte piece). An older host never splits.
+* **A datagram too big for the buffer** (BUG-1007, `net.recv_skip_big`): `UdpSocket::recv_from` returns -2
+  (`Session::kRecvSkipped`) for WSAEMSGSIZE (Windows / Wine) and, natively, for a datagram cut by MSG_TRUNC; the read
+  loops of `Session::update` and `Discovery::update` go on to the next datagram (`datagrams skipped` in coop.status).
+  The discovery buffer is 2048 bytes (was 512, the reply format's maximum is 526). Under Wine the WSAEMSGSIZE mapping
+  is inferred, not checked.
+* **DBPF index flag 4** (BUG-1012, `net.dbbf_bounds`, unit only): the skipped field must lie inside the index.
+* **MSG_SPACE directions** (`space.dir_table`): `net::space_dir` (net/validate.h) is the one table of every MSG_SPACE
+  kind's direction (Host, Guest, Any), used by `space_origin_ok`. A new kind goes into the table: validate_tests reads
+  every `enum Kind` of the space sources and fails for a kind without a direction.
+* **World effect scale** (BUG-1048, `effects.scale_check`): a received pool-5 effect needs 0 < scale <= 1000 (the
+  sender's range, `copy_transform`), `net::effect_xf_ok`.
+
+## Per-guest limits of the host and coop.kick (2026-11-15, fix/w51-net)
+<a id="netcode-limits"></a>
+
+Plan 0.7.15 A11 (owner decisions 8 and 9: a console kick, robustness rather than anti-cheat). The host keeps two
+limits per joined guest in `Session::limits` (every `update`); normal play stays far below both. A guest over one is
+dropped with a log line (`player N (name) dropped: ...`) and a REJECT that tells it why; its game shows
+"disconnected: rejected: <text>" and ends the session, as for every refused join.
+
+* **Queued reliable bytes** (`net.queue_cap`, `Session::queue_cap`, default `kQueueCap` = 32 MB): the payload bytes of
+  the reliable messages the host has queued for that guest and the guest has not acknowledged
+  (`Connection::pending_bytes`). The world transfer is paced by its own window and counts.
+* **What one guest's messages make the host queue** (`net.relay_budget`, a token bucket: `relay_rate` = 2 MB/s,
+  `relay_burst` = 32 MB): every reliable message the host queues while it handles a joined guest's message (a relay to
+  the other guests, an answer) is charged to that guest (`Session::charge`, set around `handle_msg`). A guest's own
+  join (WELCOME, the join callbacks) is not charged.
+* **Measured peaks** (`coop.status` line `limits:`, sporekit.log `net limits: new peak ...` at each doubling from
+  64 KB), 2026-11-15 on lanes 6 / 7 (out/lab/20261115-*): the reliable backlog of one guest peaks when it joins
+  (the world transfer): 560 KB in Creature (`kick`), 315 KB in Space (`play_space --quick`), 154 KB in Civ
+  (`play_civ --quick`), 152 KB with three players in Space (`party_space_names`). What one guest's messages made the
+  host queue stayed under 64 KB in every 1 s of these runs (10 bytes in `kick`), with three players too; a guest sent
+  at most 75 KB in 1 s. The limits are about 60x (backlog) and over 30x (2 MB/s, 32 MB at once) above that. Not
+  measured: four players, a session report (its pieces go to the host and are not relayed), a slow internet link.
+* **`coop.kick <id | name>`** (host, console only; net/kick.h): drops the guest the same way with "the host removed you
+  from the session". Not a ban: the player may join again under the join rules (late join, BUG-1001).
+* **Compatibility**: no message changes. The REJECT to a joined guest has the new reason value 5 (`REJ_KICKED`); a
+  0.7.14 guest reads any REJECT the same way (it shows the text and leaves). The REJECT goes out unreliably, three
+  times, before the peer is removed (its Connection goes with it).
+* Twins: net_tests `test_queue_cap` (`--off queue_cap`: the queue of a guest that stopped reading grows past the cap),
+  `test_relay_budget` (`--off relay_budget`: the sender stays), `test_kick`; lab test `kick`.
+
+## Wire structs of the Space features and the shared pools (2026-11-15, feat/w51-space)
+<a id="netcode-wire-structs"></a>
+
+C6 of docs/plan-0.7.15.md (audit NET-4, NET-10, BUG-1133). Every MSG_SPACE kind (49 kinds in 1..87) and the shared
+pools' MSG_RES / MSG_RES_ADD have a payload struct in a portable header, one per feature, with the same
+`write(Writer&)` / `bool read(Reader&)` shape as `protocol.h`:
+
+| Header | Kinds | Structs |
+|---|---|---|
+| `wire/space_core.h` (spacecoop.cpp) | 1..9 | Down, Raid, Mission, Terra / TerraRec, Gift (5, 6), Sculpt, Colour |
+| `wire/space_map.h` | 10..13 | Roster (one part; `head_ok` for the parts bookkeeping of a cut part), RosterReq, Kept, KeptDone |
+| `wire/space_contracts.h` | 20..22 | State (the deadline as seconds from now), Accept, Result |
+| `wire/space_diplomacy.h` | 30..34 | Event, State, Snap (100 events per empire), Ask, Contact |
+| `wire/space_finale.h` | 40..42 | State, Wait, Reached |
+| `wire/space_rivalry.h` | 50..57 | State, Req, Event, Hit, Money, MergeFix, Ask, Set |
+| `wire/space_allies.h` | 60, 61 | Raids (50 at most), Defended |
+| `wire/space_trade.h` | 70..79 | Head {to, id}, Tool, ToolAck, Sell, SellAck, Offer, OfferAck, OfferCancel, InvMsg, InvKept, InvDone |
+| `wire/space_planets.h` | 80, 81 | Spice, SpiceTaken (48 colonies, 16 values: the old cut, quirk included) |
+| `wire/space_badges.h` | 85..87 | Table, Kept, Done |
+| `wire/shared_res.h` (shared.cpp) | MSG_RES, MSG_RES_ADD | Res (optional acks, then optional causes), ResAdd (optional seq) |
+
+Rules (`wire/common.h`): the kind numbers stay in each feature's `enum Kind` (validate_tests reads them there);
+`write` gives the bytes of the hand-written writer it replaced; `read` returns false for what the old parse rejected as
+a whole (cut, a count over its limit, a value no peer sends) and holds no switch-dependent check (those stay in the
+handler: `space.money_range`, `space.gift_refund`); an optional trailing field of an older peer is a `has_x` flag read
+from `r.left()`; trailing bytes are left alone. Handlers decode, check against local state, apply. Inside
+`mods/coop/wire/` includes are relative ("common.h", "../net/buffer.h"): the MinGW build has no `-Imods/coop`.
+
+Proofs: `tests/wire_tests.cpp` (in `make test`, unit-cpp): per kind a fixed value is written and compared with a
+pinned hex string and with the old writer's calls copied verbatim (59 shapes, `wire_tests: N message kinds, ALL OK`),
+read back with nothing left; `rejects()` / `accepts()` pin every refusal and every lenient trailing field.
+`tests/fuzz_decoders.cpp` `fuzz_wire` runs every struct through `fuzz_struct` (round trip, every strict prefix below
+the base rejected, mutations) and lists them in `kWireDecoders` for the libFuzzer build (first byte 12, the second
+picks the struct). MSG_FIELDS (`fields_wire.h`) is in it too (`FieldsPacket`).
+
+Behaviour changes (malformed input only; a SporeCoop peer never sends these):
+
+* K_KEPT_DONE (13) cut inside its list: not used (before: the planets read before the cut were dropped and the
+  restore counted as answered; now the host keeps waiting and sends K_KEPT again after 10 s).
+* K_MERGE_FIX (55) with -2^31: refused (before: `std::abs` of it overflowed and in practice let it through, the host
+  added -2^31 to the merged money).
+* Everything else is refused exactly where the old parse refused it; side effects that ran before a refusal stay
+  (space_finale's peer entry of a cut K_STATE, shared.cpp's ledger steps before a cut ack list, a cut roster part
+  dropping the parts received so far).
+
+libFuzzer (NET-10): `make fuzz [FUZZ_SECONDS=60]` builds the same file with `-DFUZZ_LIBFUZZER
+-fsanitize=fuzzer,address,undefined` (clang) and runs it over `build/host/fuzz-corpus` (kept between local runs);
+a finding is a `crash-*` file in build/host, replayed by `build/host/fuzz_lib <file>`. CI
+(`.github/workflows/fuzz.yml`, actions pinned by SHA, checked by tools/ci_lint.py) runs it 2 minutes on every push and
+pull request and 20 minutes weekly and on demand, and uploads the input of a failure.
+
+## Message manifest and the host's direction gate (2026-11-15, feat/w51-manifest)
+<a id="netcode-manifest"></a>
+
+B3 of 0.7.15 (BUG-1136, NET-3 / CORE-7 of the audit). Direction, class, owner and route of a message type used to live
+in five places (host_world.h `msg_class`, validate.h `space_dir`, the hand-written `if` chain of the session's
+custom-message callback with ranges such as `MSG_UFO_STATE..MSG_UFO_DAMAGE`, the handlers' own role checks, and the
+docs table). Now one X-macro file lists every type once:
+
+* `mods/coop/net/messages.def`: `MSG(id, NAME, chan, dir, cls, route, recv, family, "what")` and the message families
+  `FAMILY(name, id, rev, minor, stages, "title", "wire files")`. `enum MsgType` (protocol.h) is generated from it (a
+  duplicate name or id does not build), and so are `host_world::msg_class`, `net::msg_dir`, `net::dispatch_route` and
+  the family table (`net/manifest.h`).
+* `mods/coop/net/space_kinds.def`: `FEATURE(name, lo, hi)` and `KIND(id, feature, NAME, dir)` of every `MSG_SPACE`
+  kind; `net::space_dir` (BUG-1041's table) is generated from it. The kinds stay in each feature's `enum Kind`
+  (another branch, C6, changes the Space payload code at the same time): `tests/validate_tests.cpp` checks that every
+  enum value is a row with the same name and feature, that every row is in its feature's enum, that the ranges are
+  disjoint, and that each feature registers its range with `spaceext::add`.
+* Golden tests (`tests/manifest_golden.h`: 0.7.14's enum values, `msg_class`, `space_dir` and the dispatch chain,
+  verbatim): the generated tables equal them for every value 0..255 and both roles. The world gate (a guest elsewhere
+  drops the host's world state) moved before every route; the test checks that no route the 0.7.14 chain tested
+  before the gate takes a type the gate can drop, so the order makes no difference.
+* `tools/msg_manifest.py check` (`make test`): the tables of 4.3 are the generated ones (`msg_manifest.py docs`
+  writes them), and every family's wire lock holds (see [compatibility](#netcode-compat)).
+* A new type: a row in messages.def with the next free id (55 and 58 were never used), its handler in the route's
+  case of session_glue.cpp, `tools/msg_manifest.py docs`, a minor bump of its family and `msg_manifest.py lock`.
+
+The host's direction gate (`coop.fix net.dir_gate`, `net::dir_gate_drops`): a message whose type only the host sends
+(`dir Host`: WELCOME, REJECT, PLAYER_JOIN / LEAVE, PONG, NPC_STATE / SPAWN / DESPAWN / ANIM, the world transfer,
+WORLD_TIME, DNA, RES, LOBBY, the Tribe / Cell / Civ snapshots, CIV_BUILD / ALARM, UFO_STATE / DAMAGE, VOTE, SPECIES,
+FIELDS, WSTATE, MIRROR_FX, SETTINGS, HOST_WORLD) is dropped in `net::Session::handle_msg` when a guest sends it, before
+any handler, and counted: `coop.status` line `manifest: dir_drops=N`, a log line for the first five and every 100th.
+A sender inventory of every type (each send site and the role it runs in) found no host-only type the host acted on
+when a guest sent it: each handler ignored them by its own role check or by falling to the end of the chain. The gate
+makes that one rule, so a new handler cannot forget it. Types this build does not know still pass (a newer guest's
+addition; nothing handles them). Two types turned out to be sent by both sides and are `Any`: `CIV_CMD` (the host asks
+a city owner for a specialty, BUG-0982, and sends Space planner buildings, BUG-0884) and `DAMAGE` (a guest's friendly
+fire, F3); `CELL_HIT` is `Any` for the test command `coop.pool hurt`. Tests: `net_tests` `test_dir_gate` (FAILS with
+`--off dir_gate`), `validate_tests` `test_manifest`, the lab test `compat` (a crafted message through `coop.manifest
+send`). `coop.manifest types` prints the table of the running build.
+
+## Compatibility between versions: message family revisions (2026-11-15, feat/w51-manifest)
+<a id="netcode-compat"></a>
+
+B6 of 0.7.15 (BUG-1137, owner decision 7, NET-6). Before 0.7.15 the host refused a guest only for another protocol
+number (`kProtoVersion`, 7 since 0.6: REJ_VERSION "protocol version mismatch") or another exe build (REJ_BUILD); any
+other SporeCoop version of protocol 7 joined; both games logged "versions differ" and showed "X has another SporeCoop
+version (V): update both games to the same one" (a peer before 0.7.4, without caps: "X has an older SporeCoop: update
+both games to the latest"). Nothing told the two versions apart where their messages really differ.
+
+Since 0.7.15:
+
+* Every message family of messages.def has a revision `rev.minor`. `rev` is bumped when older versions cannot read
+  the family's messages any more, `minor` for a change they still read. HELLO and WELCOME carry the sender's list
+  (`CAP_FAMILIES`, bit 3: `u8 n, n x {u8 family, u16 rev, u16 minor}` after CAP_VERSION's payload). Every version
+  since 0.7.4 reads past it (unknown caps bits and trailing bytes are ignored: `net_tests test_families_wire` reads
+  0.7.15's HELLO with 0.7.14's `Hello::read`, verbatim); 0.7.2 / 0.7.3.0 ignore the whole extension.
+* A peer without the list (every version before 0.7.15) counts as rev 1 minor 0 of the ten families 0.7.15 started
+  with. A family one side does not know is no conflict (its messages are new types the other side ignores).
+* The host refuses a guest whose `rev` differs in a family the host's current stage uses (`stages`: always for
+  session, world transfer and creations; Creature for creature; Creature / Tribe / Civilization for npc; and so on;
+  an adventure counts as Creature) with REJ_VERSION and a text that names both versions: "Alice plays SporeCoop
+  0.7.16; you have SporeCoop 0.7.15: the Creature messages of these versions do not fit together (revision 2 there,
+  1 here). Update both games to the same version to play together". Every 0.7.x guest shows a REJECT's text. The host
+  sees "Bob (SporeCoop 0.7.15) was not let in: ...". A guest refuses an older host itself: an always-used family at
+  WELCOME, a stage family at the host's first state (an older host sends no list, so only a newer guest can tell).
+* Otherwise another version joins with a warning on both sides: "Bob plays SporeCoop 0.7.13; you have SporeCoop
+  0.7.15: some things may not match" (before 0.7.4: "an older SporeCoop (before 0.7.4)").
+* A later stage change into a family that differs (the host goes to Space, the guest's Space family has another rev)
+  ends nothing: both games get "... the Space messages of your versions do not fit together (revision 1 there, 2
+  here): playing Space together may not work" (the guest's as a NOTICE, which every 0.7.x shows).
+* Both versions and every player's revisions are in `coop.status` (`versions:` lines, also in each report's state)
+  and in the session report's SESSION.txt (the host's view of every player).
+* The lock: `mods/coop/net/messages.lock` holds each family's `rev minor hash`; the hash covers the family's rows
+  (id, name, channel, direction; for space also the kinds) and the code of its wire files without comments (session:
+  net/protocol.h). `make test` (`tools/msg_manifest.py check`) fails for a changed family whose `rev.minor` did not
+  change; bump it, then `msg_manifest.py lock`. A refactoring that keeps every byte (golden-byte tests) may take the
+  hash again without a bump: `msg_manifest.py lock --rebase FAMILY "reason"` (the reason stays in the lock file).
+  A release whose lock changed against the previous tag runs the mixed-version lab test (`mixed`) against that tag.
+* Switch: `coop.fix net.family_check off`: nobody is refused for a family (the 0.7.14 behaviour; the warning text
+  stays the new one). Tests: `net_tests test_family_check` (FAILS with `--off family_check`), `validate_tests
+  test_compat`, the lab test `compat` (a planted revision with `coop.manifest plant <family> <rev>`), and the
+  mixed-version test against v0.7.14 (`mixed_version_guest` / `_host` with `--old-tag v0.7.14`).
+
+## The token of a clean leave across a restart of the game (2026-11-15, fix/w51-space2)
+<a id="netcode-rejoin-restart"></a>
+
+BUG-1135. The host keeps a Space guest's colonies, cargo hold, badges and Rivals budget by the guest's rejoin token
+(BUG-1107, [space-kept-key](re/space.md#space-kept-key)). The token survived a crash (the slot file) and a clean
+leave inside the same process (memory, BUG-1001), but a clean leave followed by closing the game emptied both: the
+restarted game sent a fresh token and got nothing back (0.7.14 keyed by the name and did).
+
+* `rejoin::clear(true)` (a leave, a lost session) and `rejoin::shutdown(true)` (the game closed in a session) also keep
+  the token in `<AppData>\SporeCoop\rejoin-<instance>-<slot>-kept.txt`, the file of the slot this game holds
+  exclusively (another instance or another game of the same PC never reads it). Format (rejoin_kept.h, unit test
+  `test_rejoin_kept`): a header with a random 64-bit salt, then `<key> <token> <unix time>` lines; the key is a
+  salted FNV-1a + finaliser of (host address string, 0, name), so the file holds no readable address or name.
+* `rejoin::token_for_join(instance, host, name)`: the crash's slot token first, then the memory one (BUG-1001), then
+  the file's for exactly this address and name, else a fresh token. Entries expire after 24 h (or when the clock went
+  back) and the file keeps at most 16 (the oldest go).
+* What stays true: no stable id follows a player from host to host (a token is only sent to the address and under the
+  name it was kept for); another game under the same name gets a token of its own and nothing of the player
+  (BUG-1107, `space_kept_key`).
+* Switch `coop.fix net.rejoin_disk off`: memory only (a restart sends a fresh token). Lab: `space_badges_rejoin`
+  (it restarts the guest; FAIL with the switch off).
+
+## The Tribe members' animations get their own message type (2026-11-15, feat/w51-tribe)
+<a id="netcode-tribe-anim"></a>
+
+C7 of docs/plan-0.7.15.md (audit STG-5, BUG-1160). Until 0.7.14 the host sent the Tribe members' animations, holds,
+phases and tracks, their height in the air, the theme and party music and the game-over and pause waits (kinds 2-12,
+14-16, 20, 21) as sub-kinds of MSG_NPC_ANIM; npc.cpp passed them on to tribe.cpp through a whitelist, and every new
+kind needed an edit there. Since 0.7.15 they are `MSG_TRIBE_ANIM` (id 71, Host -> guests, class Module: tribe.cpp
+decides per kind whether it applies outside Tribe, `wire::tribe_anim::any_mode`: the party music's stop of BUG-0890
+and the waits), the tribe family at revision 1.1 (a minor bump: older versions ignore a type they do not know). The
+bytes after the type are the same as after MSG_NPC_ANIM's type (`u8 kind`, then the kind's payload;
+tests/wire_tests.cpp `test_tribe_anim` pins the waits, the air list and the holds against the old writers).
+
+Which type a guest gets (`wire::tribe_anim::type_for`, tests/tribe_tests.cpp `anim_type`): MSG_TRIBE_ANIM when its
+HELLO listed the tribe family at rev 1 minor >= 1, MSG_NPC_ANIM otherwise. So with a 0.7.14 peer:
+
+* a 0.7.15 host and a 0.7.14 guest: the guest sent no family list; it gets MSG_NPC_ANIM exactly as from a 0.7.14
+  host (the same kinds and bytes) and plays the animations as before. The other guests of 0.7.15 get MSG_TRIBE_ANIM.
+* a 0.7.14 host and a 0.7.15 guest: the host sends MSG_NPC_ANIM; the 0.7.15 guest still passes those kinds on
+  (npc.cpp, `wire::tribe_anim::is_tribe_kind`, the old whitelist) and plays them as before.
+* the minor bump is no conflict: nobody is refused for it (only another `rev` refuses); B6's usual warning
+  ("... some things may not match") is all a player sees.
+
+Lab: `mixed_version_tribe` (and `--old host --fixture tribe`) checks `[tribe anims]`: the host's `tribe anim msg:`
+line counts both types sent, this build's guest counts MSG_TRIBE_ANIM taken, every guest plays the relayed
+animations. Switch `coop.fix tribe.anim_msg off`: MSG_NPC_ANIM to everyone (0.7.14).

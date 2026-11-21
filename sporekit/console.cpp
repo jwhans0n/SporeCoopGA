@@ -6,7 +6,12 @@
 #include <ws2tcpip.h>
 
 #include "core.h"
+#include "task_pump_metrics.h"
+#include "outside_tasks.h"
+#include "task_drop.h"
 
+#include <algorithm>
+#include <condition_variable>
 #include <deque>
 #include <map>
 #include <memory>
@@ -16,17 +21,34 @@ namespace sk {
 
 // ---------------- main thread tasks ----------------
 static std::mutex g_task_mu;
-static std::deque<std::function<void()>> g_tasks;
+struct Task {
+    std::function<void()> fn;
+    const void* code = nullptr; // a mod's function (h_run_on_main / h_run_outside_frame), else null
+    bool frame_only = false;    // tests (SK_CMD_FRAME_ONLY): run by a frame's pump only, not the window procedure's
+};
+static std::deque<Task> g_tasks;
 static DWORD g_main_tid = 0;
 
 void set_main_thread() { g_main_tid = GetCurrentThreadId(); }
 DWORD main_thread_id() { return g_main_tid; }
 
-void run_on_main(std::function<void()> fn)
+void run_on_main(std::function<void()> fn) { run_on_main_from(nullptr, std::move(fn)); }
+
+// tests (BUG-0966): a task the window procedure's pump leaves for the next frame's (inside the frame the game's own
+// handler catches a fault; a fault in a message the game's loop dispatches ends the game)
+void run_on_main_in_frame(std::function<void()> fn)
+{
+    std::lock_guard<std::mutex> lk(g_task_mu);
+    Task t{std::move(fn), nullptr};
+    t.frame_only = true;
+    g_tasks.push_back(std::move(t));
+}
+
+void run_on_main_from(const void* code, std::function<void()> fn)
 {
     {
         std::lock_guard<std::mutex> lk(g_task_mu);
-        g_tasks.push_back(std::move(fn));
+        g_tasks.push_back({std::move(fn), code});
     }
     // also wake the window procedure: works during loading screens / broken frames
     if (GetCurrentThreadId() != g_main_tid)
@@ -36,36 +58,85 @@ void run_on_main(std::function<void()> fn)
 
 // tasks that must not run inside IDirect3DDevice9::Present (DXVK holds its locks there):
 // anything that may create D3D resources, e.g. Spore UI windows (fonts, textures)
-static std::deque<std::function<void()>> g_out_tasks;
+static outside_tasks::Queue g_out_tasks;
+static task_pump_metrics::Recorder g_outside_metrics;
 
-void run_outside_frame(std::function<void()> fn)
+task_pump_metrics::Snapshot outside_pump_metrics(const std::string& action)
 {
-    {
-        std::lock_guard<std::mutex> lk(g_task_mu);
-        g_out_tasks.push_back(std::move(fn));
+    if(action=="start"){
+        LARGE_INTEGER frequency{};QueryPerformanceFrequency(&frequency);
+        return g_outside_metrics.start(uint64_t(frequency.QuadPart));
     }
+    if(action=="stop")return g_outside_metrics.stop();
+    return g_outside_metrics.snapshot();
+}
+
+void run_outside_frame(std::function<void()> fn) { run_outside_frame_from(nullptr, std::move(fn)); }
+
+void run_outside_frame_from(const void* code, std::function<void()> fn)
+{
+    g_out_tasks.push(std::move(fn),code);
+    if (HWND w = (HWND)game_window())
+        PostMessageW(w, WM_SK_PUMP_OUT, 0, 0);
+}
+
+// BUG-0672: the repost at once looped for ever when the frame flag stayed set after a fault the game's handler caught
+// (kit.fix frameunwind clears it after App::Canvas::Tick, but Canvas::Tick's PeekMessage loop got the reposted message
+// back every time and never returned: no frame ran again). With kit.fix outpump the tasks wait for the frame's end
+// (d3d9hook.cpp: the end of a frame, of Present, or the cut-off), which posts the message again.
+static bool g_out_deferred;
+
+void outside_tasks_resume()
+{
+    if (!g_out_deferred)
+        return;
+    g_out_deferred = false;
     if (HWND w = (HWND)game_window())
         PostMessageW(w, WM_SK_PUMP_OUT, 0, 0);
 }
 
 void pump_outside_tasks()
 {
+    command_tasks_cut_off((uintptr_t)__builtin_frame_address(0)); // BUG-0966
     if (in_frame()) { // called from a message dispatched inside Present: try again later
+        g_outside_metrics.defer();
+        if (fixed(g_fix_outpump)) {
+            g_out_deferred = true;
+            return;
+        }
         if (HWND w = (HWND)game_window())
             PostMessageW(w, WM_SK_PUMP_OUT, 0, 0);
         return;
     }
-    for (int guard = 0; guard < 256; guard++) {
-        std::function<void()> fn;
-        {
-            std::lock_guard<std::mutex> lk(g_task_mu);
-            if (g_out_tasks.empty())
-                return;
-            fn = std::move(g_out_tasks.front());
-            g_out_tasks.pop_front();
-        }
-        fn();
+    task_pump_metrics::Ticket measured;
+    if(g_outside_metrics.armed()){
+        LARGE_INTEGER begin{};QueryPerformanceCounter(&begin);
+        measured=g_outside_metrics.begin(frame_index(),uint64_t(begin.QuadPart));
     }
+    outside_tasks::Result result;
+    struct Measure {
+        task_pump_metrics::Ticket ticket;outside_tasks::Result& result;
+        ~Measure(){
+            const auto left=g_out_tasks.size();
+            if(left)if(HWND window=(HWND)game_window())PostMessageW(window,WM_SK_PUMP_OUT,0,0);
+            if(!ticket.generation)return;
+            LARGE_INTEGER end{};QueryPerformanceCounter(&end);
+            g_outside_metrics.finish(ticket,uint64_t(end.QuadPart),result.processed,result.cap_reached,left,result.budget_reached);
+        }
+    } measure{measured,result};
+    static const uint64_t budget=[] {
+        LARGE_INTEGER frequency{};QueryPerformanceFrequency(&frequency);
+        return uint64_t(frequency.QuadPart)/125; // 8 ms, checked between callbacks.
+    }();
+    outside_tasks::pump(g_out_tasks,result,[]{LARGE_INTEGER now{};QueryPerformanceCounter(&now);return uint64_t(now.QuadPart);},budget);
+}
+
+// BUG-0060: a hot reload frees the old image of a mod; a task it queued (and the window procedure
+// postponed while a message was dispatched inside Present) would then call into unmapped memory
+size_t drop_tasks_in(uintptr_t lo, uintptr_t hi)
+{
+    const auto match = [&](const Task& task) { const auto code = uintptr_t(task.code); return code >= lo && code < hi; };
+    return drop_tasks(g_task_mu, {&g_tasks}, match, fixed(g_fix_taskdrop)) + g_out_tasks.drop_in(lo,hi);
 }
 
 struct DelayedTask {
@@ -82,6 +153,7 @@ void run_after_frames(int frames, std::function<void()> fn)
 
 void pump_main_tasks()
 {
+    command_tasks_cut_off((uintptr_t)__builtin_frame_address(0)); // BUG-0966
     std::vector<std::function<void()>> due;
     {
         std::lock_guard<std::mutex> lk(g_task_mu);
@@ -100,9 +172,9 @@ void pump_main_tasks()
         std::function<void()> fn;
         {
             std::lock_guard<std::mutex> lk(g_task_mu);
-            if (g_tasks.empty())
+            if (g_tasks.empty() || (g_tasks.front().frame_only && !in_frame()))
                 return;
-            fn = std::move(g_tasks.front());
+            fn = std::move(g_tasks.front().fn);
             g_tasks.pop_front();
         }
         fn();
@@ -119,6 +191,66 @@ struct Cmd {
 };
 static std::mutex g_cmd_mu;
 static std::map<std::string, Cmd> g_cmds;
+
+// BUG-1018: a mod's commands running now (under g_cmd_mu). An any-thread command (coop.sample on the console's thread)
+// ran on while mod.unload / mod.reload freed its DLL on the main thread: the thread came back into unmapped code. The
+// count is taken under the same lock as the command's lookup, so once commands_remove_all has run no new call starts;
+// unload_from waits for the running ones (commands_wait_idle). `kit.fix cmdkeep 0`: no count, no wait.
+struct CmdBusy {
+    int main = 0;  // on the main thread (only nested in the unload itself: it cannot wait for them)
+    int other = 0; // on other threads
+};
+static std::map<SkMod*, CmdBusy> g_busy;
+static std::condition_variable g_busy_cv;
+
+// a found command, counted as running until release (the lookup's lock held by the caller)
+static bool cmd_hold_locked(const Cmd& c)
+{
+    if (!c.mod || c.mod->builtin || !fixed(g_fix_cmdkeep))
+        return false;
+    CmdBusy& b = g_busy[c.mod];
+    (GetCurrentThreadId() == g_main_tid ? b.main : b.other)++;
+    return true;
+}
+
+static void cmd_release(SkMod* mod, bool held)
+{
+    if (!held)
+        return;
+    {
+        std::lock_guard<std::mutex> lk(g_cmd_mu);
+        CmdBusy& b = g_busy[mod];
+        (GetCurrentThreadId() == g_main_tid ? b.main : b.other)--;
+    }
+    g_busy_cv.notify_all();
+}
+
+struct CmdHeld {
+    SkMod* mod;
+    bool held;
+    ~CmdHeld() { cmd_release(mod, held); }
+};
+
+bool commands_wait_idle(SkMod* mod, DWORD ms, std::string& why)
+{
+    std::unique_lock<std::mutex> lk(g_cmd_mu);
+    auto idle = [&] { return g_busy[mod].other == 0; };
+    if (g_busy[mod].main) {
+        why = std::to_string(g_busy[mod].main) + " of its commands run on the main thread around this unload";
+        return false;
+    }
+    if (idle())
+        return true;
+    int n = g_busy[mod].other;
+    DWORD t0 = GetTickCount();
+    bool ok = g_busy_cv.wait_for(lk, std::chrono::milliseconds(ms), idle);
+    if (!ok)
+        why = std::to_string(g_busy[mod].other) + " of its commands still run on other threads after " + std::to_string(ms) + " ms";
+    else
+        SKLOG(SK_INFO, "unload of %s waited %lu ms for %d running command(s) (BUG-1018)", mod->name.c_str(),
+              GetTickCount() - t0, n);
+    return ok;
+}
 
 int command_add(SkMod* mod, const char* name, const char* help, SkCommandFn fn, void* user,
                 int flags)
@@ -177,6 +309,63 @@ std::vector<std::string> split_args(const std::string& line)
     return out;
 }
 
+// BUG-0966: a console command run as a main-thread (or outside-frame) task that faults, with the game's own handler
+// catching the fault, never came back: its request was never answered, the client waited for ever (the lab's 90 s
+// timeout) and every later line of that connection queued behind it. Seen with coop.puppet respawn whose destroy
+// faulted in a first version of BUG-0930's fix; the frames went on (BUG-0667). A running task is noted with its stack
+// address (main thread only); the next pump or game loop pass at or above it (not nested inside it) finds the note
+// still there: the task was cut off and its request is answered with an error. `kit.fix taskcut 0`: no answer.
+struct RunningCmd {
+    uint64_t id;
+    uintptr_t sp;
+    std::string name;
+    std::function<void(const std::string&)> answer;
+};
+static std::vector<RunningCmd> g_running; // innermost last; the main thread only
+static uint64_t g_running_ids;
+static uint32_t g_cmds_cut;
+
+static void running_cut(RunningCmd& r)
+{
+    g_cmds_cut++;
+    SKLOG(SK_WARN, "console: the command '%s' was cut off by a fault the game's handler caught (%u so far); "
+                   "it is answered with an error (BUG-0966)", r.name.c_str(), g_cmds_cut);
+    r.answer("error: '" + r.name + "' was cut off by a fault the game's handler caught (the exception is in the "
+             "SporeKit log); the game goes on");
+}
+
+void command_tasks_cut_off(uintptr_t sp)
+{
+    if (g_running.empty() || GetCurrentThreadId() != g_main_tid)
+        return;
+    while (!g_running.empty() && sp >= g_running.back().sp) {
+        RunningCmd r = std::move(g_running.back());
+        g_running.pop_back();
+        running_cut(r);
+    }
+}
+
+static uint64_t running_begin(uintptr_t sp, const std::string& name, std::function<void(const std::string&)> answer)
+{
+    if (!fixed(g_fix_taskcut) || GetCurrentThreadId() != g_main_tid)
+        return 0;
+    uint64_t id = ++g_running_ids;
+    // sp: the task's own frame (a pump or game loop pass later at or above it is not nested inside it)
+    g_running.push_back({id, sp, name, std::move(answer)});
+    return id;
+}
+
+static void running_end(uint64_t id)
+{
+    while (id && !g_running.empty()) {
+        RunningCmd r = std::move(g_running.back());
+        g_running.pop_back();
+        if (r.id == id)
+            return;
+        running_cut(r); // a task nested inside this one that a fault cut off
+    }
+}
+
 static int run_cmd(const Cmd& c, const std::vector<std::string>& args, std::string& out)
 {
     std::vector<const char*> argv;
@@ -196,6 +385,7 @@ int command_exec_line(const std::string& line, std::string& out, bool from_main)
     if (args.empty())
         return 0;
     Cmd c;
+    CmdHeld held{nullptr, false}; // BUG-1018: a command run on this thread below is counted from its lookup on
     {
         std::lock_guard<std::mutex> lk(g_cmd_mu);
         auto it = g_cmds.find(args[0]);
@@ -204,6 +394,17 @@ int command_exec_line(const std::string& line, std::string& out, bool from_main)
             return 1;
         }
         c = it->second;
+        if (from_main || (c.flags & SK_CMD_ANY_THREAD)) {
+            held.mod = c.mod;
+            held.held = cmd_hold_locked(c);
+        }
+    }
+    // on the main thread a command that waits for the next frames (or suspends the main thread)
+    // waits for itself: the game stops (BUG-0065, the cheat console `sk shot`)
+    if ((c.flags & SK_CMD_NOT_ON_MAIN) && GetCurrentThreadId() == main_thread_id() && fixed(g_fix_cheatwait)) {
+        out += "'" + args[0] + "' waits for the game's frames and cannot run on the game's own thread "
+               "(the cheat console): use the devkit console (tools/sporectl.py)";
+        return 1;
     }
     if (from_main || (c.flags & SK_CMD_ANY_THREAD))
         return run_cmd(c, args, out);
@@ -219,9 +420,12 @@ int command_exec_line(const std::string& line, std::string& out, bool from_main)
     req->ev = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     req->args = args;
     req->name = args[0];
-    auto post = (c.flags & SK_CMD_OUTSIDE_FRAME) ? run_outside_frame : run_on_main;
+    auto post = (c.flags & SK_CMD_OUTSIDE_FRAME) ? run_outside_frame
+                : (c.flags & SK_CMD_FRAME_ONLY)    ? run_on_main_in_frame
+                                                   : run_on_main;
     post([req] {
         Cmd cc;
+        bool h;
         {
             std::lock_guard<std::mutex> lk(g_cmd_mu);
             auto it = g_cmds.find(req->name);
@@ -231,8 +435,17 @@ int command_exec_line(const std::string& line, std::string& out, bool from_main)
                 return;
             }
             cc = it->second;
+            h = cmd_hold_locked(cc);
         }
+        CmdHeld held{cc.mod, h};
+        // BUG-0966: answered with an error if a caught fault cuts the command off
+        uint64_t id = running_begin((uintptr_t)__builtin_frame_address(0), req->name, [req](const std::string& t) {
+            req->out = t;
+            req->rc = 1;
+            SetEvent(req->ev);
+        });
         req->rc = run_cmd(cc, req->args, req->out);
+        running_end(id);
         SetEvent(req->ev);
     });
     DWORD w = WaitForSingleObject(req->ev, 60000);
@@ -290,19 +503,23 @@ static void start_next(Client& c)
         if (args.empty())
             continue;
         Cmd cmd;
-        bool found;
+        bool found, h = false;
         {
             std::lock_guard<std::mutex> lk(g_cmd_mu);
             auto it = g_cmds.find(args[0]);
             found = it != g_cmds.end();
-            if (found)
+            if (found) {
                 cmd = it->second;
+                if (cmd.flags & SK_CMD_ANY_THREAD)
+                    h = cmd_hold_locked(cmd); // BUG-1018
+            }
         }
         if (!found) {
             c.outbuf += json_reply(1, "unknown command: " + args[0] + " (try 'help')");
             continue;
         }
         if (cmd.flags & SK_CMD_ANY_THREAD) {
+            CmdHeld held{cmd.mod, h};
             std::string out;
             int rc = run_cmd(cmd, args, out);
             c.outbuf += json_reply(rc, out);
@@ -315,19 +532,32 @@ static void start_next(Client& c)
         c.pending_rc = rc;
         c.pending_done = done;
         std::string name = args[0];
-        auto post = (cmd.flags & SK_CMD_OUTSIDE_FRAME) ? run_outside_frame : run_on_main;
+        auto post = (cmd.flags & SK_CMD_OUTSIDE_FRAME) ? run_outside_frame
+                    : (cmd.flags & SK_CMD_FRAME_ONLY)    ? run_on_main_in_frame
+                                                         : run_on_main;
         post([out, rc, done, args, name] {
             Cmd cc;
-            bool ok;
+            bool ok, h = false;
             {
                 std::lock_guard<std::mutex> lk(g_cmd_mu);
                 auto it = g_cmds.find(name);
                 ok = it != g_cmds.end();
-                if (ok)
+                if (ok) {
                     cc = it->second;
+                    h = cmd_hold_locked(cc); // BUG-1018
+                }
             }
+            CmdHeld held{cc.mod, h};
             std::string o;
+            // BUG-0966: answered with an error if a caught fault cuts the command off
+            uint64_t id = ok ? running_begin((uintptr_t)__builtin_frame_address(0), name, [out, rc, done](const std::string& t) {
+                std::lock_guard<std::mutex> lk(g_done_mu);
+                *out = t;
+                *rc = 1;
+                *done = true;
+            }) : 0;
             int r = ok ? run_cmd(cc, args, o) : 1;
+            running_end(id);
             std::lock_guard<std::mutex> lk(g_done_mu);
             *out = ok ? o : "command vanished";
             *rc = r;

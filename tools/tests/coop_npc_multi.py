@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """NPC sync with three or four players (creature stage, nobody moves): the host and Bob from lane A
-(SPORE_LANE), Carol and Dave from lane B (SPORE_LANE_B, default A+1: another bottle, empty profiles,
+(SPORE_LANE), Carol and Dave from lane B (SPORE_LANE_B, default: the same lane,
+instances 20+N / 30+N; another lane B: another bottle, empty profiles,
 so they join from the galaxy menu and load the world the host sends).
 
 Every few seconds each guest's copy of every living NPC is compared with the host's:

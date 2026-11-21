@@ -1,0 +1,220 @@
+{
+  "source": "closed C33 Store b0dc93c2d39651170b01a584e26119e4",
+  "roles": [
+    95,
+    96
+  ],
+  "files": {
+    "r48.native.bin": {
+      "size": 60654,
+      "sha256": "d9813183fca11a9019060b8ed2d05aee48759f8c91684aac6718c08084792563"
+    },
+    "r49.native.bin": {
+      "size": 60654,
+      "sha256": "d3f32baadd3097fe2cdf65b10a00eeffa82b49c8291a8f5fbe37dcbcf2d05c66"
+    },
+    "r50.native.bin": {
+      "size": 60654,
+      "sha256": "d18824eab26207349f05a39f9b0f192e8c72c3613c3d344d7f0c7cc7e40fa1b6"
+    },
+    "r51.native.bin": {
+      "size": 60654,
+      "sha256": "1d722407d1ce0c8c14fca4a8338b1e575421de15801a8018bc32d4638e759722"
+    },
+    "r52.native.bin": {
+      "size": 60654,
+      "sha256": "bc636710376fee0fb76981bf7a5b5a0c4da1801b069cd6d8ff7f3c902cd375a1"
+    },
+    "r53.native.bin": {
+      "size": 60654,
+      "sha256": "2539ff40bfb535b6d857b94ab34f10bbd9ef1948536b8fef625b783856bcb6e2"
+    },
+    "r54.native.bin": {
+      "size": 60654,
+      "sha256": "9284510aa8830e37c41b446b3a62ac624dccf4e43769deb6a7cf5e59dd884531"
+    },
+    "r55.native.bin": {
+      "size": 60654,
+      "sha256": "b825d00b9510fde6badbc109b91f66f7d8b058b43ee8951bbce77d6b11e307bb"
+    },
+    "r56.native.bin": {
+      "size": 60654,
+      "sha256": "f830adce20f90926df5700b4a07cc2eb485f7f86ff5994c241ae2424c0603c17"
+    },
+    "r57.native.bin": {
+      "size": 60654,
+      "sha256": "6d6633c8e6deb02d33629281655f434ed4a5e29de2a3dc213571ab9c1bc157bf"
+    },
+    "r58.native.bin": {
+      "size": 60654,
+      "sha256": "f993ca303ebd35bb20bd7a57731c2c8f73b0c9739c3eae9677010770c3a12773"
+    },
+    "r59.native.bin": {
+      "size": 60654,
+      "sha256": "19e442733077cd9afb22150acb64824ffa614a1fafcac85341d33bfc939613fc"
+    },
+    "r60.native.bin": {
+      "size": 60656,
+      "sha256": "98fb58c80d3589f0aa60b2e51bbb2a38f86e719582f18b05bb8c0a119055f915"
+    },
+    "r61.native.bin": {
+      "size": 60654,
+      "sha256": "cc28dc0fed7688380686cd3457ef9c796e7787428be455093d51e9808300867a"
+    },
+    "r62.native.bin": {
+      "size": 60654,
+      "sha256": "28f2f1b275c826386a00cb52ec9bffd0040e9be703d6e47c534e4c4a50e87419"
+    },
+    "roster.bin": {
+      "size": 41916,
+      "sha256": "e0043cd5cfc8bb4dae0fe12990c36bcb5a3144396cc3bfe82204b55011602428"
+    },
+    "edits.bin": {
+      "size": 680,
+      "sha256": "ea24f26aacbf8617e1d0c73c8cf470bc26dd5d84821557d710480c27e872cdaa"
+    }
+  },
+  "cases": [
+    {
+      "role": 95,
+      "before": 48,
+      "after": 49
+    },
+    {
+      "role": 96,
+      "before": 48,
+      "after": 49
+    },
+    {
+      "role": 95,
+      "before": 49,
+      "after": 50
+    },
+    {
+      "role": 96,
+      "before": 49,
+      "after": 50
+    },
+    {
+      "role": 95,
+      "before": 50,
+      "after": 51
+    },
+    {
+      "role": 96,
+      "before": 50,
+      "after": 51
+    },
+    {
+      "role": 95,
+      "before": 51,
+      "after": 52
+    },
+    {
+      "role": 96,
+      "before": 51,
+      "after": 52
+    },
+    {
+      "role": 95,
+      "before": 52,
+      "after": 53
+    },
+    {
+      "role": 96,
+      "before": 52,
+      "after": 53
+    },
+    {
+      "role": 95,
+      "before": 53,
+      "after": 54
+    },
+    {
+      "role": 96,
+      "before": 53,
+      "after": 54
+    },
+    {
+      "role": 95,
+      "before": 54,
+      "after": 55
+    },
+    {
+      "role": 96,
+      "before": 54,
+      "after": 55
+    },
+    {
+      "role": 95,
+      "before": 55,
+      "after": 56
+    },
+    {
+      "role": 96,
+      "before": 55,
+      "after": 56
+    },
+    {
+      "role": 95,
+      "before": 56,
+      "after": 57
+    },
+    {
+      "role": 96,
+      "before": 56,
+      "after": 57
+    },
+    {
+      "role": 95,
+      "before": 57,
+      "after": 58
+    },
+    {
+      "role": 96,
+      "before": 57,
+      "after": 58
+    },
+    {
+      "role": 95,
+      "before": 58,
+      "after": 59
+    },
+    {
+      "role": 96,
+      "before": 58,
+      "after": 59
+    },
+    {
+      "role": 95,
+      "before": 59,
+      "after": 60
+    },
+    {
+      "role": 96,
+      "before": 59,
+      "after": 60
+    },
+    {
+      "role": 95,
+      "before": 60,
+      "after": 61
+    },
+    {
+      "role": 96,
+      "before": 60,
+      "after": 61
+    },
+    {
+      "role": 95,
+      "before": 61,
+      "after": 62
+    },
+    {
+      "role": 96,
+      "before": 61,
+      "after": 62
+    }
+  ],
+  "roster_origin": "Full IDs/classes and advertised seven fields independently decoded from core State; unadvertised destination defaults copied exactly from genuine BASE native fields, not inferred semantic values."
+}

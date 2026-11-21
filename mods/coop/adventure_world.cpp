@@ -1,4 +1,5 @@
 #include "adventure_world.h"
+#include "sporekit_build.hpp"
 #include "adventure_world_lifecycle.h"
 #include "adventure_world_actions.h"
 #include "adventure_world_vehicles.h"
@@ -22,6 +23,7 @@
 #include <vector>
 
 #include "game.h"
+#include "player_rules.h"
 #include "net/adventure_health.h"
 #include "net/adventure_actor_motion.h"
 #include "sporekit_game.hpp"
@@ -32,7 +34,7 @@ static const SkHost* H;
 static SkMod* M;
 static Ctx C;
 static uintptr_t a_Mode, a_SetAct, a_GetMarker, a_Hostile, a_Befriend, a_Ally, a_Relationships, a_SocialEvent, a_AnimalDamage, a_SocialMode;
-static uintptr_t a_GoalHUD;
+static uintptr_t a_GoalHUD,a_ObjectReference;
 static uintptr_t a_MovementRequest, a_VehicleGroundUpdate;
 static bool g_ok, g_applying;
 static bool g_talk_cleanup, g_talk_presenting, g_talk_committing;
@@ -140,9 +142,12 @@ struct ActorState {
     uint8_t flags = 0; // 1: combatant, 2: host actor dead, 4: native social completion
     int32_t party_relationship = -1; // native enum 0..7, -1 unavailable
     uint32_t sequence = 0;
+    uint64_t motion_generation = 0;
     double seen = 0;
     bool static_actor = false;
 };
+struct ActorWarp { uint64_t generation=0; net::Vec3 position; net::Quat orientation; };
+static std::map<Identity,ActorWarp> g_actor_warps;
 struct Binding {
     void* object;
     uint32_t incarnation;
@@ -210,8 +215,8 @@ static ReplicationStats g_replication_stats;
 using Check_t = void(SK_THISCALL*)(void*);
 using Goals_t = bool(SK_THISCALL*)(void*);
 using State_t = void(SK_THISCALL*)(void*, int);
-using Pick_t = bool(SK_THISCALL*)(void*, void*, int, bool);
-using Drop_t = bool(SK_THISCALL*)(void*, void*, int, bool);
+using Pick_t = player_rules::HoldNative;
+using Drop_t = player_rules::ReleaseNative;
 using Item_t = void(SK_THISCALL*)(void*, void*, void*);
 using Count_t = void(SK_THISCALL*)(void*, void*, void*, void*);
 using Social_t = void(SK_THISCALL*)(void*, void*);
@@ -353,7 +358,7 @@ static void enumerate()
     game::for_each_object([](void* object, uint32_t noun, void*) {
         if (g_native.size() >= kMaxActors) { g_native_overflow = true; return false; }
         uint32_t marker;
-        if (!game::object_alive(object) || skg::field<bool>(object, 0x20) ||
+        if (!game::listed(object) || skg::field<bool>(object, 0x20) ||
             owner(object) != ga::kNoPlayer || !marker_of(object, marker)) return true;
         void* spatial = game::cast(object, kSpatial);
         if (!spatial || !skg::readable(spatial, 0x20)) return true;
@@ -378,7 +383,7 @@ static void enumerate()
 
 static NativeActor* actor_for(void* object)
 {
-    for (auto& a : g_native) if (a.object == object) return &a;
+    for (auto& a : g_native) if (a.object == object && game::alive({a.object,a.incarnation,a.noun})) return &a;
     return nullptr;
 }
 
@@ -411,7 +416,8 @@ static void* object_for(Identity id)
         auto* native = it != g_bindings.end() ? actor_for(it->second.object) : nullptr;
         return native && native->incarnation == it->second.incarnation ? native->object : nullptr;
     }
-    for (const auto& actor : g_native) if (actor.marker == id.marker && actor.incarnation == id.incarnation) return actor.object;
+    for (const auto& actor : g_native) if (actor.marker == id.marker && actor.incarnation == id.incarnation &&
+        game::alive({actor.object,actor.incarnation,actor.noun})) return actor.object;
     return nullptr;
 }
 void on_animation(void* creature, uint32_t animation, int block, bool disable_blend, bool to_target)
@@ -783,7 +789,7 @@ static bool interaction(uint8_t action, uint8_t player, Identity item, Identity 
     return C.sess->send_reliable_to(0, net::MSG_ADVENTURE, w);
 }
 
-static bool SK_THISCALL pick_item(void* self, void* spatial, int slot, bool replace)
+static bool SK_THISCALL pick_item(void* self, void* spatial, uint32_t slot, bool replace)
 {
     if(active() && C.held && C.held()) return false;
     if (!active() || g_applying || owner(self) == ga::kNoPlayer) return o_Pick(self, spatial, slot, replace);
@@ -801,6 +807,21 @@ static bool SK_THISCALL pick_item(void* self, void* spatial, int slot, bool repl
     bool ok = o_Pick(self, spatial, slot, replace);
     if (ok) interaction(PickUp, player, id);
     return ok;
+}
+static bool intercept_pick(void* self, void* spatial, uint32_t slot, bool replace,
+                           player_rules::HoldNative original, bool& result)
+{
+    // Declining inactive GA is essential: the sole owner must retain the
+    // upstream campaign carry relay, including its own replay guard.
+    if (!active()) return false;
+    result = original && original == o_Pick ? pick_item(self, spatial, slot, replace) : false;
+    return true;
+}
+static bool bind_item_hooks(uintptr_t pick, uintptr_t drop)
+{
+    o_Pick = player_rules::hold_original(pick);
+    o_Drop = player_rules::release_original(drop);
+    return o_Pick && o_Drop && player_rules::intercept_adventure_hold(pick, intercept_pick);
 }
 static void SK_THISCALL picked_item(void* self, void* holder, void* item)
 {
@@ -954,15 +975,35 @@ static void SK_THISCALL check_goals(void* self)
     if (terminal_state(self)) return;
     if(active() && C.held && C.held()) return;
     if (guest() && !g_applying) return;
-    o_Check(self);
+    auto can_check=[](uint8_t player){
+        if(!C.captain_of || !C.captain_can_act || !C.captain_can_act(player))return false;
+        void* captain=C.captain_of(player);
+        return captain && game::listed(captain) && skg::readable(captain,0xB60) &&
+            !skg::field<bool>(captain,0x20) && !game::is_dead(captain) && game::health(captain)>0;
+    };
+    // Co-op can retain a downed captain after native death cleanup. Native
+    // spatial goals dereference its avatar unconditionally; only Alive actors
+    // may participate in these local or temporarily aliased goal checks.
+    auto check_captain=[&](void* captain){
+        // A completed goal may change acts and retire this actor before the
+        // native routine finishes checking its remaining goals. Keep the
+        // exact aliased object alive until that entire native call returns.
+        struct Pin {
+            void* object=nullptr;
+            explicit Pin(void* value){skg::thiscall<void>(a_ObjectReference,&object,value);}
+            ~Pin(){skg::thiscall<void>(a_ObjectReference,&object,(void*)nullptr);}
+        } pin(captain);
+        AvatarScope scope(pin.object);o_Check(self);
+    };
+    if(!active() || !host())o_Check(self);
+    else if(can_check(0))check_captain(C.captain_of(0));
     if (!active() || !host() || !C.captain_of || !skg::readable(self, 0xBC)) return;
     int act = skg::field<int>(self, 0xB8);
     for (const auto& player : C.sess->players()) {
-        if (!player.id || skg::field<int>(self, 0x90) != 3 || skg::field<int>(self, 0xB8) != act) continue;
+        if (!player.id || !can_check(player.id) || skg::field<int>(self, 0x90) != 3 || skg::field<int>(self, 0xB8) != act) continue;
         void* captain = C.captain_of(player.id);
         if (!captain) continue;
-        AvatarScope scope(captain);
-        o_Check(self);
+        check_captain(captain);
     }
 }
 static void SK_THISCALL complete_act(void* self)
@@ -1027,7 +1068,7 @@ static bool fly_through_waypoints(const NativeActor& actor, bool creature)
 static void follow_actor(NativeActor& actor, const ActorState& state, Binding& binding, double now, bool creature)
 {
     using namespace adventure_actor_motion;
-    Scope scope{g_run, static_cast<uint8_t>(binding.act), state.id.incarnation, binding.incarnation};
+    Scope scope{g_run, static_cast<uint8_t>(binding.act), state.id.incarnation, binding.incarnation,state.motion_generation};
     const bool fresh = binding.follower.admit(scope, {state.sequence, state.position, state.orientation, state.seen});
     Local local;
     local.position = skg::field<net::Vec3>(actor.spatial, 4);
@@ -1251,7 +1292,7 @@ static bool same_pose(const ActorState& a, const ActorState& b)
 static bool same_gameplay(const ActorState& a, const ActorState& b)
 {
     return a.noun == b.noun && a.health == b.health && a.maximum == b.maximum &&
-        a.max_tuning == b.max_tuning && a.flags == b.flags && a.party_relationship == b.party_relationship;
+        a.max_tuning == b.max_tuning && a.flags == b.flags && a.party_relationship == b.party_relationship && a.motion_generation==b.motion_generation;
 }
 
 static void write_pose(net::Writer& w, const ActorState& state)
@@ -1262,6 +1303,7 @@ static void write_pose(net::Writer& w, const ActorState& state)
 
 static void write_gameplay(net::Writer& w, const ActorState& state)
 {
+    put_run(w,state.motion_generation);
     w.f32(state.health); w.f32(state.maximum); w.f32(state.max_tuning); w.u8(state.flags);
     w.u8(state.party_relationship >= 0 && state.party_relationship <= 7 ? uint8_t(state.party_relationship) : 0xFF);
 }
@@ -1271,6 +1313,7 @@ static ActorState sample_actor(NativeActor& actor, int act)
     scale_health(actor, act);
     ActorState state;
     state.id = {actor.marker, actor.incarnation}; state.noun = actor.noun; state.sequence = g_sequence;
+    if(auto warp=g_actor_warps.find(state.id);warp!=g_actor_warps.end())state.motion_generation=warp->second.generation;
     state.position = skg::field<net::Vec3>(actor.spatial, 4);
     state.orientation = skg::field<net::Quat>(actor.spatial, 0x10);
     state.health = actor.combatant ? skg::field<float>(actor.combatant, 0x38) : 0;
@@ -1748,7 +1791,7 @@ static void apply_roster(void* argument)
     retire_snapshots(live, task->sequence, remove);
     auto retained = reconcile_siblings(live, task->sequence, remove);
     g_applying = true;
-    for (void* object : remove) if (skg::readable(object, 0x28) && game::object_alive(object) && owner(object) == ga::kNoPlayer) {
+    for (void* object : remove) if (game::listed(object) && skg::readable(object, 0x28) && owner(object) == ga::kNoPlayer) {
         std::string error;
         auto* native = actor_for(object);
         if (!native || skg::field<uint32_t>(object, 0x24) != native->incarnation) continue;
@@ -1763,6 +1806,7 @@ static void apply_roster(void* argument)
 }
 
 static uint32_t g_received_goals;
+static uint64_t g_applied_goals_run;
 static bool valid_actor_state(const ActorState& state, bool pose)
 {
     return (!pose || (finite(state.position) && std::isfinite(state.orientation.x) && std::isfinite(state.orientation.y) &&
@@ -1776,6 +1820,8 @@ static bool valid_actor_state(const ActorState& state, bool pose)
 static void merge_actor_state(const ActorState& state, std::map<Identity, ActorState>& destination, bool full, bool current)
 {
     if (g_retired_items.count(state.id)) return;
+    auto warp=g_actor_warps.find(state.id);
+    if(warp!=g_actor_warps.end() && state.motion_generation<warp->second.generation)return;
     if (current && state.sequence < g_roster_sequence && !g_roster_live.count(state.id)) return;
     auto previous = destination.find(state.id);
     if (previous != destination.end() && (int32_t)(state.sequence - previous->second.sequence) <= 0) return;
@@ -1787,6 +1833,7 @@ static void merge_actor_state(const ActorState& state, std::map<Identity, ActorS
     }
     merged.seen = H->time_seconds();
     destination[state.id] = merged;
+    if(current && full && state.motion_generation)g_actor_warps[state.id]={state.motion_generation,state.position,state.orientation};
 }
 
 static void apply_pending_static(uint8_t act)
@@ -1866,6 +1913,7 @@ static void apply_goals(void* arg)
         if (task->state >= 3 && task->state <= 4 && skg::field<int>(p, 0x90) != task->state &&
             !(task->state==3 && C.held && C.held())) native_state(p, task->state);
         ++g_goal_updates;
+        g_applied_goals_run=task->run;
     }
     g_applying = false;
 }
@@ -2007,6 +2055,7 @@ void on_message(uint8_t from, net::Reader& r)
                 state.position = {r.f32(), r.f32(), r.f32()};
                 state.orientation = {r.f32(), r.f32(), r.f32(), r.f32()};
             }
+            state.motion_generation=get_run(r);
             state.health = r.f32(); state.maximum = r.f32(); state.max_tuning = r.f32(); state.flags = r.u8();
             uint8_t relationship = r.u8();
             if (relationship != 0xFF && relationship > 7) return;
@@ -2027,6 +2076,7 @@ void on_message(uint8_t from, net::Reader& r)
             ActorState state; state.id = {r.u32(), r.u32()}; state.noun = r.u32();
             state.position = {r.f32(), r.f32(), r.f32()};
             state.orientation = {r.f32(), r.f32(), r.f32(), r.f32()};
+            state.motion_generation=get_run(r);
             state.health = r.f32(); state.maximum = r.f32(); state.max_tuning = r.f32(); state.flags = r.u8(); state.sequence = sequence;
             uint8_t relationship = r.u8();
             if (relationship != 0xFF && relationship > 7) return;
@@ -2171,8 +2221,8 @@ bool is_live_mirror(void* object)
     // the act in which they were made.
     if (!g_ok || g_applying || !C.sess || !C.sess->connected() || C.sess->role() != net::Role::Client ||
         !C.active || !C.active() || !C.run || !g_run || C.run() != g_run ||
-        game::mode_id() != 0x01654C10 || !object || !skg::readable(object, 0x28) ||
-        owner(object) != ga::kNoPlayer || !game::object_alive(object) || skg::field<bool>(object, 0x20)) return false;
+        game::mode_id() != 0x01654C10 || !object || !game::listed(object) || !skg::readable(object, 0x28) ||
+        owner(object) != ga::kNoPlayer || !game::listed(object) || skg::field<bool>(object, 0x20)) return false;
     auto* p = play();
     auto* native = actor_for(object);
     if (!p || !native || native->incarnation != skg::field<uint32_t>(object, 0x24)) return false;
@@ -2238,13 +2288,14 @@ bool terminal_message_allowed(void* p, uint32_t type)
 static void reset_replication()
 {
     g_run = 0; g_sequence = g_goal_sequence = g_received_goals = 0;
+    g_applied_goals_run=0;
     g_pending_world_tasks.clear(); ++g_world_task_generation; g_world_task_queued = g_world_task_overflow = false;
     g_admitted_hit.clear();
     g_pending_social.clear(); ++g_social_generation; g_social_queued = g_social_overflow = false;
     g_deferred_goals.reset();
     ++g_goal_generation; g_goal_work_run = 0; g_goal_apply_queued = g_goal_apply_active = false;
     g_native.clear(); g_native_act = -1;
-    g_remote.clear(); g_bindings.clear(); g_motion = {}; g_health_baselines.clear(); g_last_hit.clear(); g_last_captain_hit.clear();
+    g_remote.clear(); g_bindings.clear(); g_actor_warps.clear(); g_motion = {}; g_health_baselines.clear(); g_last_hit.clear(); g_last_captain_hit.clear();
     adventure_targeting::reset();
     g_last_interaction.clear(); g_dropped.clear(); g_social_events.clear(); g_social_completions.clear(); g_interaction_sequence = 0;
     g_opened_gates.clear(); g_retired_items.clear(); g_talk_cleanup=g_talk_presenting=g_talk_committing=false;
@@ -2269,6 +2320,7 @@ static void reset_replication()
 
 static void retire_identity(Identity id)
 {
+    g_actor_warps.erase(id);
     uint64_t current = run();
     if (!current) return;
     // A routed pickup/explosion event can precede every world packet and tick.
@@ -2280,8 +2332,20 @@ static void retire_identity(Identity id)
 
 void reset()
 {
+    // The static interceptor owns no run/object state. Keep its registration
+    // across run resets; active(), the shared hold and current owner fence it.
+    // Module shutdown removes it before native callbacks or contexts retire.
     reset_replication();
     g_native_result = {};
+}
+
+void shutdown()
+{
+    player_rules::clear_adventure_hold(intercept_pick);
+    adventure_world_vehicles::shutdown();
+    g_ok = false;
+    reset();
+    C = {};
 }
 
 void peer_changed(uint8_t player)
@@ -2342,6 +2406,8 @@ void tick(double now)
 
 bool init(const SkHost* h, SkMod* m, Ctx ctx)
 {
+    player_rules::clear_adventure_hold(intercept_pick);
+    g_ok = false;
     H = h; M = m; C = std::move(ctx);
     a_Mode = H->sym("App::cScenarioMode::ptr");
     a_SetAct = H->sym("Simulator::cScenarioPlayMode::SetCurrentAct");
@@ -2354,6 +2420,7 @@ bool init(const SkHost* h, SkMod* m, Ctx ctx)
     a_SocialMode = H->sym("SporeCoop::Adventure::CreatureSocialMode");
     a_AnimalDamage = H->sym("Simulator::cCreatureAnimal::TakeDamage");
     a_GoalHUD = H->sym("SporeCoop::Adventure::RefreshGoalHUD");
+    a_ObjectReference=H->sym("SporeCoop::Adventure::AssignObjectReference");
     a_MovementRequest = H->sym("SporeCoop::Adventure::GetLocomotionRequest");
     a_VehicleGroundUpdate = H->sym("SporeCoop::Adventure::VehicleGAGroundLocomotionUpdate");
     uintptr_t check = H->sym("Simulator::cScenarioPlayMode::CheckGoalProgress");
@@ -2373,16 +2440,16 @@ bool init(const SkHost* h, SkMod* m, Ctx ctx)
     a_Physics=H->sym("Simulator::cPhysicsWorld::Get");
     a_Impulse=H->sym("Simulator::cPhysicsWorld::ApplyImpulse");
     a_ThrowGrace=H->sym("SporeCoop::Adventure::ThrowPairGrace");
-    o_Drop = (Drop_t)H->sym("SporeCoop::Adventure::DropItem");
-    if (std::string(H->exe_sha256()) != "dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37" ||
-        !a_Mode || !a_SetAct || !a_GetMarker || !a_Hostile || !a_Befriend || !a_Ally || !a_Relationships || !a_SocialEvent || !a_SocialMode || !a_AnimalDamage || !a_GoalHUD || !a_MovementRequest || !a_VehicleGroundUpdate ||
-        !check || !complete || !goals || !state || !pick || !picked || !dropped || !count || !avatar || !generic || !o_Drop || !C.sess || !C.captain_can_act ||
+    uintptr_t drop = H->sym("SporeCoop::Adventure::DropItem");
+    if (!skg::supported_gog2024(H->exe_sha256()) ||
+        !a_Mode || !a_SetAct || !a_GetMarker || !a_Hostile || !a_Befriend || !a_Ally || !a_Relationships || !a_SocialEvent || !a_SocialMode || !a_AnimalDamage || !a_GoalHUD || !a_ObjectReference || !a_MovementRequest || !a_VehicleGroundUpdate ||
+        !check || !complete || !goals || !state || !pick || !picked || !dropped || !count || !avatar || !generic || !drop || !C.sess || !C.captain_can_act ||
         !talk || !talk_end_address || !gate || !a_GateKey || !a_OpenGate || !a_Physics || !a_Impulse || !a_ThrowGrace || !adventure_world_lifecycle::init(H, M)) return false;
+    if (!bind_item_hooks(pick, drop)) return false;
     g_ok = H->hook_create(M, (void*)check, (void*)check_goals, (void**)&o_Check) == 0 &&
            H->hook_create(M, (void*)complete, (void*)complete_act, (void**)&o_Complete) == 0 &&
            H->hook_create(M, (void*)goals, (void*)update_goals, (void**)&o_Goals) == 0 &&
            H->hook_create(M, (void*)state, (void*)set_state, (void**)&o_State) == 0 &&
-           H->hook_create(M, (void*)pick, (void*)pick_item, (void**)&o_Pick) == 0 &&
            H->hook_create(M, (void*)picked, (void*)picked_item, (void**)&o_Picked) == 0 &&
            H->hook_create(M, (void*)dropped, (void*)dropped_item, (void**)&o_Dropped) == 0 &&
            H->hook_create(M, (void*)count, (void*)count_goal, (void**)&o_Count) == 0 &&
@@ -2415,11 +2482,11 @@ bool init(const SkHost* h, SkMod* m, Ctx ctx)
         targeting.active = [] { return active() && host() && game::mode_id() == 0x01654C10 && !(C.held && C.held()); };
         targeting.live_npc = [](void* object) {
             auto* p = play();
-            if (!object || !p || g_run != run() || g_native_act != skg::field<int>(p, 0xB8) ||
+            if (!object || !game::listed(object) || !p || g_run != run() || g_native_act != skg::field<int>(p, 0xB8) ||
                 owner(object) != ga::kNoPlayer || game::is_puppet(object) || !skg::readable(object, 0xB60)) return false;
             auto* actor = actor_for(object);
             return actor && actor->incarnation == skg::field<uint32_t>(object, 0x24) &&
-                !skg::field<bool>(object, 0x20) && game::object_alive(object) &&
+                !skg::field<bool>(object, 0x20) && game::listed(object) &&
                 game::cast(object, kCreature) && !game::is_dead(object) && game::health(object) > 0;
         };
         targeting.captains = [] {
@@ -2428,8 +2495,8 @@ bool init(const SkHost* h, SkMod* m, Ctx ctx)
             for (const auto& player : C.sess->players()) {
                 if (!C.captain_can_act(player.id)) continue;
                 void* object = C.captain_of(player.id);
-                if (object && skg::readable(object, 0xB60) && !skg::field<bool>(object, 0x20) &&
-                    game::object_alive(object) && !game::is_dead(object) && game::health(object) > 0)
+                if (object && game::listed(object) && skg::readable(object, 0xB60) && !skg::field<bool>(object, 0x20) &&
+                    game::listed(object) && !game::is_dead(object) && game::health(object) > 0)
                     captains.push_back({object, player.id});
             }
             return captains;
@@ -2444,6 +2511,7 @@ bool init(const SkHost* h, SkMod* m, Ctx ctx)
         };
         g_ok = adventure_targeting::init(H, M, std::move(targeting));
     }
+    if (!g_ok) player_rules::clear_adventure_hold(intercept_pick);
     H->command_add(M, "coop.adventure.world", "Adventure native diagnostics and isolated-profile test actions",
                    [](void*, int argc, const char* const* argv, SkOut* out) { return debug(argc - 1, argv + 1, out); },
                    nullptr, SK_CMD_OUTSIDE_FRAME);
@@ -2451,6 +2519,12 @@ bool init(const SkHost* h, SkMod* m, Ctx ctx)
 }
 
 bool available() { return g_ok; }
+bool ready_for_run(uint64_t expected){
+    if(!expected || !active() || g_run!=expected || run()!=expected || !g_world_error.empty() || !play())return false;
+    if(host())return g_goal_sequence!=0;
+    return g_applied_goals_run==expected && g_roster_sequence &&
+        std::all_of(g_roster_received.begin(),g_roster_received.end(),[](bool received){return received;});
+}
 adventure_pickups::Ctx pickups_context()
 {
     adventure_pickups::Ctx context;
@@ -2467,6 +2541,24 @@ adventure_pickups::Ctx pickups_context()
         retire_identity({id.marker,id.incarnation});
     };
     context.captain_heal=C.captain_heal; context.teleport=C.teleport;
+    context.actor_teleport=[](adventure_pickups::Identity id,uint64_t generation,net::Vec3& position,net::Quat& orientation){
+        Identity actor{id.marker,id.incarnation};
+        if(!active() || !generation || g_retired_items.count(actor))return false;
+        auto found=g_actor_warps.find(actor);
+        if(found!=g_actor_warps.end() && generation<found->second.generation)return false;
+        auto remote=g_remote.find(actor);
+        if(found!=g_actor_warps.end() && generation==found->second.generation){
+            if(remote!=g_remote.end() && remote->second.motion_generation==generation){position=remote->second.position;orientation=remote->second.orientation;}
+            else {position=found->second.position;orientation=found->second.orientation;}
+            return true;
+        }
+        g_actor_warps[actor]={generation,position,orientation};
+        if(remote!=g_remote.end()){
+            remote->second.motion_generation=generation;remote->second.position=position;remote->second.orientation=orientation;
+            remote->second.seen=H->time_seconds();
+        }
+        return true;
+    };
     context.failed=C.interaction_failed;
     return context;
 }
@@ -2617,8 +2709,10 @@ int debug(int argc, const char* const* argv, SkOut* output)
 {
     auto say = [&](const std::string& text) { H->out_printf(output, "%s", text.c_str()); };
     if (!argc || std::string(argv[0]) == "status") { say(status(true)); return 0; }
-    if (!active() || !play()) { say("No committed adventure is running.\n"); return 1; }
     std::string action = argv[0];
+    const bool local_fixture=item_fixture_profile(GetCommandLineW()) && play() &&
+        (action=="actors" || action=="actorsat" || action=="actorroute");
+    if ((!active() || !play()) && !local_fixture) { say("No committed adventure is running.\n"); return 1; }
     if((action=="give" || action=="throw" || action=="detachtool") && !item_fixture_profile(GetCommandLineW())) {
         say("Native item fixture commands require an explicit isolated winlab_ profile.\n"); return 1;
     }
@@ -2700,6 +2794,13 @@ int debug(int argc, const char* const* argv, SkOut* output)
             for (const auto& actor : g_native) if ((action=="actorsat" ? actor.marker==first : actor.marker>=first) && shown++ < limit) {
                 out << "marker=" << actor.marker << " incarnation=" << actor.incarnation << " noun=" << actor.noun
                     << " object=" << actor.object << " class=" << skg::field<int>(actor.object, 0x1C);
+                const auto pos=skg::field<net::Vec3>(actor.spatial,4);float xy[2];
+                out << " pos=(" << pos.x << "," << pos.y << "," << pos.z << ")";
+                if(H->world_to_screen && H->world_to_screen(&pos.x,xy) && std::isfinite(xy[0]) && std::isfinite(xy[1]))out << " screen=(" << xy[0] << "," << xy[1] << ")";
+                if(actor.combatant)out << " hp=" << skg::field<float>(actor.combatant,0x38) << " max_hp=" << max_health(actor.combatant) << " hostile=" << (hostile(actor.object)?1:0);
+                if(game::cast(actor.object,kCreature))out << " cooldown=" << unsigned(skg::field<bool>(actor.object,0xE60));
+                auto warp=g_actor_warps.find({actor.marker,actor.incarnation});
+                out << " motion_generation=" << (warp==g_actor_warps.end()?0:warp->second.generation);
                 void* powerup=powerup_for(actor.object);
                 if(powerup && skg::readable(powerup,0x3C)) out << " powerup=" << skg::field<int>(powerup,4)
                     << " key_category=" << (skg::field<void*>(powerup,0x18) ? skg::cdecl_call<uint32_t>(a_GateKey,powerup) : 0);
@@ -2728,6 +2829,18 @@ int debug(int argc, const char* const* argv, SkOut* output)
         }
         return spawner;
     };
+    if(action=="actorroute" && argc==3){
+        auto* actor=marker_actor(uint32_t(number(1)));auto* entry=marker_actor(uint32_t(number(2)));
+        if(!item_fixture_profile(GetCommandLineW()) || (active()&&!host()) || !actor || !entry ||
+           !game::cast(actor->object,kCreature) || entry->powerup_kind!=8 ||
+           (C.held && C.held()) || skg::field<bool>(actor->object,0xB5E)){
+            say("A living host NPC, teleporter and isolated winlab_ profile are required.\n");return 1;
+        }
+        // Ordinary native locomotion, never direct powerup activation or warp.
+        // Actual collision must reach ReactToPowerup for this fixture to pass.
+        game::move_to(actor->object,skg::field<net::Vec3>(entry->spatial,4),.05f);
+        say("NPC native route to teleporter requested.\n");return 0;
+    }
     if(action=="detachtool" && argc==3 && !host()) {
         auto* actor=marker_actor(uint32_t(number(1))); size_t index=number(2); void* spatial=nullptr;
         if(actor && game::cast(actor->object,kCreature))

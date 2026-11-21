@@ -5,9 +5,48 @@
 
 #include <algorithm>
 
+#include "../mods/coop/fix_switch.h"
+#include "pending.h"
 #include "sha256.h"
 
 namespace upd {
+
+FIX_SWITCH(g_old_suffix_fix); // update.old_suffix, BUG-0114: our own .sporecoop-old suffix, only ours cleaned
+FIX_SWITCH(g_keep_failed_fix); // update.keep_failed, BUG-0150: a failed pending swap keeps its files
+int g_swap_delay_ms = 0;
+std::string g_swap_delay_file; // not a lab switch: test hook (BUG-0243)
+int g_fail_swap_at = 0;         // not a lab switch: test hook (BUG-0242)
+FIX_SWITCH(g_lock_fix); // update.lock, BUG-0243: the update lock of a game folder
+FIX_SWITCH(g_web_fallback_fix); // update.web_fallback, BUG-0392: the release page when the API refuses
+// update.pending_whole, BUG-1019: apply_pack kept only the first 4096 bytes of an existing sporecoop.pending (one
+// ReadFile into a stack buffer); a longer list was cut mid-line and the cut line glued to the first new entry. Now
+// the whole list (up to 1 MB, as pending.h reads it), ended by a newline, without lines that are there already.
+FIX_SWITCH(g_pending_whole_fix);
+
+// BUG-0243: the update lock of a game folder, made so that a game run by the player and a setup run
+// as administrator can open each other's (a NULL DACL); waits at most wait_ms. nullptr: not taken
+// (another update holds it that long) or it cannot be made: the update goes on without it.
+static HANDLE take_update_lock(const std::wstring& root, DWORD wait_ms)
+{
+    sc_update_lock_fix = g_lock_fix ? 1 : 0;
+    wchar_t name[160];
+    if (!g_lock_fix || !sc_lock_name(L"SporeCoopUpdate-", root.c_str(), name, 160))
+        return nullptr;
+    SECURITY_DESCRIPTOR sd;
+    SECURITY_ATTRIBUTES sa{sizeof sa, &sd, FALSE};
+    bool sd_ok = InitializeSecurityDescriptor(&sd, SECURITY_DESCRIPTOR_REVISION) &&
+                 SetSecurityDescriptorDacl(&sd, TRUE, nullptr, FALSE);
+    HANDLE h = CreateMutexW(sd_ok ? &sa : nullptr, FALSE, name);
+    if (!h)
+        h = OpenMutexW(SYNCHRONIZE | MUTEX_MODIFY_STATE, FALSE, name);
+    if (!h)
+        return nullptr;
+    DWORD r = WaitForSingleObject(h, wait_ms);
+    if (r == WAIT_OBJECT_0 || r == WAIT_ABANDONED)
+        return h;
+    CloseHandle(h);
+    return nullptr;
+}
 
 std::wstring widen(const std::string& s)
 {
@@ -29,10 +68,43 @@ std::string narrow(const std::wstring& w)
     return s;
 }
 
-bool http_get(const std::string& url, std::vector<uint8_t>& out, std::string& err, const Progress& progress,
-              uint32_t max_bytes)
+FIX_SWITCH(g_retry_fix); // update.retry, BUG-0755: transient failures (5xx, 429, broken connections) are retried
+int g_retry_unit_ms = 1000; // not a lab switch: test hook (BUG-0755), the backoff unit (waits 1 and 3 units)
+void (*g_log)(const std::string&) = nullptr;
+
+namespace {
+// what one attempt tells the retry loop (BUG-0755)
+struct Attempt {
+    bool transient = false; // worth another try: 5xx, 429, no connection, a timeout, a broken-off body
+    int retry_after_s = -1; // a 429's / 503's Retry-After in seconds, -1 = none
+};
+
+// WinHTTP errors of a connection that may work a moment later; a bad address, a certificate problem
+// or a refused redirect will not
+bool transient_error(DWORD e)
 {
-    out.clear();
+    switch (e) {
+    case ERROR_WINHTTP_TIMEOUT:
+    case ERROR_WINHTTP_CANNOT_CONNECT:
+    case ERROR_WINHTTP_CONNECTION_ERROR:
+    case ERROR_WINHTTP_NAME_NOT_RESOLVED:
+    case ERROR_WINHTTP_INVALID_SERVER_RESPONSE:
+    case ERROR_WINHTTP_RESEND_REQUEST:
+        return true;
+    default:
+        return false;
+    }
+}
+} // namespace
+
+// one GET. follow = false: a redirect is not followed, its target goes to *location (the release
+// page's redirect, BUG-0392); a 200 then also tells the address it ended at
+static bool request_once(const std::string& url, bool follow, std::vector<uint8_t>* out, std::string* location,
+                         std::string& err, const Progress& progress, uint32_t max_bytes, Attempt& at_)
+{
+    at_ = Attempt{};
+    if (out)
+        out->clear();
     std::wstring wurl = widen(url);
     URL_COMPONENTS uc{};
     uc.dwStructSize = sizeof uc;
@@ -59,18 +131,51 @@ bool http_get(const std::string& url, std::vector<uint8_t>& out, std::string& er
                     : nullptr;
     bool ok = false;
     if (r) {
-        // GitHub answers the API in JSON and redirects downloads to its file host
-        const wchar_t* hdr = L"Accept: application/vnd.github+json, application/octet-stream\r\n";
+        if (!follow) {
+            DWORD v = WINHTTP_DISABLE_REDIRECTS;
+            WinHttpSetOption(r, WINHTTP_OPTION_DISABLE_FEATURE, &v, sizeof v);
+            v = WINHTTP_OPTION_REDIRECT_POLICY_NEVER;
+            WinHttpSetOption(r, WINHTTP_OPTION_REDIRECT_POLICY, &v, sizeof v);
+        }
+        // GitHub answers the API in JSON and redirects downloads to its file host; the release page
+        // is asked for as a browser does (with an Accept of JSON github.com answers it differently)
+        const wchar_t* hdr = follow ? L"Accept: application/vnd.github+json, application/octet-stream\r\n"
+                                    : L"Accept: text/html\r\n";
         if (WinHttpSendRequest(r, hdr, (DWORD)-1, WINHTTP_NO_REQUEST_DATA, 0, 0, 0) &&
             WinHttpReceiveResponse(r, nullptr)) {
             DWORD status = 0, len = sizeof status;
             WinHttpQueryHeaders(r, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_HEADER_NAME_BY_INDEX,
                                 &status, &len, WINHTTP_NO_HEADER_INDEX);
+            if (status >= 500 || status == 429) {
+                at_.transient = true;
+                DWORD ra = 0;
+                len = sizeof ra;
+                if (WinHttpQueryHeaders(r, WINHTTP_QUERY_RETRY_AFTER | WINHTTP_QUERY_FLAG_NUMBER,
+                                        WINHTTP_HEADER_NAME_BY_INDEX, &ra, &len, WINHTTP_NO_HEADER_INDEX))
+                    at_.retry_after_s = (int)std::min<DWORD>(ra, 1u << 20);
+            }
             DWORD total = 0;
             len = sizeof total;
             WinHttpQueryHeaders(r, WINHTTP_QUERY_CONTENT_LENGTH | WINHTTP_QUERY_FLAG_NUMBER,
                                 WINHTTP_HEADER_NAME_BY_INDEX, &total, &len, WINHTTP_NO_HEADER_INDEX);
-            if (status != 200) {
+            if (location) {
+                wchar_t loc[2048] = {};
+                len = sizeof loc - sizeof(wchar_t);
+                if (status >= 300 && status < 400 &&
+                    WinHttpQueryHeaders(r, WINHTTP_QUERY_LOCATION, WINHTTP_HEADER_NAME_BY_INDEX, loc, &len,
+                                        WINHTTP_NO_HEADER_INDEX)) {
+                    *location = narrow(loc);
+                    ok = true;
+                } else if (status == 200) { // the redirect was followed after all: where it ended
+                    len = sizeof loc - sizeof(wchar_t);
+                    if (WinHttpQueryOption(r, WINHTTP_OPTION_URL, loc, &len)) {
+                        *location = narrow(loc);
+                        ok = true;
+                    } else
+                        err = "no release address from " + url;
+                } else
+                    err = "the server answered " + std::to_string(status) + " for " + url;
+            } else if (status != 200) {
                 err = "the server answered " + std::to_string(status) + " for " + url;
             } else {
                 ok = true;
@@ -78,31 +183,44 @@ bool http_get(const std::string& url, std::vector<uint8_t>& out, std::string& er
                     DWORD avail = 0;
                     if (!WinHttpQueryDataAvailable(r, &avail)) {
                         ok = false;
-                        err = "the download broke off";
+                        err = "the download broke off (error " + std::to_string(GetLastError()) + ")";
+                        at_.transient = true;
                         break;
                     }
-                    if (avail == 0)
+                    if (avail == 0) {
+                        // the server closed the connection before Content-Length bytes (BUG-0755)
+                        if (g_retry_fix && total && out->size() < total) {
+                            ok = false;
+                            err = "the download broke off (" + std::to_string(out->size()) + " of " +
+                                  std::to_string(total) + " bytes)";
+                            at_.transient = true;
+                        }
                         break;
-                    size_t at = out.size();
+                    }
+                    size_t at = out->size();
                     if (at + avail > max_bytes) {
                         ok = false;
                         err = "the download is too big";
                         break;
                     }
-                    out.resize(at + avail);
+                    out->resize(at + avail);
                     DWORD got = 0;
-                    if (!WinHttpReadData(r, out.data() + at, avail, &got)) {
+                    if (!WinHttpReadData(r, out->data() + at, avail, &got)) {
                         ok = false;
-                        err = "the download broke off";
+                        err = "the download broke off (error " + std::to_string(GetLastError()) + ")";
+                        at_.transient = true;
                         break;
                     }
-                    out.resize(at + got);
+                    out->resize(at + got);
                     if (progress)
-                        progress(out.size(), total);
+                        progress(out->size(), total);
                 }
             }
-        } else
-            err = "cannot reach " + narrow(host) + " (error " + std::to_string(GetLastError()) + ")";
+        } else {
+            DWORD e = GetLastError();
+            err = "cannot reach " + narrow(host) + " (error " + std::to_string(e) + ")";
+            at_.transient = transient_error(e);
+        }
         WinHttpCloseHandle(r);
     } else
         err = "cannot reach " + narrow(host);
@@ -112,13 +230,79 @@ bool http_get(const std::string& url, std::vector<uint8_t>& out, std::string& er
     return ok;
 }
 
+// BUG-0755: GitHub's file host answers a 504 now and then (or drops the connection); one attempt
+// made the whole update fail. Transient failures are tried again after 1 and 3 units (1 s): at
+// most kAttempts attempts, a 429 / 503 Retry-After is waited for when it is at most kMaxRetryAfterS,
+// and no new attempt starts later than kMaxTotalMs after the first. A 4xx other than 429 is final.
+// Off (update.retry off): one attempt, as before.
+static bool request(const std::string& url, bool follow, std::vector<uint8_t>* out, std::string* location,
+                    std::string& err, const Progress& progress, uint32_t max_bytes)
+{
+    constexpr int kAttempts = 3;
+    constexpr int kMaxRetryAfterS = 10;
+    constexpr DWORD kMaxTotalMs = 60000;
+    static const int kBackoff[kAttempts - 1] = {1, 3};
+    DWORD start = GetTickCount();
+    for (int n = 1;; n++) {
+        Attempt a;
+        if (request_once(url, follow, out, location, err, progress, max_bytes, a)) {
+            err.clear(); // an earlier attempt's error is not the answer
+            return true;
+        }
+        if (!g_retry_fix || !a.transient)
+            return false;
+        int wait_ms = n < kAttempts ? kBackoff[n - 1] * g_retry_unit_ms : 0;
+        bool too_late = a.retry_after_s > kMaxRetryAfterS;
+        if (a.retry_after_s >= 0 && !too_late)
+            wait_ms = std::max(wait_ms, a.retry_after_s * (g_retry_unit_ms < 1000 ? g_retry_unit_ms : 1000));
+        if (n >= kAttempts || too_late || GetTickCount() - start + (DWORD)wait_ms > kMaxTotalMs) {
+            if (n > 1)
+                err += " (after " + std::to_string(n) + " attempts)";
+            else if (too_late)
+                err += " (it asks to wait " + std::to_string(a.retry_after_s) + " s: not retried)";
+            return false;
+        }
+        if (g_log)
+            g_log("update: " + err + "; attempt " + std::to_string(n + 1) + " of " + std::to_string(kAttempts) +
+                  " in " + std::to_string(wait_ms) + " ms");
+        Sleep((DWORD)wait_ms);
+    }
+}
+
+bool http_get(const std::string& url, std::vector<uint8_t>& out, std::string& err, const Progress& progress,
+              uint32_t max_bytes)
+{
+    return request(url, true, &out, nullptr, err, progress, max_bytes);
+}
+
+bool http_location(const std::string& url, std::string& location, std::string& err)
+{
+    location.clear();
+    return request(url, false, nullptr, &location, err, {}, 0);
+}
+
 bool latest_release(const std::string& api_url, Release& out, std::string& err)
 {
     std::vector<uint8_t> body;
-    if (!http_get(api_url, body, err, {}, 4u << 20))
+    std::string api_err;
+    if (http_get(api_url, body, api_err, {}, 4u << 20)) {
+        if (parse_release(std::string(body.begin(), body.end()), out))
+            return true;
+        api_err = "no release found";
+    }
+    err = api_err;
+    // BUG-0392: the API refused (403 / 429: 60 calls an hour per IP without a login, shared IPs and
+    // VPNs hit it) or failed: the release page's redirect names the newest tag without the API
+    std::string web = g_web_fallback_fix ? web_latest_url(api_url) : std::string();
+    if (web.empty())
         return false;
-    if (!parse_release(std::string(body.begin(), body.end()), out)) {
-        err = "no release found";
+    std::string loc, web_err;
+    if (!http_location(web, loc, web_err)) {
+        err = api_err + "; the release page: " + web_err;
+        return false;
+    }
+    if (!release_from_redirect(web, loc, out)) {
+        err = api_err + "; the release page names no release (" + loc + ")";
         return false;
     }
     return true;
@@ -139,7 +323,15 @@ bool download_pack(const Release& r, Pack& out, std::string& err, const Progress
         err = "the downloaded update does not match the release checksum";
         return false;
     }
-    return parse_pack(pack, out, err);
+    if (!parse_pack(pack, out, err))
+        return false;
+    // BUG-0392: a release found through the page has no asset list from the API; its pack must also
+    // be the version of its tag
+    if (r.from_web && compare_versions(out.version, r.version) != 0) {
+        err = "the release " + r.tag + " holds the pack of version " + out.version;
+        return false;
+    }
+    return true;
 }
 
 bool read_pack_file(const std::wstring& path, Pack& out, std::string& err)
@@ -206,6 +398,10 @@ static std::string why(const char* what, const std::wstring& p)
 bool apply_pack(const std::wstring& root, const Pack& p, std::string& err, int* pending)
 {
     std::string later; // relative paths that wait for the next start
+    if (std::string d = g_dup_fix ? duplicate_path(p.files) : std::string(); !d.empty()) {
+        err = "the pack lists a file twice: " + d; // BUG-0089 (packs built in memory too)
+        return false;
+    }
     // the game's own steam_api.dll is kept as steam_api_orig.dll (the loader forwards to it)
     // before the loader takes its place
     std::wstring sa = root + L"\\SporebinEP1\\steam_api.dll", orig = root + L"\\SporebinEP1\\steam_api_orig.dll";
@@ -238,7 +434,8 @@ bool apply_pack(const std::wstring& root, const Pack& p, std::string& err, int* 
         if ((f.flags & kOnlyIfMissing) && s.had)
             continue;
         s.fresh = s.target + L".new";
-        s.old = s.target + L".old";
+        // our own suffix (BUG-0114): "<file>.old" may be the player's own backup
+        s.old = s.target + (g_old_suffix_fix ? SC_OLD_SUFFIX : L".old");
         make_dirs(s.target);
         if (!write_all(s.fresh, f.data)) {
             err = why("cannot write", s.fresh);
@@ -248,8 +445,15 @@ bool apply_pack(const std::wstring& root, const Pack& p, std::string& err, int* 
         }
         steps.push_back(s);
     }
-    // 2. swap them in: the current file becomes *.old (a loaded DLL can be renamed, not overwritten)
+    // 2. swap them in: the current file becomes *.old (a loaded DLL can be renamed, not overwritten).
+    // Under the update lock (BUG-0243): only file operations until it is released
+    HANDLE lock = take_update_lock(root, 10000);
+    int swap_no = 0;
     for (auto& s : steps) {
+        if (g_fail_swap_at > 0 && ++swap_no == g_fail_swap_at) { // test hook: fails like "cannot replace"
+            err = why("cannot replace", s.target);
+            goto rollback;
+        }
         if (s.had) {
             DeleteFileW(s.old.c_str());
             if (!MoveFileExW(s.target.c_str(), s.old.c_str(), MOVEFILE_REPLACE_EXISTING)) {
@@ -262,6 +466,8 @@ bool apply_pack(const std::wstring& root, const Pack& p, std::string& err, int* 
                 goto rollback;
             }
             s.moved_old = true;
+            if (g_swap_delay_ms > 0 && (g_swap_delay_file.empty() || g_swap_delay_file == s.rel))
+                Sleep((DWORD)g_swap_delay_ms); // tests (BUG-0139): the target is gone until the next move
         }
         if (!MoveFileExW(s.fresh.c_str(), s.target.c_str(), MOVEFILE_REPLACE_EXISTING)) {
             err = why("cannot install", s.target);
@@ -273,19 +479,56 @@ bool apply_pack(const std::wstring& root, const Pack& p, std::string& err, int* 
         std::wstring list = root + L"\\SporebinEP1\\mods\\sporecoop.pending";
         std::vector<uint8_t> old;
         HANDLE f = CreateFileW(list.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
-        if (f != INVALID_HANDLE_VALUE) { // keep entries of an earlier update
+        if (f != INVALID_HANDLE_VALUE && !g_pending_whole_fix) { // keep entries of an earlier update (0.7.13: 4 KB)
             char b[4096];
             DWORD got = 0;
             ReadFile(f, b, sizeof b, &got, nullptr);
             CloseHandle(f);
             old.assign(b, b + got);
+        } else if (f != INVALID_HANDLE_VALUE) {
+            LARGE_INTEGER size{};
+            if (GetFileSizeEx(f, &size) && size.QuadPart > 0 && size.QuadPart <= (1 << 20)) {
+                old.resize((size_t)size.QuadPart);
+                DWORD got = 0;
+                if (!ReadFile(f, old.data(), (DWORD)old.size(), &got, nullptr))
+                    got = 0;
+                old.resize(got);
+            }
+            CloseHandle(f);
         }
-        old.insert(old.end(), later.begin(), later.end());
+        if (g_pending_whole_fix) {
+            if (!old.empty() && old.back() != '\n')
+                old.push_back('\n');
+            auto lines = [](const std::string& t) { // the list's lines without their line ends
+                std::vector<std::string> v;
+                for (size_t i = 0; i < t.size();) {
+                    size_t e = t.find('\n', i);
+                    if (e == std::string::npos)
+                        e = t.size();
+                    std::string ln = t.substr(i, e - i);
+                    if (!ln.empty() && ln.back() == '\r')
+                        ln.pop_back();
+                    if (!ln.empty())
+                        v.push_back(ln);
+                    i = e + 1;
+                }
+                return v;
+            };
+            std::vector<std::string> have = lines(std::string(old.begin(), old.end()));
+            for (auto& ln : lines(later))
+                if (std::find(have.begin(), have.end(), ln) == have.end()) { // a file deferred again: listed once
+                    have.push_back(ln);
+                    old.insert(old.end(), ln.begin(), ln.end());
+                    old.push_back('\n');
+                }
+        } else
+            old.insert(old.end(), later.begin(), later.end());
         if (!write_all(list, old)) {
             err = why("cannot write", list);
             goto rollback;
         }
     }
+    sc_update_unlock(lock);
     if (pending) {
         *pending = 0;
         for (auto& s : steps)
@@ -301,53 +544,78 @@ rollback:
         DeleteFileW(s.fresh.c_str());
         s.deferred = false;
     }
+    sc_update_unlock(lock);
     return false;
 }
 
 void apply_pending(const std::wstring& root)
 {
-    std::wstring list = root + L"\\SporebinEP1\\mods\\sporecoop.pending";
-    HANDLE f = CreateFileW(list.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
-    if (f == INVALID_HANDLE_VALUE)
-        return;
-    char b[4096];
-    DWORD got = 0;
-    ReadFile(f, b, sizeof b, &got, nullptr);
-    CloseHandle(f);
-    std::string text(b, got);
-    size_t p = 0;
-    while (p < text.size()) {
-        size_t e = text.find('\n', p);
-        if (e == std::string::npos)
-            e = text.size();
-        std::string rel = text.substr(p, e - p);
-        while (!rel.empty() && rel.back() == '\r')
-            rel.pop_back();
-        p = e + 1;
-        if (!allowed_path(rel))
-            continue;
-        std::wstring t = native(root, rel);
-        if (exists(t + L".new")) {
-            MoveFileExW(t.c_str(), (t + L".old").c_str(), MOVEFILE_REPLACE_EXISTING);
-            if (!MoveFileExW((t + L".new").c_str(), t.c_str(), MOVEFILE_REPLACE_EXISTING))
-                MoveFileExW((t + L".old").c_str(), t.c_str(), MOVEFILE_REPLACE_EXISTING);
-        }
-    }
-    DeleteFileW(list.c_str());
+    sc_pending_keep_failed = g_keep_failed_fix ? 1 : 0;
+    sc_update_lock_fix = g_lock_fix ? 1 : 0;
+    sc_apply_pending(root.c_str(), 0); // the replaced files: cleanup_old
 }
 
+// The backups an update made: "<file>.sporecoop-old" (BUG-0114). Before, every "*.old" in these
+// folders was deleted, also a player's own SporeApp.exe.old or another mod's backup. Backups from
+// versions before the fix were named "<file>.old": only those of SporeCoop's own files go.
+bool own_legacy_backup(const std::wstring& dir_rel, const std::wstring& name, bool loader_old)
+{
+    std::wstring n;
+    for (wchar_t c : name)
+        n += (wchar_t)towlower(c);
+    auto ends = [&](const wchar_t* t) {
+        size_t k = wcslen(t);
+        return n.size() >= k && n.compare(n.size() - k, k, t) == 0;
+    };
+    if (!ends(L".old"))
+        return false;
+    if (dir_rel == L"\\SporebinEP1")
+        return n == L"sporekit.dll.old" || (n == L"steam_api.dll.old" && loader_old);
+    if (dir_rel == L"\\SporebinEP1\\mods")
+        return n == L"coop.dll.old" || n == L"sporecoop.version.old";
+    if (dir_rel == L"\\SporebinEP1\\mods\\sporekit\\symbols")
+        return ends(L".sym.old");
+    if (dir_rel == L"\\Data")
+        return n == L"sporecoop.package.old";
+    return false;
+}
+
+static void cleanup_old_unlocked(const std::wstring& root);
+
 void cleanup_old(const std::wstring& root)
+{
+    // BUG-0243: an update running in this folder (an old image's thread after a hot reload, another
+    // instance) still needs its backups for a rollback: they go at the next start
+    sc_update_lock_fix = g_lock_fix ? 1 : 0;
+    HANDLE h;
+    if (!sc_update_trylock(root.c_str(), &h))
+        return;
+    cleanup_old_unlocked(root);
+    sc_update_unlock(h);
+}
+
+static void cleanup_old_unlocked(const std::wstring& root)
 {
     for (const wchar_t* dir : {L"\\SporebinEP1", L"\\SporebinEP1\\mods", L"\\SporebinEP1\\mods\\sporekit\\symbols",
                                L"\\Data"}) {
         std::wstring d = root + dir;
         WIN32_FIND_DATAW fd;
-        HANDLE h = FindFirstFileW((d + L"\\*.old").c_str(), &fd);
+        HANDLE h = FindFirstFileW((d + L"\\*").c_str(), &fd);
         if (h == INVALID_HANDLE_VALUE)
             continue;
-        do
-            DeleteFileW((d + L"\\" + fd.cFileName).c_str()); // still loaded: removed next time
-        while (FindNextFileW(h, &fd));
+        do {
+            if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
+                continue;
+            std::wstring n = fd.cFileName, p = d + L"\\" + n;
+            size_t k = wcslen(SC_OLD_SUFFIX);
+            bool ours = n.size() > k && _wcsicmp(n.c_str() + n.size() - k, SC_OLD_SUFFIX) == 0;
+            if (!g_old_suffix_fix) // the old behaviour: every *.old
+                ours = n.size() > 4 && _wcsicmp(n.c_str() + n.size() - 4, L".old") == 0;
+            else if (!ours)
+                ours = own_legacy_backup(dir, n, _wcsicmp(n.c_str(), L"steam_api.dll.old") == 0 && is_loader(p));
+            if (ours)
+                DeleteFileW(p.c_str()); // still loaded: removed next time
+        } while (FindNextFileW(h, &fd));
         FindClose(h);
     }
 }
@@ -368,18 +636,57 @@ std::string installed_version(const std::wstring& root)
     return v;
 }
 
-bool is_loader(const std::wstring& dll)
+bool inspect_loader(const std::wstring& dll, bool& loader)
 {
+    loader = false;
     HANDLE f = CreateFileW(dll.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, 0,
                            nullptr);
     if (f == INVALID_HANDLE_VALUE)
         return false;
     std::vector<char> b(256 << 10);
     DWORD got = 0;
-    ReadFile(f, b.data(), (DWORD)b.size(), &got, nullptr);
+    BOOL ok = ReadFile(f, b.data(), (DWORD)b.size(), &got, nullptr);
     CloseHandle(f);
+    if (!ok || got == 0)
+        return false;
     static const char tag[] = "sporekit-loader";
-    return std::search(b.begin(), b.begin() + got, tag, tag + sizeof tag - 1) != b.begin() + got;
+    loader = std::search(b.begin(), b.begin() + got, tag, tag + sizeof tag - 1) != b.begin() + got;
+    return true;
+}
+
+bool is_loader(const std::wstring& dll)
+{
+    bool loader = false;
+    return inspect_loader(dll, loader) && loader;
+}
+
+bool try_update_lock(const std::wstring& root, void** held)
+{
+    *held = nullptr;
+    if (!g_lock_fix)
+        return true;
+    HANDLE h = take_update_lock(root, 0);
+    if (h) {
+        *held = h;
+        return true;
+    }
+    // not taken: held by another update, or it cannot be made at all (then nobody else has it either)
+    wchar_t name[160];
+    if (!sc_lock_name(L"SporeCoopUpdate-", root.c_str(), name, 160))
+        return true;
+    HANDLE o = OpenMutexW(SYNCHRONIZE, FALSE, name);
+    if (!o)
+        return GetLastError() != ERROR_ACCESS_DENIED; // no such lock: nobody holds it
+    CloseHandle(o);
+    return false;
+}
+
+void release_update_lock(void* held)
+{
+    if (held) {
+        ReleaseMutex((HANDLE)held);
+        CloseHandle((HANDLE)held);
+    }
 }
 
 } // namespace upd

@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "buffer.h"
+#include "fixes.h"
 #include "udp.h"
 
 namespace net {
@@ -44,9 +45,38 @@ constexpr unsigned kRelWindow = 2048;
 
 struct ConnStats {
     uint32_t packets_sent = 0, packets_recv = 0, resends = 0, acked = 0;
-    // Actual UDP payload bytes, including headers and retransmitted messages.
+    uint32_t split = 0;     // reliable messages sent in pieces (bigger than one packet)
+    uint32_t too_big = 0;   // reliable messages refused: above kMaxReliable
+    uint32_t joined = 0;    // reliable messages received in pieces and joined
+    uint32_t frag_lost = 0; // received pieces thrown away (a message above kMaxReliable, or a peer that never split)
+    uint32_t too_big_old = 0; // reliable messages not sent: above one packet for a peer that cannot join pieces
+    // BUG-0612 (oversize part): unreliable messages that can never fit a packet (they were dropped without a word);
+    // the size and type of the last one, for the session's log line
+    uint32_t unrel_too_big = 0, unrel_too_big_logged = 0;
+    uint8_t unrel_too_big_type = 0;
+    uint32_t unrel_too_big_size = 0;
+    // support diagnostics (diag_stats.cpp): datagram bytes both ways, packets lost (an ack kLostAfter
+    // to kAckWindow packets later does not have them) and the round trip
+    // samples since the last take_window()
     uint64_t bytes_sent = 0, bytes_recv = 0;
+    uint64_t rel_bytes_in = 0; // BUG-1108: reliable payload bytes received (pieces of a split message counted as they come)
+    uint32_t lost = 0;
+    float rtt_min = 0, rtt_max = 0, rtt_sum = 0;
+    uint32_t rtt_n = 0;
+    void take_window() { rtt_min = rtt_max = rtt_sum = 0; rtt_n = 0; }
 };
+
+// Logical retained transport containers, excluding allocator/deque/map overhead.
+struct ConnectionAccounting {
+    size_t connections = 0, sent_packets = 0, sent_id_capacity = 0;
+    size_t reliable_out = 0, reliable_in = 0, unreliable_out = 0, unreliable_slots_capacity = 0;
+    size_t payload_size = 0, payload_capacity = 0;
+    bool operator==(const ConnectionAccounting&) const = default;
+};
+constexpr unsigned kLostAfter = 32;
+// largest reliable message (BUG-0034): bigger ones are split into pieces of one packet each and
+// joined by the receiver; this caps what a receiver collects for one message
+constexpr size_t kMaxReliable = 1u << 20;
 
 class Connection {
 public:
@@ -58,19 +88,53 @@ public:
     // connection and late packets of the old one are told apart instead of corrupting the new one
     uint32_t conn_id = 0;
     float rtt_ms = 100.f;
+    // BUG-0651: the last kRttRing round-trip samples (ms) and their q-quantile (-1 under 16 samples). The mean
+    // above follows every latency spike and both games' frame times; a low quantile is the link's own latency
+    static constexpr size_t kRttRing = 128;
+    float rtt_ring[kRttRing] = {};
+    uint32_t rtt_ring_n = 0;
+    float rtt_quantile(float q) const;
+    // the time (ms) of this game's previous read of the socket (Session::update): a sample's ack came in between that
+    // read and this one, so half of that wait is taken off the ring's sample (a loaded game's own frame time)
+    uint32_t poll_prev_ms = 0;
     uint32_t last_recv_ms = 0;
     uint32_t created_ms = 0;
     ConnStats stats;
+    // BUG-0219: the peer joins split reliable messages (its HELLO / WELCOME caps bit CAP_SPLIT). A
+    // 0.7.2 peer read every piece as a whole message (long chat lost, the species table emptied).
+    // false (the safe side) until the handshake says otherwise
+    bool peer_split = false;
+    // the largest reliable message that goes in one packet (no split needed)
+    // (kMaxPacket 1200 - the 31-byte header - type, flags, len, rel_id; checked in connection.cpp)
+    static constexpr size_t kMaxSingle = 1200 - 31 - 6;
 
     void send_reliable(uint8_t type, const Writer& w);
     // first: ahead of what is queued (the player state must not wait behind a big snapshot)
     void send_unreliable(uint8_t type, const Writer& w, bool first = false);
     size_t pending_reliable() const { return rel_out_.size(); }
+    size_t pending_bytes() const { return rel_out_bytes_; } // BUG-1108: payload bytes of the reliable messages not acked yet
+    // the rel_id the next reliable message (or its first piece) gets; with it a caller marks the
+    // messages it sends: [before, after) of one send
+    uint16_t next_rel_id() const { return next_rel_id_; }
+    // every reliable message with a rel_id in [lo, hi) was acknowledged by the peer (its transport
+    // has it and delivers it in order), BUG-0542
+    bool rel_acked(uint16_t lo, uint16_t hi) const
+    {
+        for (auto& m : rel_out_)
+            if ((uint16_t)(m.rel_id - lo) < (uint16_t)(hi - lo))
+                return false;
+        return true;
+    }
 
     // Builds the next datagram if anything is due (messages, acks, keepalive).
     bool build_packet(uint32_t now, std::vector<uint8_t>& out);
     // Parses a datagram, updates acks, delivers messages in order. false = invalid packet.
     bool on_packet(const uint8_t* data, size_t n, uint32_t now, const Deliver& deliver);
+
+    // BUG-0405: so many packets arrived since our last one that the oldest of them would fall out
+    // of the ack bits of the next one: acknowledge now, not at the end of the frame
+    bool ack_urgent() const { return g_fix.bulk_acks && recv_since_send_ >= kAckEvery; }
+    static constexpr unsigned kAckEvery = 48;
 
     static bool looks_valid(const uint8_t* data, size_t n);
     static uint32_t peek_conn(const uint8_t* data, size_t n); // conn id of a valid packet
@@ -80,7 +144,9 @@ private:
         uint8_t type;
         uint16_t rel_id;
         std::vector<uint8_t> payload;
+        bool more = false; // a piece of a split message, more pieces follow (wire flag 2)
         uint32_t last_sent = 0;
+        uint16_t last_seq = 0; // the packet it went out in last (BUG-0405)
         int sends = 0;
     };
     struct SentPkt {
@@ -88,28 +154,60 @@ private:
         uint32_t time;
         std::vector<uint16_t> rel_ids;
         bool acked = false;
+        bool lost = false; // counted in stats.lost
     };
 
     void ack_packet(SentPkt& p, uint32_t now);
 
+    // BUG-0030: the first packet is seq 1. A peer that has received nothing writes ack 0 (with no ack
+    // bits); with a first packet of seq 0 that "acknowledged" it, and a lost first packet of the host
+    // (the WELCOME) was never resent: the join failed after 10 s. No wire change.
     uint16_t local_seq_ = 0;
+    bool seq_started_ = false;
     uint16_t remote_seq_ = 0;
     AckBits recv_bits_;
     bool have_remote_ = false;
     bool ack_pending_ = false;
     uint32_t last_send_ms_ = 0;
+    // BUG-0405: packets received since our last packet (its ack bits cover 128 back), and the newest
+    // of our packets the peer acknowledged (a message sent before it and not acknowledged is lost)
+    unsigned recv_since_send_ = 0;
+    uint16_t newest_acked_seq_ = 0;
+    bool any_acked_ = false;
 
     std::deque<SentPkt> sent_;
     uint16_t next_rel_id_ = 0;
     std::deque<OutMsg> rel_out_;
+    size_t rel_out_bytes_ = 0; // the payload bytes in rel_out_ (BUG-1108)
     uint16_t next_rel_expected_ = 0;
-    std::map<uint16_t, std::pair<uint8_t, std::vector<uint8_t>>> rel_in_;
+    struct InMsg {
+        uint8_t type, flags;
+        std::vector<uint8_t> payload;
+    };
+    std::map<uint16_t, InMsg> rel_in_;
+    // pieces of a split reliable message received so far (reliable delivery is in order)
+    std::vector<uint8_t> frag_;
+    uint8_t frag_type_ = 0;
+    bool frag_on_ = false, frag_drop_ = false;
+    void deliver_reliable(uint8_t type, uint8_t flags, const uint8_t* p, size_t len, const Deliver& deliver);
     std::vector<std::pair<uint8_t, std::vector<uint8_t>>> unrel_out_;
 
 public:
     // unreliable messages not sent by the end of a flush are stale by the next one
     void drop_unreliable() { unrel_out_.clear(); }
     size_t unreliable_queued() const { return unrel_out_.size(); }
+    ConnectionAccounting retained_accounting() const {
+        ConnectionAccounting a; a.connections = 1; a.sent_packets = sent_.size();
+        a.reliable_out = rel_out_.size(); a.reliable_in = rel_in_.size();
+        a.unreliable_out = unrel_out_.size(); a.unreliable_slots_capacity = unrel_out_.capacity();
+        for (const auto& packet : sent_) a.sent_id_capacity += packet.rel_ids.capacity() * sizeof(uint16_t);
+        for (const auto& message : rel_out_) { a.payload_size += message.payload.size(); a.payload_capacity += message.payload.capacity(); }
+        for (const auto& [serial, message] : rel_in_) { (void)serial; a.payload_size += message.payload.size(); a.payload_capacity += message.payload.capacity(); }
+        a.payload_size += frag_.size(); a.payload_capacity += frag_.capacity();
+        for (const auto& message : unrel_out_) { a.payload_size += message.second.size(); a.payload_capacity += message.second.capacity(); }
+        return a;
+    }
+
 
 private:
 };

@@ -1,14 +1,26 @@
 # Live multiplayer Adventure Editor: implementation plan
 
-**Status: proposed, not implemented.** This plan follows the published
+**Status: implementation under validation.** The placement collaboration core,
+native adapter, durable project store and group playtest integration are being
+implemented against the stages below. See the
+[development guide](MULTIPLAYER-ADVENTURE-EDITOR.md) for supported controls and
+remaining acceptance gates. This plan follows the published
 [v0.7.4.0 release](https://github.com/jwhans0n/SporeCoopGA/releases/tag/v0.7.4.0).
 That release supports co-op adventure play, not shared adventure editing. This
-document changes no game code, installed files, or released protocol 15.
+release remains unchanged. The current development candidate is editor preview 9,
+protocol 23. It extends the original placement plan with crew editing, ordered
+terraforming, independent asset editors and optional extended complexity.
+See the [current validation report](reports/EDITOR-PREVIEW9-VALIDATION.md) for
+the completed checks and pending native acceptance. Earlier protocol 16/17
+milestones and the published protocol 15 gameplay release retain their history.
 
 The goal is for a party to create and edit one adventure together in native Spore
 editor windows, playtest a committed draft together, and return to that draft.
-Native feasibility work must precede implementation promises. All newly proposed
-native editing, history, Save As, and editor-transition APIs remain unverified.
+Native feasibility work must precede implementation promises. Verified editing,
+history, Save As and transition recipes are recorded in
+[the authoring notes](re/adventure-world.md#editor-ui-mutation-ownership-and-chronological-native-history)
+and [the save notes](re/adventure-editor-save.md). Future APIs still require
+their own verification and runtime acceptance.
 
 ## Scope and defaults
 
@@ -21,7 +33,7 @@ native editing, history, Save As, and editor-transition APIs remain unverified.
 | History | Automatic gesture transactions and ordinary own-action Undo/Redo in v1; shared activity/history UI and selective operations are later work. No manual commits required. |
 | Saving | Host creates a new native local draft with Save As. Original adventure remains intact. Guests persist verified recovery checkpoints/journals and report their durable revision. |
 | Playtest | Party confirms an immutable committed snapshot; editing stops until everyone returns. |
-| Initial exclusions | Terrain sculpting, nested creation editors, automatic EA publication, mixed builds, and editing while others playtest. |
+| Original v1 exclusions | Terrain sculpting and nested creation editors were deferred from the placement milestone. Preview 9 investigates both; automatic EA publication, mixed builds and editing while others playtest remain excluded. |
 | Later editors | Reuse the collaboration core through separate verified native editor adapters. |
 
 The first usable placement preview completes stages 0-4, including four-player
@@ -29,7 +41,7 @@ hardening for every advertised feature. It covers opening/joining a project, pre
 creation/duplication/deletion and transforms, supported property editing, checked
 Undo, saving, recovery, and party playtest. Stage 5 adds acts, objectives,
 conversations, and global settings as their native transactions become verified.
-Terrain remains a separate expansion. A restricted placement preview must say
+Terrain is a separate preview 9 expansion with its own acceptance gates. A restricted placement preview must say
 which authoring controls remain unavailable; it must not be presented as complete
 Adventure Editor support.
 The host enters through normal native creation/opening UI, starts a new adventure
@@ -89,8 +101,9 @@ commands, context menus, and hotkeys.
 Add a game-independent collaboration coordinator, a native Adventure Editor adapter,
 a durable project store, and a small native collaboration panel. Keep authoring
 messages separate from gameplay's run-scoped adventure messages. Assign a future
-protocol version when implementation introduces incompatible messages; protocol 15
-remains unchanged by this plan.
+protocol version when implementation introduces incompatible messages. The
+placement implementation introduces protocol 16 and `MSG_EDITOR`; the published
+GA release retains protocol 15.
 
 Each project has a persistent UUID. Each hosted session has a new epoch; each
 committed transaction advances a document revision. Assign stable IDs and
@@ -288,6 +301,13 @@ Follow-ups are separate planning items, not prerequisites for the initial group
 playtest preview or claims of implemented native support.
 
 ## Validation and performance gates
+
+These are release-acceptance gates. During implementation, use focused
+deterministic tests and short two-player native reproductions, then integration
+checks at coherent checkpoints. Reserve the long matrix for an explicitly
+requested overnight candidate run. See the [testing playbook](EDITOR-TESTING-PLAYBOOK.md).
+Pending acceptance checks do not prevent private feature development and must
+remain visible before any user-facing release.
 
 Use [lab tooling](../tools/windows_lab.py) and
 [test guidance](06-testing.md) with hidden, muted, isolated profiles, first two

@@ -30,6 +30,8 @@ int main()
           "cancelled preparation restores the party lobby");
     check(select_page(true, false, true, false) == Page::AdventureSettings,
           "adventure difficulty is available before choosing an adventure");
+    check(select_page(true, false, false, false) == Page::Lobby,
+          "editor parties use the normal lobby");
     std::printf("UI page routing: %s\n", failures ? "FAIL" : "PASS");
     return failures ? 1 : 0;
 }

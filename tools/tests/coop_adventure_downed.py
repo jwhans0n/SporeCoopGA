@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# suite: none (opt-in native Windows fixture requiring an already-owned hidden lab and explicit private inputs; automatic launcher qualification is tracked by BUG-1259)
 """Check real downed movement and camera input in an existing hidden lab pair.
 
 Start a manual-revive adventure and separate captains by at least 8 metres first.

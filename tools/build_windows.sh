@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Build loader, SporeKit and coop.dll on a Windows host (Git Bash) without make.
-# Same flags as the Makefile. Needs the llvm-mingw Windows toolchain
+# Product resources and libraries match the Makefile. Set FORCE=1 after header changes. Needs the llvm-mingw Windows toolchain
 # (https://github.com/mstorsjo/llvm-mingw/releases, llvm-mingw-<ver>-ucrt-x86_64.zip):
 #   LLVM_MINGW=/c/path/to/llvm-mingw-20261006-ucrt-x86_64 tools/build_windows.sh [loader|sporekit|coop|all]
 set -euo pipefail
@@ -8,6 +8,7 @@ cd "$(dirname "$0")/.."
 : "${LLVM_MINGW:?set LLVM_MINGW to the llvm-mingw folder}"
 CC="$LLVM_MINGW/bin/i686-w64-mingw32-clang"
 CXX="$LLVM_MINGW/bin/i686-w64-mingw32-clang++"
+WINDRES="$LLVM_MINGW/bin/i686-w64-mingw32-windres"
 B=build
 COMMON="-O2 -g -Wall -Wno-unused-function -Wno-missing-braces -D_WIN32_WINNT=0x0601 -DUNICODE -D_UNICODE"
 LDDLL="-shared -static -Wl,--kill-at -Wl,--enable-stdcall-fixup"
@@ -35,8 +36,17 @@ compile() {
 objs() { for s in "$@"; do echo "$B/obj/${s%.*}.o"; done; }
 
 mkdir -p "$B"
+ver=$(sed -n 's/^#define COOP_VERSION "\(.*\)"/\1/p' mods/coop/coop.cpp)
+ver_num=$(echo "$ver" | awk -F. '{printf "%d,%d,%d,%d", $1, $2, $3, $4}')
+printf '#define SC_VER_NUM %s\n#define SC_VER_STR "%s"\n' "$ver_num" "$ver" > "$B/version.h"
+resource() {
+  local source=$1 target=$2
+  mkdir -p "$(dirname "$target")"
+  "$WINDRES" -i "$source" -o "$target" -I"$B" -Iinstaller
+}
 if [[ $what == all || $what == loader ]]; then
-  "$CC" $COMMON -shared -o "$B/steam_api.dll" loader/loader.c loader/steam_api.def -Wl,--kill-at
+  resource loader/loader.rc "$B/obj/loader/loader_rc.o"
+  "$CC" $COMMON -shared -o "$B/steam_api.dll" loader/loader.c loader/steam_api.def "$B/obj/loader/loader_rc.o" -Wl,--kill-at
   echo "built $B/steam_api.dll"
 fi
 if [[ $what == all || $what == sporekit ]]; then
@@ -44,13 +54,15 @@ if [[ $what == all || $what == sporekit ]]; then
   KIT=(sporekit/*.cpp)
   compile c "${MH[@]}"
   compile cpp "${KIT[@]}"
-  "$CXX" $LDDLL -o "$B/sporekit.dll" $(objs "${KIT[@]}") $(objs "${MH[@]}") \
+  resource sporekit/sporekit.rc "$B/obj/sporekit/sporekit_rc.o"
+  "$CXX" $LDDLL -o "$B/sporekit.dll" $(objs "${KIT[@]}") $(objs "${MH[@]}") "$B/obj/sporekit/sporekit_rc.o" \
     -lws2_32 -luser32 -lshell32 -ld3d9 -Wl,--out-implib,"$B/libsporekit.a"
   echo "built $B/sporekit.dll"
 fi
 if [[ $what == all || $what == coop ]]; then
   COOP=(mods/coop/*.cpp mods/coop/net/*.cpp updater/*.cpp)
   compile cpp "${COOP[@]}"
-  "$CXX" $LDDLL -o "$B/coop.dll" $(objs "${COOP[@]}") -lws2_32 -luser32 -liphlpapi -lwinhttp -lshell32
+  resource mods/coop/coop.rc "$B/obj/mods/coop/coop_rc.o"
+  "$CXX" $LDDLL -o "$B/coop.dll" $(objs "${COOP[@]}") "$B/obj/mods/coop/coop_rc.o" -lws2_32 -luser32 -liphlpapi -lwinhttp -lshell32 -lole32
   echo "built $B/coop.dll"
 fi

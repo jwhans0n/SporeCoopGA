@@ -9,6 +9,8 @@ import re
 import sys
 import time
 
+from harness import mode
+import creations_state
 from coop_ui import Ui
 from twoinst import Checks, shot, start
 
@@ -16,10 +18,6 @@ DONE = (1416, 1062)    # the green "done" check of the creature editor (1440x108
 # an edit that costs no DNA: move the white bow on the back of the guest's Kirgle (fixture
 # creations-guest) a bit up
 EDIT = (1110, 480, 1060, 420)
-
-
-def mode(con):
-    return con.call('game.mode')['out']
 
 
 def own(con, who='mine'):
@@ -34,6 +32,24 @@ def main():
     gu = Ui(guest, 'guest')
     time.sleep(2)
     m0 = mode(host)
+    # BUG-0345: the guest plays its own creature (the fixture's Kirgle, the one EDIT moves a part of) only when
+    # chosen in a world it never played it in; the profile is put back as it was at the end
+    st0 = creations_state.save(guest)
+    mine = creations_state.choose_own(guest)
+    print('  guest profile before:', st0, '| chose', mine, flush=True)
+    t0 = time.time()
+    while mine and time.time() - t0 < 30:
+        gav = re.search(r'key=0x([0-9A-F]{8})', guest.call('coop.avatar')['out'])
+        if own(guest) == mine and gav and gav.group(1) == mine:
+            break
+        time.sleep(1)
+    try:
+        return run(host, guest, ck, gu, m0, keep)
+    finally:
+        creations_state.restore(guest, st0)  # the profile as it was (BUG-0345)
+
+
+def run(host, guest, ck, gu, m0, keep):
     g_before = own(guest)
     print('  guest own creature before:', g_before)
 

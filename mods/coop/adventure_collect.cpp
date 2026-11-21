@@ -1,5 +1,7 @@
 #include "adventure_collect.h"
+#include "sporekit_build.hpp"
 #include "adventure_music.h"
+#include "../../updater/sha256.h"
 
 #include <windows.h>
 
@@ -8,6 +10,7 @@
 #include <cstdio>
 #include <cstring>
 #include <map>
+#include <memory>
 #include <set>
 #include <tuple>
 
@@ -20,7 +23,7 @@ using Key = dbpf::Key;
 namespace content = net::adventure_content;
 static const SkHost* H;
 static SkMod* M;
-static uintptr_t a_Rm, a_Resolve, a_Write;
+static uintptr_t a_Rm, a_Resolve, a_Write, a_Read, a_New, a_ScenarioCtor;
 static uintptr_t a_Name, a_Author, a_Properties, a_String16;
 static bool g_supported;
 constexpr uint32_t kAdventure = 0x366A930D, kBem = 0x1A99B06B, kPng = 0x2F7D0004;
@@ -46,27 +49,38 @@ static void* find_record(const Key& key, Key& real)
     real = {};
     return rm ? skg::vcall<void*>(rm, 0x30 / 4, &key, &real, (void*)nullptr) : nullptr;
 }
+bool unused_snapshot_key(const Key& key)
+{
+    if(!g_supported || !manager() || !key.instance || key.type!=kAdventure)return false;
+    Key real;
+    for(uint32_t type:{kAdventure,kMeta,kSummary,kPng,0xFD60F0C1u})
+        if(find_record({key.instance,type,key.group},real))return false;
+    return !find_record({key.instance,0x05528D58,0x40A00200},real) &&
+        !find_record({key.instance,kProp,0x408AE500},real);
+}
 
-static bool vanilla(void* database)
+static bool vanilla(void* database,uint32_t* stock_index=nullptr)
 {
     const wchar_t* location = database ? skg::vcall<const wchar_t*>(database, 0x28 / 4) : nullptr;
     if (!location) return false;
-    std::wstring path;
+    std::wstring path;bool complete=false;
     for (size_t i = 0; i < 1000; ++i) {
         if (!skg::readable(location + i, 2)) return false;
-        if (!location[i]) break;
+        if (!location[i]) {complete=true;break;}
         wchar_t c = location[i];
         path += c >= L'A' && c <= L'Z' ? c + (L'a' - L'A') : c;
     }
+    if(!complete)return false;
     auto slash = path.find_last_of(L"\\/");
     std::wstring filename = path.substr(slash == std::wstring::npos ? 0 : slash + 1);
-    static const std::set<std::wstring> names = {
-        L"spore_game.package", L"spore_content.package", L"spore_graphics.package", L"spore_audio1.package",
-        L"spore_audio2.package", L"patchdata.package", L"spore_pack_03.package", L"spore_ep1_data.package",
-        L"spore_ep1_content_01.package", L"spore_ep1_content_02.package", L"spore_ep1_locale_01.package",
-        L"spore_ep1_locale_02.package", L"boosterpack_01.package"
-    };
-    return names.count(filename) != 0;
+    for(uint32_t i=0;i<editor_saved_dependencies::kStockDatabases.size();++i){
+        const auto name=editor_saved_dependencies::kStockDatabases[i];
+        if(filename==std::wstring(name.begin(),name.end())){
+            if(stock_index)*stock_index=i;
+            return true;
+        }
+    }
+    return false;
 }
 
 static bool extract(const Key& key, dbpf::Record& out, bool& built_in, std::string& error, bool include_vanilla = false)
@@ -101,6 +115,40 @@ static bool extract(const Key& key, dbpf::Record& out, bool& built_in, std::stri
     skg::vcall<int>(record, 0x08 / 4); // IRecord's Release (its destructor precedes AddRef)
     if (!ok) error = "cannot read adventure resource or record exceeds 16 MiB: " + key_text(key);
     return ok;
+}
+
+bool validate_uploaded_records(const Key& mutable_root,const std::vector<dbpf::Record>& records,std::string& error)
+{
+    error.clear();
+    if(!g_supported || !manager() || !mutable_root.instance || mutable_root.type!=kAdventure || records.size()>content::kMaxRecords){
+        error="Installed resource validation is unavailable for this shared adventure";return false;
+    }
+    std::set<Key,KeyLess> seen;size_t bytes=0;
+    for(const auto& incoming:records){
+        if(!incoming.key.instance || !incoming.key.type || !seen.insert(incoming.key).second ||
+           incoming.data.size()>content::kMaxRecordBytes || incoming.data.size()>content::kMaxBytes-bytes){
+            error="The uploaded resource list is invalid or exceeds its bounds";return false;
+        }
+        bytes+=incoming.data.size();
+        if(incoming.key==mutable_root)continue;
+        Key effective;auto* database=find_record(incoming.key,effective);
+        if(!database)continue;
+        // A resolver alias may select another format or identity before the
+        // incoming higher-priority package is mounted. Equal raw bytes cannot
+        // establish interchangeable typed identity for that collision.
+        if(effective!=incoming.key){
+            error="An uploaded asset aliases another installed resource: "+key_text(incoming.key)+" -> "+key_text(effective);return false;
+        }
+        dbpf::Record installed;bool built_in=false;
+        if(!extract(incoming.key,installed,built_in,error,true)){
+            if(error.empty())error="An installed asset became unreadable during upload validation: "+key_text(incoming.key);
+            return false;
+        }
+        if(installed.key!=incoming.key || installed.data!=incoming.data){
+            error="An uploaded asset conflicts with an installed resource: "+key_text(incoming.key);return false;
+        }
+    }
+    return true;
 }
 
 static adventure_music::Lookup load_music(const Key& key, bool bytes,
@@ -143,19 +191,20 @@ struct WriteStream {
     uint32_t position = 0;
     int refs = 1;
     bool failed = false;
+    bool read_only = false;
 };
 
 static void* SK_THISCALL stream_destroy(WriteStream* s, int) { return s; }
 static int SK_THISCALL stream_addref(WriteStream* s) { return ++s->refs; }
 static int SK_THISCALL stream_release(WriteStream* s) { return --s->refs; }
 static uint32_t SK_THISCALL stream_type(WriteStream*) { return 0; }
-static int SK_THISCALL stream_access(WriteStream*) { return 3; }
+static int SK_THISCALL stream_access(WriteStream* s) { return s->read_only ? 1 : 3; }
 static int SK_THISCALL stream_state(WriteStream* s) { return s->failed ? -1 : 0; }
 static bool SK_THISCALL stream_close(WriteStream* s) { return !s->failed; }
 static uint32_t SK_THISCALL stream_size(WriteStream* s) { return (uint32_t)s->bytes.size(); }
 static bool SK_THISCALL stream_resize(WriteStream* s, uint32_t size)
 {
-    if (size > content::kMaxRecordBytes) { s->failed = true; return false; }
+    if (s->read_only || size > content::kMaxRecordBytes) { s->failed = true; return false; }
     s->bytes.resize(size);
     s->position = std::min(s->position, size);
     return true;
@@ -168,7 +217,8 @@ static bool SK_THISCALL stream_seek(WriteStream* s, int offset, int origin)
 {
     int64_t base = origin == 0 ? 0 : origin == 1 ? s->position : origin == 2 ? s->bytes.size() : -1;
     int64_t position = base + offset;
-    if (base < 0 || position < 0 || position > content::kMaxRecordBytes) { s->failed = true; return false; }
+    if (base < 0 || position < 0 || position > content::kMaxRecordBytes ||
+        (s->read_only && uint64_t(position) > s->bytes.size())) { s->failed = true; return false; }
     if ((uint32_t)position > s->bytes.size()) s->bytes.resize((uint32_t)position);
     s->position = (uint32_t)position;
     return true;
@@ -176,7 +226,9 @@ static bool SK_THISCALL stream_seek(WriteStream* s, int offset, int origin)
 static int SK_THISCALL stream_available(WriteStream* s) { return (int)s->bytes.size() - (int)s->position; }
 static int SK_THISCALL stream_read(WriteStream* s, void* data, uint32_t size)
 {
+    const uint32_t requested = size;
     size = std::min<uint32_t>(size, (uint32_t)s->bytes.size() - s->position);
+    if ((size && !data) || (s->read_only && requested != size)) { s->failed = true; return 0; }
     if (size) memcpy(data, s->bytes.data() + s->position, size);
     s->position += size;
     return (int)size;
@@ -184,7 +236,7 @@ static int SK_THISCALL stream_read(WriteStream* s, void* data, uint32_t size)
 static bool SK_THISCALL stream_flush(WriteStream* s) { return !s->failed; }
 static bool SK_THISCALL stream_write(WriteStream* s, const void* data, uint32_t size)
 {
-    if (size > content::kMaxRecordBytes - s->position || (size && !data)) { s->failed = true; return false; }
+    if (s->read_only || size > content::kMaxRecordBytes - s->position || (size && !data)) { s->failed = true; return false; }
     uint32_t end = s->position + size;
     if (end > s->bytes.size()) s->bytes.resize(end);
     if (size) memcpy(s->bytes.data() + s->position, data, size);
@@ -205,6 +257,19 @@ struct Collector {
     bool changed = false;
     std::string& error;
 
+    bool put(dbpf::Record record)
+    {
+        auto previous = found.find(record.key);
+        const size_t old = previous == found.end() ? 0 : previous->second.data.size();
+        if ((previous == found.end() && found.size() >= content::kMaxRecords) ||
+            record.data.size() > content::kMaxRecordBytes || record.data.size() > content::kMaxBytes - (bytes - old)) {
+            error = "adventure dependency bundle exceeds its resource or byte limit"; return false;
+        }
+        bytes = uint32_t(bytes - old + record.data.size());
+        found[record.key] = std::move(record);
+        return true;
+    }
+
     bool add(const Key& key, bool required = false, bool include_vanilla = false)
     {
         dbpf::Record record;
@@ -217,12 +282,7 @@ struct Collector {
         }
         if (base && !include_vanilla) return true;
         if (found.count(record.key)) return true;
-        if (found.size() >= content::kMaxRecords || record.data.size() > content::kMaxBytes - bytes) {
-            error = "adventure dependency bundle exceeds its resource or byte limit"; return false;
-        }
-        bytes += (uint32_t)record.data.size();
-        found.emplace(record.key, std::move(record));
-        return true;
+        return put(std::move(record));
     }
 
     bool creation(const Key& key)
@@ -279,18 +339,76 @@ struct Collector {
     }
 };
 
+static bool collect_resource(const Key& key, uint8_t* scenario, Collector& collector,
+                             bool include_root, bool serialize_snapshot)
+{
+    auto& error = collector.error;
+    if (!scenario || !skg::readable(scenario, 0x2CB0)) {
+        error = "the selected resource did not produce a scenario"; return false;
+    }
+    std::set<uint32_t> validated_music;
+    // Native schema initialization confirms 130 avatar,178 posse,2BF4 classes,23C acts.
+    bool ok = (!include_root || collector.add(key, true, true)) && collector.asset(scenario + 0x130) &&
+        collector.vector(scenario, 0x178, 0x38, 32, [&](uint8_t* p) { return collector.asset(p); }) &&
+        collector.vector(scenario, 0x2BF4, 0x27E8, 1024, [&](uint8_t* p) {
+            return collector.asset(p + 8) && collector.asset(p + 8 + 0x28) && collector.asset(p + 8 + 0x50);
+        }) && collector.vector(scenario, 0x23C, 0x534, 8, [&, act = size_t(0)](uint8_t* p) mutable {
+            const size_t index = act++;
+            const uint32_t music = skg::field<uint32_t>(p, 0x80);
+            if (validated_music.count(music)) return true;
+            adventure_music::Result resolution;
+            std::string why;
+            if (!adventure_music::validate(music, load_music, resolution, why)) {
+                char context[100];
+                snprintf(context, sizeof context, "Adventure %08X act %u music %08X: ", key.instance, unsigned(index + 1), music);
+                error = std::string(context) + why; return false;
+            }
+            validated_music.insert(music);
+            if (music && music != UINT32_MAX)
+                H->log(M, SK_INFO, "adventure music: scenario=%08X act=%u authored=%08X native=%s dependencies=%u",
+                       key.instance, unsigned(index + 1), music,
+                       resolution.native_control ? "control" : resolution.direct_sample ? "sample" : "descriptor",
+                       unsigned(resolution.dependencies.size()));
+            return true;
+        });
+    if (ok) {
+        // Source companions are optional for a draft with a newly assigned key.
+        for (uint32_t type : {kMeta, kSummary, kPng, 0xFD60F0C1u}) if (!collector.add({key.instance, type, key.group})) ok = false;
+        if (!collector.add({key.instance, 0x05528D58, 0x40A00200})) ok = false;
+        if (!collector.add({key.instance, kProp, 0x408AE500})) ok = false;
+    }
+    if (ok && (serialize_snapshot || collector.changed)) {
+        if (!a_Write) { error = "native scenario serialization is unavailable for the private snapshot"; return false; }
+        WriteStream stream{stream_vtable, {}, 0, 1, false};
+        ok = skg::thiscall<bool>(a_Write, scenario, &stream) && !stream.failed && !stream.bytes.empty();
+        if (ok) ok = collector.put({key, std::move(stream.bytes)});
+        else error = "cannot serialize the normalized private adventure copy";
+    }
+    return ok;
+}
+
+static void publish_records(Collector& collector, std::vector<dbpf::Record>& records)
+{
+    for (auto& [unused, record] : collector.found) records.push_back(std::move(record));
+    H->log(M, SK_INFO, "adventure collector: %u records, %u dependencies, normalized_server_refs=%d",
+           unsigned(records.size()), unsigned(collector.assets.size()), collector.changed ? 1 : 0);
+}
+
 bool init(const SkHost* h, SkMod* m)
 {
     H = h; M = m;
     a_Rm = H->sym("Resource::ResourceManager_ptr");
     a_Resolve = H->sym("Simulator::Scenario::ResolveLocalServerAsset");
     a_Write = H->sym("Simulator::cScenarioResource::Write");
+    a_Read = H->sym("Simulator::cScenarioResource::Read");
+    a_New = H->sym("SporeCoop::Editor::Allocate");
+    a_ScenarioCtor = H->sym("SporeCoop::Editor::ScenarioResourceCtor");
     a_Name = H->sym("Pollinator::cAssetMetadata::NameText");
     a_Author = H->sym("Pollinator::cAssetMetadata::AuthorText");
     a_Properties = H->sym("SporeCoop::Adventure::LoadAssetProperties");
     a_String16 = H->sym("App::Property::GetValueString16");
     // Field offsets and native vtable slots below have been inspected in this exact image.
-    g_supported = std::string(H->exe_sha256()) == "dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37" && a_Rm;
+    g_supported = skg::supported_gog2024(H->exe_sha256()) && a_Rm;
     return g_supported;
 }
 
@@ -393,58 +511,150 @@ bool collect(const Key& key, std::vector<dbpf::Record>& records, std::string& er
         error = "cannot load a private copy of the selected adventure"; return false;
     }
     uint8_t* scenario = (uint8_t*)skg::vcall<void*>(object, 0x0C / 4, kScenarioClass);
-    bool ok = false;
     Collector collector{{}, {}, 0, false, error};
-    std::set<uint32_t> validated_music;
-    if (!scenario || !skg::readable(scenario, 0x2CB0)) error = "the selected resource did not produce a scenario";
-    else {
-        // Native schema initialization confirms 130 avatar,178 posse,2BF4 classes,23C acts.
-        ok = collector.add(key, true, true) && collector.asset(scenario + 0x130) &&
-             collector.vector(scenario, 0x178, 0x38, 32, [&](uint8_t* p) { return collector.asset(p); }) &&
-             collector.vector(scenario, 0x2BF4, 0x27E8, 1024, [&](uint8_t* p) {
-                 return collector.asset(p + 8) && collector.asset(p + 8 + 0x28) && collector.asset(p + 8 + 0x50);
-             }) &&
-             collector.vector(scenario, 0x23C, 0x534, 8, [&, act = size_t(0)](uint8_t* p) mutable {
-                 const size_t index = act++;
-                 uint32_t music = skg::field<uint32_t>(p, 0x80);
-                 if (validated_music.count(music)) return true;
-                 adventure_music::Result resolution;
-                 std::string why;
-                 if (!adventure_music::validate(music, load_music, resolution, why)) {
-                     char context[100];
-                     snprintf(context, sizeof context, "Adventure %08X act %u music %08X: ", key.instance, unsigned(index + 1), music);
-                     error = std::string(context) + why;
-                     return false;
-                 }
-                 validated_music.insert(music);
-                 if (music && music != UINT32_MAX)
-                     H->log(M, SK_INFO, "adventure music: scenario=%08X act=%u authored=%08X native=%s dependencies=%u",
-                            key.instance, unsigned(index + 1), music,
-                            resolution.native_control ? "control" : "descriptor", unsigned(resolution.dependencies.size()));
-                 return true;
-             });
-        if (ok) {
-            // Known scenario companions include previews, metadata and the planet record.
-            for (uint32_t type : {kMeta, kSummary, kPng, 0xFD60F0C1u}) if (!collector.add({key.instance, type, key.group})) ok = false;
-            if (!collector.add({key.instance, 0x05528D58, 0x40A00200})) ok = false;
-            if (!collector.add({key.instance, kProp, 0x408AE500})) ok = false;
-        }
-        if (ok && collector.changed) {
-            if (!a_Write) { error = "native scenario serialization is unavailable for server reference normalization"; ok = false; }
-            else {
-                WriteStream stream{stream_vtable, {}, 0, 1, false};
-                ok = skg::thiscall<bool>(a_Write, scenario, &stream) && !stream.failed && !stream.bytes.empty();
-                if (ok) collector.found[key] = {key, std::move(stream.bytes)};
-                else error = "cannot serialize the normalized private adventure copy";
-            }
-        }
-    }
+    const bool ok = collect_resource(key, scenario, collector, true, false);
     skg::vcall<int>(object, 0x04 / 4); // the private resource's owned reference
     if (!ok) return false;
-    for (auto& [unused, record] : collector.found) records.push_back(std::move(record));
-    H->log(M, SK_INFO, "adventure collector: %u records, %u dependencies, normalized_server_refs=%d",
-           (unsigned)records.size(), (unsigned)collector.assets.size(), collector.changed ? 1 : 0);
+    publish_records(collector, records);
     return true;
+}
+
+bool collect_snapshot(const Key& key, const std::vector<uint8_t>& native_bytes,
+                      std::vector<dbpf::Record>& records, std::string& error)
+{
+    records.clear(); error.clear();
+    if (!g_supported || !manager() || !a_Read || !a_Write || !a_New || !a_ScenarioCtor) {
+        error = "native adventure snapshot collection is unavailable for this game build"; return false;
+    }
+    if (!key.instance || key.type != kAdventure) {
+        error = "the shared editor snapshot requires an adventure resource key"; return false;
+    }
+    if (native_bytes.empty() || native_bytes.size() > content::kMaxRecordBytes) {
+        error = "the native adventure snapshot is empty or exceeds the resource size limit"; return false;
+    }
+    // Start empty so a native reader cannot retain fields from an older saved
+    // source. Companion records still resolve through the supplied root key.
+    void* allocation = skg::cdecl_call<void*>(a_New, uint32_t(0x2CB0), "CoopAdventureSnapshot", 0, 0, 0, 0);
+    if (!allocation) { error = "cannot allocate a private adventure snapshot"; return false; }
+    void* object = skg::thiscall<void*>(a_ScenarioCtor, allocation);
+    // The verified constructor returns its allocation and starts at refcount0.
+    skg::vcall<int>(object, 0x00 / 4);
+    auto* scenario = static_cast<uint8_t*>(object);
+    auto release = [](void* resource) { if (resource) skg::vcall<int>(resource, 0x04 / 4); };
+    std::unique_ptr<void, decltype(release)> owned(object, release);
+    WriteStream stream{stream_vtable, native_bytes, 0, 1, false, true};
+    bool ok = skg::readable(scenario, 0x2CB0) &&
+              skg::thiscall<bool>(a_Read, scenario, &stream) && !stream.failed;
+    Collector collector{{}, {}, 0, false, error};
+    if (ok) ok = collect_resource(key, scenario, collector, false, true);
+    else error = "cannot read the owned native adventure snapshot";
+    if (!ok) return false;
+    publish_records(collector, records);
+    return true;
+}
+
+static bool reference_roster(uint8_t* scenario,editor_saved_dependencies::Inventory& observed,std::string& error){
+    namespace saved=editor_saved_dependencies;
+    auto asset=[&](uint8_t* ref,saved::Kind kind,uint32_t index,uint32_t slot){
+        if(!skg::readable(ref,0x20)){error="The Saved reference is truncated";return false;}
+        saved::Reference row;row.kind=kind;row.index=index;row.slot=slot;
+        std::memcpy(&row.raw,ref,sizeof row.raw);std::memcpy(&row.machine,ref+0xC,4);
+        std::memcpy(&row.server,ref+0x10,8);std::memcpy(&row.model,ref+0x18,4);
+        observed.references.push_back(std::move(row));return true;
+    };
+    Collector walker{{},{},0,false,error};
+    if(!asset(scenario+0x130,saved::Kind::Captain,0,0) ||
+       !walker.vector(scenario,0x178,0x38,32,[&](uint8_t* ref){
+           return asset(ref,saved::Kind::Crew,observed.crew_count++,0);
+       }) || !walker.vector(scenario,0x2BF4,0x27E8,1024,[&](uint8_t* ref){
+           const auto index=skg::field<uint32_t>(ref,0);observed.classes.push_back(index);
+           for(uint32_t slot=0;slot<3;++slot)if(!asset(ref+8+slot*0x28,saved::Kind::Class,index,slot))return false;
+           return true;
+       }))return false;
+    std::sort(observed.classes.begin(),observed.classes.end());
+    if(std::adjacent_find(observed.classes.begin(),observed.classes.end())!=observed.classes.end()){
+        error="The Saved reference class roster has duplicate identities";return false;
+    }
+    std::sort(observed.references.begin(),observed.references.end(),[](const auto& a,const auto& b){
+        return std::tuple{a.kind,a.index,a.slot}<std::tuple{b.kind,b.index,b.slot};
+    });
+    return true;
+}
+
+bool selected_saved_references(void* root,editor_saved_dependencies::Inventory& output,std::string& error){
+    if(!g_supported || !skg::readable(root,0x2CB0)){error="The owned selected Saved root is unavailable";return false;}
+    try{
+        editor_saved_dependencies::Inventory observed;observed.saved=skg::field<Key>(root,8);
+        if(!observed.saved.instance || observed.saved.type!=kAdventure ||
+           !reference_roster(static_cast<uint8_t*>(root),observed,error))return false;
+        output=std::move(observed);error.clear();return true;
+    }catch(const std::bad_alloc&){error="Cannot allocate the selected Saved reference inventory";return false;}
+}
+
+bool saved_references(const Key& key,const std::vector<uint8_t>& raw,
+                      editor_saved_dependencies::Inventory& output,std::string& error)
+{
+    namespace saved=editor_saved_dependencies;
+    error.clear();
+    if(!g_supported || !manager() || !a_Read || !a_New || !a_ScenarioCtor ||
+       !key.instance || key.type!=kAdventure || raw.empty() || raw.size()>content::kMaxRecordBytes){
+        error="Saved reference inspection is unavailable or the exact image is invalid";return false;
+    }
+    try{
+        const auto image=raw;
+        void* allocation=skg::cdecl_call<void*>(a_New,uint32_t(0x2CB0),"CoopSavedReferences",0,0,0,0);
+        if(!allocation){error="Cannot allocate the private Saved reference image";return false;}
+        void* object=skg::thiscall<void*>(a_ScenarioCtor,allocation);
+        skg::vcall<int>(object,0);
+        auto release=[](void* p){if(p)skg::vcall<int>(p,1);};
+        std::unique_ptr<void,decltype(release)> owner(object,release);
+        WriteStream stream{stream_vtable,image,0,1,false,true};
+        if(!skg::readable(object,0x2CB0) || !skg::thiscall<bool>(a_Read,object,&stream) ||
+           stream.failed || stream.position!=image.size()){
+            error="Cannot read the complete genuine Saved reference image";return false;
+        }
+        saved::Inventory observed;observed.saved=key;observed.raw_size=uint32_t(image.size());
+        observed.raw_hash=upd::sha256_hex(image.data(),image.size());
+        if(!reference_roster(static_cast<uint8_t*>(object),observed,error))return false;
+        output=std::move(observed);return true;
+    }catch(const std::bad_alloc&){error="Cannot allocate the Saved reference inventory";return false;}
+}
+
+bool saved_dependencies(const Key& key,const std::vector<uint8_t>& raw,
+                        editor_saved_dependencies::Inventory& output,std::vector<dbpf::Record>& records,std::string& error)
+{
+    namespace saved=editor_saved_dependencies;
+    saved::Inventory observed;
+    if(!saved_references(key,raw,observed,error))return false;
+    try{
+        Collector combined{{},{},0,false,error};
+        for(auto& ref:observed.references){
+            if(ref.raw==Key{} && (!ref.server || ref.server==UINT64_MAX))continue;
+            ref.effective=ref.raw;
+            if(ref.server && ref.server!=UINT64_MAX &&
+               (!a_Resolve || !skg::cdecl_call<bool>(a_Resolve,ref.server,&ref.effective))){
+                error="A Saved dependency server reference is unavailable";return false;
+            }
+            if(!ref.effective.instance || !ref.effective.type){error="A Saved dependency has no effective identity";return false;}
+            Key real;auto* database=find_record(ref.effective,real);
+            if(!database){error="A Saved dependency is unavailable: "+key_text(ref.effective);return false;}
+            if(vanilla(database,&ref.stock_database)){ref.origin=saved::Origin::Stock;continue;}
+            ref.origin=saved::Origin::Immutable;
+            Collector closure{{},{},0,false,error};
+            if(!closure.creation(ref.effective))return false;
+            for(const auto& [dependency,record]:closure.found){
+                ref.records.push_back(dependency);
+                const auto prior=combined.found.find(dependency);
+                if(prior!=combined.found.end() && prior->second.data!=record.data){
+                    error="A Saved dependency changed while collecting its closure";return false;
+                }
+                if(prior==combined.found.end() && !combined.put(record))return false;
+            }
+        }
+        std::vector<dbpf::Record> selected;selected.reserve(combined.found.size());
+        for(auto& [unused,record]:combined.found)selected.push_back(std::move(record));
+        output=std::move(observed);records=std::move(selected);error.clear();return true;
+    }catch(const std::bad_alloc&){error="Cannot allocate the Saved dependency closure";return false;}
 }
 
 } // namespace adventure_collect

@@ -10,8 +10,9 @@ build known to Spore ModAPI (Disk: 24 904 192 / 24 909 584; March2017: 24 885 24
 
 ### 5.1.1 The GOG 2024 build (dc04aee5)
 
-**The only supported build from 0.8 on** (decided 2026-10-23, CLAUDE.md). `overrides_922af7c7.sym`
-and `gog2016_922af7c7.sym` are frozen: `tools/re_lint.py` only notes symbols missing there.
+**The only supported build** (CLAUDE.md "Builds"). `overrides_922af7c7.sym` and `gog2016_922af7c7.sym`
+(GOG 2016) were frozen from 0.7.8 and removed in 0.7.15 (BUG-1125), with `frozen_off_922af7c7.txt` and
+`tools/addrport/port_modapi.py`; the GOG 2016 facts below are history (git history has the files).
 
 The current GOG download (an update with PE timestamp 2024-09-30) ships another
 `SporeApp.exe`: 24 895 536 bytes, SHA-256 `dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37`,
@@ -94,7 +95,7 @@ every page (encrypted), and an 8th section `.bind` (0x29CD0 bytes, SteamStub) ho
 2b. **Private full Ghidra projects and batch queries** (`tools/ghidra/`, 2026-10-23). One project
    per build in the main checkout's `out/` (not in git, ~330 MB each): `out/ghidra-full/` (GOG 2016)
    and `out/ghidra-2024/` (GOG 2024). They are our own, not the shared REA session other agents use.
-   * Build: `tools/ghidra/mkproject.sh --build 2016|2024 [--exe <SporeApp.exe>]` (defaults:
+   * Build: `tools/ghidra/mkproject.sh [--build 2024] [--exe <SporeApp.exe>]` (2016 refused since 0.7.15; defaults:
      `_ref/gog2016/SporeApp.exe` next to the SPORE folder, and `SporebinEP1/SporeApp.exe` of
      the main game; the exe is only read and must have the build's sha256). Ghidra 12.1.4
      (`~/.local/opt/ghidra_12.1.4_PUBLIC`, JDK 21 in `~/.local/opt`) auto-analysis takes 8-11 min,
@@ -109,15 +110,14 @@ every page (encrypted), and an 8th section `.bind` (0x29CD0 bytes, SteamStub) ho
      comments. Check after the build: every named function address but the `_Ret` return
      addresses is a function entry. The new project replaces the old one at the end, so queries
      keep working meanwhile. After editing `.sym` files: `mkproject.sh --build … --names` (~5 s).
-   * Query: `tools/ghidra/q.sh [--build 2016|2024] <queries-file|-> <output-file>` (default 2016,
-     works from any worktree). One batch takes 3-5 s (JVM and project open; a decompile ~0.5 s,
+   * Query: `tools/ghidra/q.sh [--build 2024] <queries-file|-> <output-file>` (default 2024 since
+     0.7.15, BUG-1125; `--build 2016` is refused; works from any worktree). One batch takes 3-5 s (JVM and project open; a decompile ~0.5 s,
      an `info`/`xref` ~1 ms; the first run after a change of Q.java compiles it, +4 s), so put many
      queries in one file. Example:
 
      ```
      printf 'dec Simulator::cGameDataUFO::TakeDamage\ncallers 0x00C3CEA0\n' > q.txt
-     tools/ghidra/q.sh q.txt out.txt                 # GOG 2016
-     tools/ghidra/q.sh --build 2024 q.txt out24.txt  # same names, GOG 2024 addresses
+     tools/ghidra/q.sh q.txt out.txt                 # GOG 2024
      ```
 
      One query per line (`#` comments). `<a>` is a hex address (`0x00C3CEA0`, `C3CEA0`), a
@@ -238,3 +238,58 @@ fields: FormatParser* +4, refcount +8, data +0xC.
   `GetAbility(index)` (vtable 0xB4).
 * Full exe analysis in REA (requires a `REA_GHIDRA_STARTUP_TIMEOUT_MS` timeout of ≥ 2 h and
   reconnecting the MCP server).
+
+## Where a slow frame goes: coop.sample (2026-10-31, fix/w26-cell-spare)
+<a id="re-notes-sample"></a>
+
+* `coop.sample [ms] [top]` in a running game: a sampling profile of the main thread (suspend, read
+  EIP and the top of the stack, resume, every ~1 ms; `self:` and `stack:` lists at 0x400000
+  addresses, `outside_exe=` the samples in DLLs or Wine, e.g. waiting for the GPU). Map the addresses
+  with `tools/ghidra/q.sh --build 2024` (`info` / `dec`). Details and the pitfall (it must not run on
+  the main thread) in docs/06-testing.md#testing-cell-spare.
+* For "who calls X and with what result" a counter keyed by `__builtin_return_address(0)` in the
+  hook is quicker than the sampler (BUG-0355: DestroyCell by caller, ParticleAlloc by call site);
+  `coop_module_of()` (debug.cpp) prints module+offset for addresses outside the exe.
+
+## Fixed-size game pools that co-op objects fill, per stage (2026-11-08, fix/w46-k2b-content-a)
+<a id="re-notes-fixed-pools"></a>
+
+BUG-0719, BUG-0718 (class BUG-0432). An inventory from the docs, the tickets and the code; the measured fill per
+stage is the stress test `tools/tests/coop_pool_stress.py` (suites `pool_stress_<stage>`: four players, three in
+Civ, a rejoin, the guests in their pause menus; `coop.pools` prints the physics pools' count / high water /
+capacity and the world's objects). A "bound" is what keeps co-op counts below the capacity.
+
+| stage | container | capacity | co-op objects in it | bound | overrun seen |
+|---|---|---|---|---|---|
+| Cell | cell pool `G+0x1C` | 4096 | mirrors, puppets, partner tiles | `cell.budget` (host 1100 / 1300, send 900, mirrors 1500) | budget off: full, faults (lab 20261030-052851, 20261108-031701) |
+| Cell | broadphase merge queue (MergeAxis stack) | 4096 endpoints | every cell | **hard guard `cell.sap_merge`** (BUG-0718, docs/re/cell.md#cell-sap-merge) | 0xBBB07B (BUG-0295, lab 20261108-033717) |
+| Cell | broadphase sweep open list | int[1024] | every cell | hard guard `cell.sap_sweep` (BUG-0337) | BUG-0337 |
+| Cell | broadphase pending arrays | 2 x 4096 per axis | mirrors made while the simulation stands | hard guard `cell.sap_pending` (BUG-0348) | BUG-0348 |
+| Cell | soft-body particles | 1500 | every cell's body | `cell.particles`, `cell.spare` (BUG-0338, BUG-0355) | BUG-0338 |
+| Cell | cell graphics pool `cCellGFX+0x168` | 256 | drawn cells | `cell.gfx_full` (BUG-0355) | BUG-0355 |
+| Cell | tile pool `G+0x38` | 512 | partner passes | room for 4 x 0x40 tiles before a pass (BUG-0174) | none |
+| all 3D stages | physics bodies (`SporeCoop::PhysicsWorld_ptr` +0x3C, cObjectPool_) | 4096 | puppets, proxies, mirrors (bodies like any creature's) | the game's own relevance (NPCs alive near the players) | none (measured: the stress runs' high water) |
+| all 3D stages | physics contacts (+0x08) | 2048 | contacts of those bodies | as above | none |
+| Creature | herds / spawn points per relevance pass | 10 per pass (docs/re/creature.md, host-centric.md) | partners' view centres (`npc.view_centres`, at most 8 partners, 16 spheres) | the game's 10 per pass | none |
+| Creature | BT stimulus slots / goal slots | 8 x 0x38 / 8 x 0x44 per NPC | stimuli and goals the mod posts | the game's slot search (an occupied slot is reused) | none |
+| Tribe | tribe population (cTribe_MaxPopulation 0xC8EC70) | 6 ... 60 by level | a guest's mirrors of the host's members (CreateCitizen + AddMember past SpawnMember's refusal, tribe.cpp) | the host's own count (a mirror per host member) | none: a count, the members are a vector |
+| Civ | vehicles `civ+0xB0`, selectable `civ+0xD4` | vectors (36 is the game's buy rule, VehicleSlotsLeft 0xBF2220) | mirrored vehicles | the owner's own count (each player buys under the rule) | none: vectors grow |
+| Civ | city building slots (cCommunityLayout +0x43C) | 12-14 | a guest's buildings built in a host city (`build_in_city`) | the layout's own free-slot search | none (BUG-0491, BUG-0602 are slot-index bugs, not overruns) |
+| Space | UFO list (`GetData<cGameDataUFO>`) | a vector | partner ship puppets, mirrored NPC ships | none needed | none |
+| Space | cargo slots | per ship | kept holds, trade | `space.keep_items_slots` (BUG-0679) | none |
+| all | world-effect relay | the mod's 64 live, 40/s | relayed effects | effects.cpp kLiveMax | none |
+
+* ✔ Measured (lane 6, `pool_stress_<stage>`, four players, three in Civ, a rejoin, the guests paused; labs
+  20261108-050903 / -051355 / -051700 / -052001 / -052247): the physics world's pools are used **in Tribe only**
+  (bodies: host 113, guests 644-672 of 4096, 16 %; contacts at most 15 of 2048); in Creature, Civ and Space their count
+  stayed 0 (the physics manager's mode +0x20 is 1 in Tribe, docs/re/tribe.md#tribe-physics-orphan). Cell pools: at
+  most 1137 of 4096 cells (budgets on). World objects at most: Cell 251, Creature 4006 (125 creatures), Tribe 3262
+  (129), Civ 2065 (60), Space 240 (60). No caught fault in any game.
+* Objects made while a guest's simulation stands (its pause menu, an editor, a load): only Cell creates its objects
+  in a fixed array that the simulation empties (the broadphase's pending list, BUG-0348). In the other stages the
+  mod's objects go into the game's vectors and pools above, which do not wait for a simulation step; the stress
+  test pauses the guests for its third phase.
+* ? Not documented: the capacity of the game's creature object / noun pools and of the effect pools 1-3 / 5; the
+  stress runs show the world's object counts (`objects: all= creatures=`) for a later comparison.
+* The "same caught EIP every frame" signal BUG-0432 asks for exists in SporeKit (exceptions.cpp `storm_check`,
+  BUG-0676); every caught fault fails a lab test (`p.faults`, the lab's log check).

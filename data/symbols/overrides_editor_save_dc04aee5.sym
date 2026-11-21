@@ -1,0 +1,26 @@
+# Exact dc04 GOG native Adventure Editor save and preview lifecycle.
+# exe_sha256=dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37
+SporeCoop::Editor::AssignMetadataText=0x00423690 ; verified thiscall(string16*,const char16_t* begin,const char16_t* end)->string16*, ret8 at423733; native name setterF3CC39 calls it on data+4C; owned bounded metadata only, outside frame
+# evidence=tools/addrport/verify_editor_save_dc04.py; docs/re/adventure-editor-save.md
+SporeCoop::Editor::LoadControllerCtor=0x00EC4B60 ; verified thiscall(loader*)->loader*, plain ret EC4C09; parent EF22B8 allocates A8 then owns AddRef at ScenarioMode+1C; cold Saved dependency gate lifetime only
+SporeCoop::Editor::LoadControllerDtor=0x00EC4930 ; verified thiscall(loader*), plain ret EC4A01; primary deleting destructor EC4C10 calls this before freeing; invalidates weak cold-load tickets
+SporeCoop::Editor::LoadControllerStart=0x00EC5940 ; verified thiscall(loader*,ScenarioResource*,bool UIvariant,bool checkOnly)->bool, ret0C EC59FA; owns root+18 and genuine state1 phase0 before EC59F1 advance
+SporeCoop::Editor::LoadControllerAdvance=0x00EC52F0 ; verified thiscall(loader*,bool checkOnly)->bool, ret4 EC561D/EC5659; original phase2 availability/model checks retained after outside-frame admission
+SporeCoop::Editor::LoadControllerReset=0x00EC4F20 ; verified thiscall(loader*,bool notify,uint32 reason), ret8 EC50AC; normal cancel EC56DE pushes reason0 notify1, releases root and clears pending state
+SporeCoop::Editor::LoadControllerIdle=0x00EC51A0 ; verified thiscall(loader*), plain ret EC52BD; idle timeout can open modal7/8, suppressed only during an owned queued phase0 admission
+SporeCoop::Editor::DisplayVtable=0x01489DFC ; verified static: UI base primary vtable initialized ED5130, allocated98 at EF2154 and owned at ScenarioMode+14
+SporeCoop::Editor::CanSave=0x00F41110 ; verified static: thiscall(data,uint32 reasonOut), bool AL, ret4; native pending/editor/avatar/dirty eligibility gate
+SporeCoop::Editor::BeginSaveCopy=0x00ED7390 ; verified static: thiscall(UIbase,bool replaceOriginal), ret4; native eligibility, input hold and tail F3D760; false preserves original through data+1C=true
+SporeCoop::Editor::SaveResourcePipeline=0x00F44E80 ; verified static: thiscall(data), bool AL, plain ret F4547B; fresh key, native metadata/artwork/scenario saves, dirty clear and FD7A08D0 only on success
+SporeCoop::Editor::SaveInputHold=0x00ED4B80 ; verified static: native thiscall(UIbase unused,bool release), ret4 ED4CCA; installs/removes input-capture window2CCDA9C, ECX unused
+SporeCoop::Editor::NativePreview=0x00EF12D0 ; verified static: thiscall(ScenarioMode,int unused), ret4; CC1 to CC2, native editor cleanup/data2/world init; ED67E1 native Play caller
+SporeCoop::Editor::NativeReturn=0x00EF1280 ; verified static: thiscall(ScenarioMode), plain ret EF12BA/EF12C6; CC2 to CC1, native play cleanup/data1/editor init
+SporeCoop::Editor::PreviewCleanup=0x00F18F30 ; verified static: thiscall(play), plain ret or tailEFC9D0; native hammer-stop F0EB0B and results cleanup
+SporeCoop::Editor::ReturnDisplayMode=0x00ED47A0 ; verified static: thiscall(UIbase,int mode), ret4; writesUI+20; native hammer-stop sets0 before NativeReturn
+SporeCoop::Editor::SelectDisplayMode=0x00ED6620 ; verified static: thiscall(UIbase,int 0build1play2planet), ret4 ED6908; native panel cleanup/button states/mode notification, play calls NativePreview
+SporeCoop::Editor::PreviewCaptain=0x00FF3DB0 ; verified static: thiscall(data), captain pointer EAX; used by top native Play ED7E5D before validation
+SporeCoop::Editor::ValidatePlacement=0x00F412C0 ; verified static: thiscall(data,marker,int,int,int), bool AL, ret10; ED7E66..7E6F validates captain before Play; EFEA0B/EFEA4B validate ordinary drags, updates derived marker224 mask0x16
+SporeCoop::Editor::EditorCommand=0x00ED75E0 ; verified static: thiscall(UIbase,int action),ret4 ED78BB; raw Save/Done/Cancel/New command routing before ui58 assignment; native callers ED7FC0 ED7FE9 EDA319
+SporeCoop::Editor::ContinueCommand=0x00ED5820 ; verified static: thiscall(UIbase), plain ret ED583B/ED5875; dispatches pending UI58, action1/3 branches ED586A to native exit ED5240 with argument07EAF738; confirmation callback ED73F0 calls this continuation
+SporeCoop::Editor::CaptureTerrain=0x00F27C00 ; verified static: thiscall(owned ScenarioResource), plain ret F27C7B; native Save calls F45201 on its private copy, exports active ScenarioMode+18 terrain properties into resource+18 and adds property02A907B7; no creation database save
+SporeCoop::Editor::CreationGroup=0x015B03A8 ; verified static: uint32 native configured adventure group, initial408A0000; LoadScenarioResource compares key.group here at F44AA2 and rejects other groups before loading, Save key generation reads the same global

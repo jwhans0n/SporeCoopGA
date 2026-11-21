@@ -24,6 +24,24 @@ int main()
     SYSTEM_INFO system;
     GetSystemInfo(&system);
     size_t page = system.dwPageSize;
+    SYSTEM_INFO native_system{};
+    GetNativeSystemInfo(&native_system);
+    if (native_system.wProcessorArchitecture == PROCESSOR_ARCHITECTURE_AMD64) {
+        MEMORYSTATUSEX status{};
+        status.dwLength = sizeof status;
+        check(GlobalMemoryStatusEx(&status) && status.ullTotalVirtual > 0xC0000000ull,
+              "the LAA fixture receives the 4 GB user address space on 64-bit Windows");
+        auto* high = static_cast<unsigned char*>(VirtualAlloc(reinterpret_cast<void*>(0x90000000u), page,
+                                                             MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE));
+        check(high == reinterpret_cast<void*>(0x90000000u), "native allocations can use addresses above 2 GB");
+        if (high) {
+            high[0] = 0xAB; high[page - 1] = 0xCD;
+            skg::ReadOnlyMemoryScope scope;
+            check(skg::readable(high, page) && high[0] == 0xAB && high[page - 1] == 0xCD,
+                  "native pointer validation and reads support the upper address space");
+            VirtualFree(high, 0, MEM_RELEASE);
+        }
+    }
     auto* memory = static_cast<unsigned char*>(VirtualAlloc(nullptr, page * 3, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE));
     check(memory != nullptr, "allocate the native fixture");
     if (!memory) return 1;

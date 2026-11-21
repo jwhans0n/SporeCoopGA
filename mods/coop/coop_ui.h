@@ -3,6 +3,12 @@
 // "lobby" (players, stage, ping, ready, chat, world transfer) and, in the Space stage, "space"
 // (the rows of the space features, space_ext.h), plus adventure preparation and settings.
 // docs/08-ui.md.
+// Co-op user interface built from Spore's own UI: a "Co-op" item in the main menu, a "Report a problem" item
+// in the game's pause menu and a game dialog in steps (0.7.12 F1, docs/08-ui.md#ui-window-steps): the
+// connect steps (first start: the name; Host or Join; Host: the port; Join: the games on the network and an
+// address or host name), the lobby (players, colour, stage, ping, ready, chat, world transfer, the host's
+// address), the session settings page (settings_core.h rows by group) and, in the Space stage, "space" (the
+// rows of the space features, space_ext.h). docs/08-ui.md.
 #pragma once
 
 #include <cstdint>
@@ -12,6 +18,7 @@
 
 #include "sporekit.h"
 #include "net/adventure.h"
+#include "editor_runtime.h"
 
 namespace coop_ui {
 
@@ -21,6 +28,7 @@ struct PlayerRow {
     std::string stage; // "Creature", "Space, other world", ...
     bool host = false, me = false, ready = false;
     int ping_ms = -1;
+    uint32_t color = 0; // the player's colour (ARGB, F2 of 0.7.12 fills it); 0 = none yet (the lobby shows "-")
 };
 
 struct LanGame {
@@ -43,6 +51,9 @@ struct Api {
     std::function<bool()> connected;
     std::function<std::string()> session_line;
     std::function<std::vector<PlayerRow>()> players;
+    // F2: the own colour's ">" in the lobby: the next palette colour (pfind::request_color); false and the reason in line
+    // when it is refused (another player has it), else what happened ("Your colour: Blue", "Asked the host for Blue")
+    std::function<bool(std::string& line)> color_next;
     std::function<std::string()> world_line; // transfer progress / hints, "" if nothing
     std::function<bool()> ready;
     std::function<bool()> party_waiting;
@@ -58,14 +69,33 @@ struct Api {
     std::function<dbpf::Key(uint8_t)> captain_key;
     std::function<bool()> can_ready;
     std::function<void()> change_captain, cancel_adventure;
+    std::function<coop_editor::View()> editor;
+    std::function<void()> editor_begin, editor_undo, editor_redo, editor_save;
+    std::function<void()> editor_playtest, editor_return, editor_cancel, editor_recover, editor_end;
+    std::function<void(bool)> editor_ready;
+    std::function<void(bool)> editor_approve;
+    std::function<void(int)> editor_test_choice;
+    std::function<void(int)> editor_act_action;
+    std::function<void(bool)> editor_complexity;
+    std::function<void(int)> editor_join_choice;
+    // BUG-0516 (guest): the host evolves without a vote and offers this guest its own editor: the seconds the
+    // offer still holds (0 = none). The ready button then reads "Evolve now" and set_ready(true) takes the offer.
+    std::function<int()> evolve_offer;
+    // BUG-0597: what "Send my world" would do now: 0 send it, 1 no world loaded (a menu: the world goes
+    // to everyone once the host plays), 2 nobody has joined
+    std::function<int()> share_state;
     // own creation of the current stage: kind 0 creature / 1 cell / 2 ship, its name ("" = the
     // world's own), how many own creations of that kind exist; false = not shown. cycle: -1 / +1
     std::function<bool(int& kind, std::string& name, int& own)> creation;
+    std::function<bool()> one_creature; // F5: a guest plays the host's creature (no arrows, no Evolve now)
     std::function<void(int)> creation_cycle;
     // tribe / civilization: how many own units are selected (what: "member", "vehicle", "city"),
     // the partner they would go to; give_do gives them
     std::function<int(std::string& what, std::string& to)> give;
     std::function<void()> give_do;
+    std::function<void()> give_cycle;  // the next other player as the recipient (BUG-0075)
+    std::function<int()> give_choices; // how many players a gift can go to
+    std::function<bool()> give_pick_space; // BUG-1050: Space shows the ">" picker too (coop.fix space.give_pick)
     // space: travel to a partner's star system (false = not possible now, else whose)
     std::function<bool(std::string& to)> jump;
     std::function<void()> jump_do;
@@ -77,12 +107,28 @@ struct Api {
     std::function<void(int)> civ_role_cycle;
     std::function<void(const std::string&)> say;
     std::function<std::vector<std::string>()> chat;
+    std::function<std::vector<uint32_t>()> chat_colors; // F2: per chat() line its writer's colour (0: the default)
     std::function<std::vector<LanGame>()> lan_games;
     std::function<void(bool)> lan_scan; // start/stop looking for games on the network
     std::function<std::vector<std::string>()> local_addresses;
     std::function<uint32_t()> mode; // game mode id
     std::function<std::string()> version_line; // "SporeCoop 0.7.2.1  -  GOG 2024" (window footer)
     std::function<std::string()> report;       // writes a problem report, returns its path ("" = cannot)
+    // a screenshot for the report first: 1 requested, 0 not possible, -1 switched off (coop.ini)
+    std::function<int()> report_shot;
+    std::function<int()> report_shot_state;    // 1 being taken, 0 written, -1 failed
+    // host: "Ask the players for their reports" (lobby and F9, any time; F4 of 0.7.12, BUG-0767). Returns the line the
+    // window shows ("" = nothing to say); unset = the button says it is not available
+    std::function<std::string()> ask_reports;
+    // F4 (BUG-0767, sreport.h): the host asks the guests now (its "Report a problem" did too); the host's line about
+    // the round ("" none); the guest's question (1: asked now, line = the question; 0: line = what happened to its
+    // report) and its click
+    std::function<bool()> report_round;
+    std::function<std::string()> report_line;
+    std::function<int(std::string& line)> report_prompt;
+    std::function<void(bool send)> report_answer;
+    // the lobby's address line: the host's "ip:port, ..." to give to friends, a guest's the host it joined
+    std::function<std::string()> host_address;
     uint16_t default_port = 0;
 };
 
@@ -91,14 +137,44 @@ void tick();     // every frame (inside Present): only schedules UI work outside
 void open(bool on);
 // Outside-frame launch transition: hide before entering the native loading UI.
 void close_for_adventure_launch();
+void open_editor();
+// tests (BUG-1139, the warm reset): the window closed and back on the lobby page, as at a cold start (a closed
+// window keeps its page for the next F9)
+void test_reset();
+void open_lobby(); // open on the lobby page (not the settings / space page): a guest asked for its report
 bool is_open();
+// BUG-0599: the window covers (x, y) (screen pixels of the game window): hide it for `secs` so that a click of the
+// mod there reaches the game's window under it (the "game saved" box's OK); false = not open or not there
+bool step_aside(int x, int y, double secs);
+int input_lock_now(); // the game's input lock count (cGameInputManager +0x110; > 0 = clicks are dropped)
+bool game_modal_up(); // a modal window of the game is up (UTFWin window manager +0x82C: the pause menu, a box; not ours)
 void shutdown(); // mod unload: hide our windows
 std::string debug_state();
 extern bool g_log_msgs; // debug: log UI messages reaching our handlers
+extern bool g_lan_pages_fix; // tests: `coop.fix core.lan_pages off` lists the first three games only (BUG-0183)
+extern bool g_status_fix; // tests: `coop.fix core.ui_status off` keeps the status of the last button (BUG-0104)
+// the session was joined (connected) or ended (why): replaces the status line of the join
+void session_event(bool connected, const std::string& why);
+extern bool g_recenter_fix;  // tests: `coop.fix core.window_recenter off` keeps the first position (BUG-0113)
+extern bool g_menu_drop_fix; // tests: `coop.fix core.menu_drop off` keeps the menu item pointer after the menu (BUG-0163)
+// tests: the window goes back to its first start (the name step), as with no name chosen yet
+void first_start();
+// tests / layout shots (coop.uistate color <argb>): the lobby's colour of players without one (0 = "-")
+void set_test_color(uint32_t argb);
+// README pictures (coop.uistate demo <address> <real port> <shown port>, `demo off`): a documentation address in
+// place of the PC's own, the shown port in place of the real one in the window's texts
+void set_demo(const std::string& addr, const std::string& from, const std::string& to);
+// the text with the demo port in place of the real one (unchanged without `coop.uistate demo`)
+std::string demo_text(std::string t);
+// tests (coop.uistate widgets): every visible widget, `widget x1 y1 x2 y2 L|B <caption width> '<caption>'`
+std::string widgets_state();
+// tests (ui_golden's twin): a named control of coop.uistate moved by (dx, dy) or hidden until "off"
+std::string test_nudge(const std::string& name, float dx, float dy, bool hide, float dw = 0);
 
 // the dialog text font (0 until the co-op window was built once)
 uint32_t text_font();
 // the window speaks Russian (ui lang = ru, or auto on a Russian system)
 bool russian();
+void set_russian(bool ru); // tests (coop.uistate lang): the texts set from now on
 
 } // namespace coop_ui

@@ -14,67 +14,21 @@ cp "$ROOT"/data/symbols/*.sym "$STAGE/SporeCoop/mods/sporekit/symbols/"
 cp "$ROOT"/data/config/*.ini "$STAGE/SporeCoop/mods/"
 cp "$ROOT/build/SporeCoop.package" "$STAGE/SporeCoop/SporeCoop.package"  # menu icon (Spore loads Data\*.package)
 
-cat > "$STAGE/install.bat" <<'EOF'
-@echo off
-rem SporeCoopGA installer: run from the SporebinEP1 folder of SPORE (GOG or Steam)
-cd /d "%~dp0"
-if not exist SporeApp.exe (
-  echo Put install.bat and the SporeCoop folder into ...\SPORE\SporebinEP1 and run it again.
-  pause
-  exit /b 1
-)
-rem supported builds: GOG 2016 (922af7c7...), GOG 2024 (dc04aee5...) and Steam (3010a413..., the GOG 2024
-rem code under Steam's DRM), INSTALL.txt section 2
-set WANT1=922af7c7908af2614b9caca2ffb1ec2353442022fd124866105724acaa24c26e
-set WANT2=dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37
-set WANT3=3010a413f9a4a05ee9c4de24756c1c94c7fb218f70cad29bcf5bc0b4abfa2466
-for /f "usebackq delims=" %%h in (`powershell -NoProfile -Command "(Get-FileHash -Algorithm SHA256 SporeApp.exe).Hash.ToLower()" 2^>nul`) do set HAVE=%%h
-if defined HAVE if /i not "%HAVE%"=="%WANT1%" if /i not "%HAVE%"=="%WANT2%" if /i not "%HAVE%"=="%WANT3%" (
-  echo Note: this SporeApp.exe is not one of the builds SporeCoop supports.
-  echo It has not been tested yet - see INSTALL.txt, section 2.
-  echo.
-)
-if /i "%HAVE%"=="%WANT2%" (
-  echo Exact GOG 2024 executable: experimental co-op Galactic Adventures is available.
-) else (
-  echo Native co-op adventures require the exact GOG 2024 executable.
-  echo Steam support is retained for base stages; Steam co-op adventures are unvalidated.
-)
-if not exist steam_api_orig.dll (
-  copy /y steam_api.dll steam_api_orig.dll >nul
-)
-copy /y SporeCoop\steam_api.sporekit.dll steam_api.dll >nul
-copy /y SporeCoop\sporekit.dll sporekit.dll >nul
-if not exist mods mkdir mods
-xcopy /e /i /y /q SporeCoop\mods mods >nul
-copy /y SporeCoop\SporeCoop.package ..\Data\SporeCoop.package >nul
-echo SporeCoop installed. Start SPORE as usual.
-echo Main menu: "Co-op" - host a game or join a friend. In game F9 opens the co-op window.
-pause
-EOF
-
-cat > "$STAGE/uninstall.bat" <<'EOF'
-@echo off
-cd /d "%~dp0"
-if exist steam_api_orig.dll (
-  copy /y steam_api_orig.dll steam_api.dll >nul
-  del steam_api_orig.dll
-)
-del /q sporekit.dll 2>nul
-del /q ..\Data\SporeCoop.package 2>nul
-echo SporeCoop removed (the mods folder was kept).
-pause
-EOF
+# install.bat / uninstall.bat (installer/): install.bat keeps the player's .ini files (BUG-0080)
+cp "$ROOT/installer/install.bat" "$ROOT/installer/uninstall.bat" "$STAGE/"
+cp "$ROOT/installer/ini.exclude" "$STAGE/SporeCoop/ini.exclude"  # xcopy /exclude: names with ".ini"
 
 cat > "$STAGE/README-SporeCoop.txt" <<EOF
-SporeCoopGA $VER - Experimental Galactic Adventures co-op on SporeCoop 0.7.2.1
+SporeCoopGA $VER - Experimental Galactic Adventures co-op on SporeCoop 0.7.15
 https://github.com/jwhans0n/SporeCoopGA
 Based on SporeCoop by WoodyWizard: https://github.com/WoodyWizard/SporeCoop
 
 Install: extract this zip into SPORE\\SporebinEP1 and run install.bat (step by step: INSTALL.txt).
 Release: https://github.com/jwhans0n/SporeCoopGA/releases/tag/v0.7.4.0
 Read GALACTIC-ADVENTURES.md for the adventure release's verified cases and limits.
-All players need Galactic Adventures and this exact SporeCoopGA version (protocol 15).
+This source candidate uses protocol 30; all players need this exact SporeCoopGA build.
+The published release and its protocol 15 evidence below are historical.
+This source synchronization does not install or publish a release.
 Upstream SporeCoop 0.7.0-0.7.2.1 uses a different protocol and cannot join this release.
 Client creatures and vehicles follow native waypoints; the host retains AI,
 combat and objective authority. Authored player-team attack targets can recognize
@@ -85,20 +39,22 @@ Replay and every remaining player to apply and accept results, then opens a
 shared lobby with fresh explicit readiness. A downed captain's 1 HP display permits revival, not
 continued play after a shared loss. See validation-ga-0.7.4.0.md for release checks
 and validation-ga-preview.12.md for its native acceptance evidence and limits.
-Gameplay and protocol are retained from preview 12. Historical preview 11 Mine guest/host targeting,
+The published release retained gameplay and protocol from preview 12. Historical preview 11 Mine guest/host targeting,
 natural damage and switching checks remain in validation-ga-preview.11.md.
 Broader adventure compatibility remains unproven. Earlier follower results
 retain residual movement lag. Ordinary guest click/key combat input remains
 unverified.
 
-Base-stage support retains upstream GOG 2024 (sha256 dc04aee5...), Steam
-(3010a413...: GOG 2024 game code under Steam's DRM), and GOG 2016 (922af7c7...).
+Base-stage support retains upstream GOG 2024 (sha256 dc04aee5...) and Steam
+(3010a413...: GOG 2024 game code under Steam's DRM). GOG 2016 is unsupported;
+its loading code and maps were removed in 0.7.15. Update that game through GOG.
 Upstream testing: GOG 2016/2024 on Linux Wine, GOG 2024 on Windows 11, and Steam
 offline on Windows/Proton. See INSTALL.txt section 2 for the precise historical scope.
 EA app and disc remain unvalidated unless they match an existing supported build.
 
 The native co-op adventure adapter requires the exact GOG SporeApp.exe SHA-256:
 dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37.
+The verified 4 GB LAA variant is also supported. Neither executable is included or modified.
 This is the executable upstream calls GOG 2024, called March 2017 in the GA RE notes.
 Steam and other same-code variants retain base-stage support but are not enabled
 for the native GA adapter. Adventures start from Sporepedia; Space-stage entry
@@ -126,8 +82,8 @@ prereleases. Version 0.7.4.0 sorts above 0.7.3.5-ga-preview.12 for the updater;
 Galactic Adventures support remains experimental.
 Cheat console (Ctrl+Shift+C): coop host | coop join <ip> | coop leave.
 EOF
-# the toolchain the Makefile uses (LLVM_MINGW ?= ... there), unless set in the environment
-LLVM_MINGW="${LLVM_MINGW:-$(sed -n 's/^LLVM_MINGW ?= //p' "$ROOT/Makefile" | sed 's/\$(HOME)/$HOME/; s|\$HOME|'"$HOME"'|')}"
+# the toolchain the Makefile uses (tools/toolchain.env), unless set in the environment
+LLVM_MINGW="${LLVM_MINGW:-$(make -s --no-print-directory -C "$ROOT" toolchain-path)}"
 STRIP="$LLVM_MINGW/bin/llvm-strip"
 cp "$ROOT/LICENSE" "$STAGE/LICENSE.txt"
 cp "$ROOT/THIRD_PARTY_NOTICES.md" "$STAGE/THIRD_PARTY_NOTICES.txt"
@@ -148,8 +104,13 @@ cp "$ROOT"/docs/re/{adventure,adventure-world,creature,build-dc04}.md "$STAGE/re
 python3 "$ROOT/tools/mkpack.py" "$STAGE" "$VER" "$STAGE/SporeCoop-$VER.pack" >/dev/null
 cp "$ROOT/build/SporeCoopSetup.exe" "$STAGE/SporeCoopSetup.exe"
 "$STRIP" "$STAGE/SporeCoopSetup.exe"
+# BUG-0784: every binary of the release carries a VERSIONINFO of this version (after the strip)
+python3 "$ROOT/tools/pe_version.py" --expect "$VER" "$STAGE/SporeCoopSetup.exe" "$STAGE/SporeCoop/steam_api.sporekit.dll" \
+    "$STAGE/SporeCoop/sporekit.dll" "$STAGE/SporeCoop/mods/coop.dll" >&2
 cp "$STAGE/SporeCoop-$VER.pack" "$STAGE/SporeCoopSetup.exe" "$ROOT/out/dist/"
-sed -i 's/\r*$/\r/' "$STAGE"/*.bat "$STAGE"/*.txt  # Windows line endings for cmd.exe and Notepad
+# B5 (BUG-1123): the unstripped DLLs as the release's debug-symbols asset (for tools/crash_triage.py)
+"$ROOT/tools/symbols_pack.sh" "$ROOT/build" "$VER" "$ROOT/out/dist" "$STAGE" >&2
+sed -i 's/\r*$/\r/' "$STAGE"/*.bat "$STAGE"/*.txt "$STAGE/SporeCoop/ini.exclude"  # Windows line endings for cmd.exe and Notepad
 if command -v zip >/dev/null 2>&1; then
     (cd "$STAGE" && rm -f "../SporeCoop-$VER.zip" && zip -qr "../SporeCoop-$VER.zip" .)
 else

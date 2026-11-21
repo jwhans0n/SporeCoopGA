@@ -12,6 +12,14 @@
 // Explosive ownership is exercised by its own native ABI fixture. This mirror
 // fixture leaves that adapter uninitialized while covering world callbacks.
 namespace adventure_explosives { void picked(Identity, uint8_t) {} }
+// Native hook ownership is exercised by adventure_shared_hold_tests. This
+// reconciliation fixture does not initialize detours; absent ownership stays closed.
+namespace player_rules {
+HoldNative hold_original(uintptr_t) { return nullptr; }
+ReleaseNative release_original(uintptr_t) { return nullptr; }
+bool intercept_adventure_hold(uintptr_t, HoldInterceptor) { return false; }
+void clear_adventure_hold(HoldInterceptor) {}
+}
 
 namespace {
 using skg::field;
@@ -48,6 +56,7 @@ unsigned creates;
 int failures;
 unsigned native_terminals, native_other_states;
 unsigned native_goal_mutations;
+unsigned goal_pins,goal_unpins,goal_live_pins;
 unsigned goal_act_sets;
 bool reentrant_result;
 void* teleported;
@@ -115,15 +124,15 @@ void* SK_THISCALL bounds(void* spatial,void* output)
     values[0]={p.x-0.25f,p.y-0.25f,p.z-0.25f};
     values[1]={p.x+0.25f,p.y+0.25f,p.z+0.25f}; return output;
 }
-bool SK_THISCALL item_pick(void* holder,void* spatial,int index,bool)
+bool SK_THISCALL item_pick(void* holder,void* spatial,uint32_t index,bool)
 {
     auto* first=field<uint8_t*>(holder,0xE40); auto* last=field<uint8_t*>(holder,0xE44);
-    if(index<0 || first+index*0x24>=last) return false;
+    if(!first || !last || last<first || index>=size_t(last-first)/0x24) return false;
     field<void*>(first+index*0x24,0x20)=spatial; ++item_picks;
     if(capture_world_actions) world_action_order.push_back('P');
     return true;
 }
-bool SK_THISCALL item_drop(void* holder,void* spatial,int,bool)
+bool SK_THISCALL item_drop(void* holder,void* spatial,int,int)
 {
     int index=adventure_world::item_slot(holder,spatial,false); if(index<0) return false;
     field<void*>(field<uint8_t*>(holder,0xE40)+index*0x24,0x20)=nullptr; ++item_drops;
@@ -175,6 +184,14 @@ void SK_THISCALL result_state(void* self, int state)
     }
 }
 void SK_THISCALL native_goal_check(void*) { ++native_goal_mutations; }
+void SK_THISCALL goal_reference(void** slot,void* object){
+    if(object){++goal_pins;++goal_live_pins;}else if(*slot){++goal_unpins;--goal_live_pins;}
+    *slot=object;
+}
+void SK_THISCALL pinned_goal_check(void*){
+    check(goal_live_pins==1 && adventure_world::g_override_avatar,"native spatial goal uses one retained exact captain");
+    ++native_goal_mutations;
+}
 bool SK_THISCALL native_goal_update(void*) { ++native_goal_mutations; return false; }
 void SK_THISCALL native_goal_count(void*, void*, void*, void*) { ++native_goal_mutations; }
 void SK_THISCALL goal_act(void* self, int act, bool)
@@ -216,7 +233,20 @@ void SK_THISCALL native_ally(void*, void* actor)
 namespace game {
 void for_each_object(bool (*fn)(void*, uint32_t, void*), void* user)
 { for (auto& object : objects) if (!fn(object->bytes.data(), object->noun, user)) break; }
-bool object_alive(void* p) { return p && !field<bool>(p, 0x21); }
+bool object_alive(void* p) { return lookup(p) && !field<bool>(p, 0x21); }
+bool listed(const void* p,uint32_t noun)
+{
+    auto* object=lookup(const_cast<void*>(p));
+    return object&&(!noun||noun==object->noun)&&object_alive(object->bytes.data());
+}
+LiveRef live_ref(void* p,uint32_t noun)
+{
+    return listed(p,noun)?LiveRef{p,field<uint32_t>(p,0x24),noun}:LiveRef{};
+}
+bool alive(const LiveRef& reference)
+{
+    return listed(reference.p,reference.noun)&&field<uint32_t>(reference.p,0x24)==reference.serial;
+}
 void* cast(void* p, uint32_t type)
 {
     auto* o = lookup(p);
@@ -312,6 +342,7 @@ namespace adventure_world_vehicles {
 bool init(const SkHost*, SkMod*, Ctx) { return true; }
 Counters counters() { return {}; }
 void reset() {}
+void shutdown() {}
 }
 namespace adventure_relationships {
 bool query_local_party(void* manager, const void* key, void* actor, int& value)
@@ -323,6 +354,40 @@ bool query_local_party(void* manager, const void* key, void* actor, int& value)
           "host snapshots query the actual NPC species key through the native relationship adapter");
     value = 6; return true;
 }
+}
+
+static void native_identity_cases(net::Session& session,net::Session& client,void* object)
+{
+    using namespace adventure_world;
+    auto saved_native=g_native;auto saved_bindings=g_bindings;auto* saved_session=C.sess;
+    const uint32_t serial=field<uint32_t>(object,0x24),noun=lookup(object)->noun;
+    const uint32_t marker=uint32_t(field<int>(object,0x1C));
+    for(auto* peer:{&session,&client}) {
+        C.sess=peer;
+        const Identity id{marker,peer==&session?serial:serial^0x80000000u};
+        if(peer==&client)g_bindings[id]={object,serial,0};
+        const auto pinned=game::live_ref(object,noun);
+        check(actor_for(object)&&object_for(id)==object&&game::alive(pinned),
+              "host and guest resolve the exact listed native serial before reuse");
+        check(!game::listed(object,noun+1)&&!game::alive({object,serial,noun+1}),
+              "controlled registry preserves the native noun constraint");
+        ++field<uint32_t>(object,0x24); // reused allocation before enumerate refreshes its cache
+        check(game::listed(object,noun)&&!game::alive(pinned)&&!actor_for(object)&&!object_for(id),
+              "cached host actor and guest binding reject a same-address successor immediately");
+        enumerate();
+        check(actor_for(object)&&!object_for(id),
+              "a fresh native enumeration cannot restore the old host or guest incarnation");
+        if(peer==&session)check(object_for({marker,serial+1})==object,
+              "the host resolves the new native incarnation through its own identity");
+        field<bool>(object,0x21)=true;
+        check(!game::listed(object)&&!actor_for(object)&&!object_for(id),
+              "destroyed objects still in the controlled registry are unavailable");
+        field<bool>(object,0x21)=false;field<uint32_t>(object,0x24)=serial;enumerate();
+    }
+    check(!game::listed(reinterpret_cast<void*>(0xDEADC0DE))&&
+          !game::alive({reinterpret_cast<void*>(0xDEADC0DE),1,noun}),
+          "unlisted addresses are rejected before reading native memory");
+    C.sess=saved_session;g_native=std::move(saved_native);g_bindings=std::move(saved_bindings);
 }
 
 static void static_replication_cases(net::Session& session, net::Session& client)
@@ -395,7 +460,7 @@ static void static_replication_cases(net::Session& session, net::Session& client
     };
     C.sess = &session; send_actors(); pump();
     auto initial = static_packets();
-    check(initial.size() == 1 && initial[0].size() == 70 && g_replication_stats.baselines == 1 &&
+    check(initial.size() == 1 && initial[0].size() == 78 && g_replication_stats.baselines == 1 &&
           g_replication_stats.static_actors == 1 && g_replication_stats.dynamic_actors == 2,
           "first stationary observation sends one complete reliable reconstruction baseline alongside legacy dynamic actors");
     uint64_t static_before = g_replication_stats.static_bytes, dynamic_before = g_replication_stats.dynamic_bytes;
@@ -407,7 +472,7 @@ static void static_replication_cases(net::Session& session, net::Session& client
           "equivalent quaternion signs do not classify a stationary building as moving");
     field<float>(b->combatant.data(), 0x38) = 20; packets.clear(); send_actors(); pump();
     auto changed = static_packets();
-    check(changed.size() == 1 && changed[0].size() == 42 && g_replication_stats.state_updates == 1,
+    check(changed.size() == 1 && changed[0].size() == 50 && g_replication_stats.state_updates == 1,
           "building health changes send a compact reliable state record with no position or quaternion");
     auto decode = [&](const std::vector<uint8_t>& packet, uint8_t sender = 0) {
         auto* previous = C.sess; C.sess = &client;
@@ -442,7 +507,7 @@ static void static_replication_cases(net::Session& session, net::Session& client
     if (!coalesced.empty()) decode(coalesced[0]);
     check(g_remote.at(building_id).health == 12, "coalesced state carries the most recent absolute HP");
     packets.clear(); peer_changed(client.my_id()); send_actors(); pump();
-    check(static_packets().size() == 1 && static_packets()[0].size() == 70,
+    check(static_packets().size() == 1 && static_packets()[0].size() == 78,
           "a reconnecting or reused peer receives a fresh complete baseline");
 
     field<net::Vec3>(b->spatial.data(), 4) = {0.00005f, 0, 0}; send_actors();
@@ -451,7 +516,7 @@ static void static_replication_cases(net::Session& session, net::Session& client
     field<net::Vec3>(b->spatial.data(), 4) = {0.0002f, 0, 0}; packets.clear(); send_actors(); pump();
     auto promoted = static_packets();
     check(g_replication_stats.promotions == 1 && g_replication_stats.dynamic_actors == 3 &&
-          promoted.size() == 1 && promoted[0].size() == 70,
+          promoted.size() == 1 && promoted[0].size() == 78,
           "a moving building gets one reliable full correction and immediately joins the unchanged dynamic stream");
     if (!promoted.empty()) decode(promoted[0]);
     check(!g_remote.at(building_id).static_actor, "promotion clears the guest stationary classification");
@@ -1184,6 +1249,7 @@ int main()
     field<float>(live_object->combatant.data(), 0x38) = 10;
     g_remote[newly_visible.id].flags = 1; g_remote[newly_visible.id].health = 10;
     g_bindings[newly_visible.id].act = 0; enumerate();
+    native_identity_cases(session,client,live);
     auto result_before = g_native_result;
     check(is_live_mirror(live), "current living guest actor with exact host binding is eligible");
     // dc04's separate setters do not mark creature+B5D. Model maintenance must
@@ -1203,6 +1269,22 @@ int main()
           !live_object->model_dirty && !npc_ai_filter(live),
           "native-style render maintenance consumes the replicated creature pose while NPC decisions remain fenced");
     apply_actor(*live_native,saved_pose); render_models();
+    {
+        auto context=pickups_context();adventure_pickups::Identity id{saved_pose.id.marker,saved_pose.id.incarnation};
+        net::Vec3 point{6.5f,0,0};net::Quat rotation{0,0,0,1};
+        check(context.actor_teleport(id,10,point,rotation),"NPC reliable teleport admits its generation before local cleanup");
+        auto moved_state=g_remote.at(saved_pose.id);moved_state.position.x=9;moved_state.sequence+=1;moved_state.motion_generation=10;
+        merge_actor_state(moved_state,g_remote,true,true);
+        point.x=6.5f;check(context.actor_teleport(id,10,point,rotation)&&point.x==9,"delayed reliable NPC cleanup uses the latest same-generation snapshot pose");
+        auto stale=moved_state;stale.motion_generation=0;stale.sequence+=100;stale.position.x=0;
+        merge_actor_state(stale,g_remote,true,true);
+        check(g_remote.at(saved_pose.id).position.x==9,"a later-sequence pre-teleport snapshot cannot rewind an NPC");
+        check(!context.actor_teleport(id,9,point,rotation),"older reliable NPC teleport is rejected");
+        auto latest=moved_state;latest.motion_generation=11;latest.sequence+=2;latest.position.x=10;
+        merge_actor_state(latest,g_remote,true,true);
+        check(g_remote.at(saved_pose.id).motion_generation==11,"new-generation snapshots establish their own late-observer baseline");
+        g_actor_warps.erase(saved_pose.id);g_remote[saved_pose.id]=saved_pose;
+    }
     native_waypoint_regression(*live_native);
     live_object->is_creature=false;live_object->is_vehicle=true;
     native_waypoint_regression(*live_native);
@@ -1265,7 +1347,9 @@ int main()
     check(captured.u8() == Actors && get_run(captured) == 1, "host relationship snapshot crosses the real UDP session");
     captured.u32(); check(captured.u8() == 0 && captured.u8() == 1, "host snapshot identifies its act and bounded actor count");
     read_identity(captured); captured.u32();
-    for (int i = 0; i < 10; ++i) captured.f32();
+    for (int i = 0; i < 7; ++i) captured.f32();
+    get_run(captured);
+    for (int i = 0; i < 3; ++i) captured.f32();
     captured.u8();
     check(captured.u8() == 6 && captured.ok() && !captured.left() && captured_party_queries == 1,
           "host serializes its real relationship query result after the actor fields");
@@ -1278,6 +1362,7 @@ int main()
             write_identity(w, newly_visible.id); w.u32(newly_visible.noun);
             w.f32(0); w.f32(0); w.f32(0);
             w.f32(0); w.f32(0); w.f32(0); w.f32(1);
+            put_run(w,0);
             w.f32(10); w.f32(10); w.f32(1); w.u8(1); w.u8(value);
         };
         record(relationship); if (malformed_second) record(8);
@@ -1518,6 +1603,26 @@ int main()
     spatial_vtable[0xB8/4]=reinterpret_cast<void*>(&spatial_game_data);
     spatial_vtable[0x6C/4]=reinterpret_cast<void*>(&bounds);
     item_replication_cases(session,client);
+    {
+        auto previous_eligibility=C.captain_can_act;auto previous_held=C.held;
+        C.sess=&session;C.held=[] {return false;};C.captain_can_act=[](uint8_t player){return player<2;};
+        running=true;g_run=reported_run;begin_native_attempt(fake_play.data());field<int>(fake_play.data(),0x90)=3;
+        field<float>(captain,game::kHpOff)=field<float>(partner,game::kHpOff)=100;
+        field<bool>(captain,game::kDeadOff)=field<bool>(partner,game::kDeadOff)=false;
+        field<bool>(captain,0x20)=field<bool>(partner,0x20)=false;field<bool>(captain,0x21)=field<bool>(partner,0x21)=false;
+        a_ObjectReference=reinterpret_cast<uintptr_t>(&goal_reference);o_Check=pinned_goal_check;
+        native_goal_mutations=goal_pins=goal_unpins=goal_live_pins=0;
+        check_goals(fake_play.data());
+        check(native_goal_mutations==2 && goal_pins==2 && goal_unpins==2 && !goal_live_pins && !g_override_avatar,"living party spatial goals balance retained references and restore avatar scope");
+        field<float>(partner,game::kHpOff)=0;check_goals(fake_play.data());
+        check(native_goal_mutations==3 && goal_pins==3,"downed remote captain is excluded from native goal evaluation");
+        field<bool>(captain,0x20)=true;check_goals(fake_play.data());
+        check(native_goal_mutations==3,"retired local captain is excluded while other captains are downed");
+        field<bool>(captain,0x20)=false;field<float>(partner,game::kHpOff)=100;
+        C.captain_can_act=[](uint8_t){return false;};check_goals(fake_play.data());
+        check(native_goal_mutations==3 && !goal_live_pins,"life-state fences override still-readable captain bytes");
+        C.captain_can_act=previous_eligibility;C.held=previous_held;native_goal_mutations=0;
+    }
     client.leave(); C.sess = &session; running = false;
 
     begin_native_attempt(fake_play.data()); running = true;
@@ -1613,6 +1718,8 @@ int main()
     };
     unsigned terminals_before = native_terminals, updates_before = g_goal_updates;
     g_received_goals = 0;
+    g_applied_goals_run=0;g_roster_sequence=1;g_roster_received={true};
+    check(!ready_for_run(500), "received or deferred goals cannot report a successful native group launch");
     receive_goals(goal_packet(10, 3)); receive_goals(goal_packet(11, 5));
     receive_goals(goal_packet(10, 4)); receive_goals(goal_packet(11, 99));
     check(g_deferred_goals && g_deferred_goals->sequence == 11 && field<int>(fake_play.data(), 0xB8) == 0 &&
@@ -1630,6 +1737,8 @@ int main()
           field<int>(fake_play.data(), 0x90) == 3 && field<uint32_t>(hud_goals.data(), 4) == 5 &&
           native_terminals == terminals_before && !goal_application_pending(),
           "final goal fields apply once before the coordinator alone may enter native results");
+    check(ready_for_run(500) && !ready_for_run(501), "launch readiness requires this run's applied authoritative goals");
+    g_roster_received={false};check(!ready_for_run(500), "an incomplete roster cannot report shared gameplay ready");g_roster_received={true};
     apply_result(true); apply_result(false);
     check(native_terminals == terminals_before + 1 && field<int>(fake_play.data(), 0x90) == 5,
           "authoritative coordinator result commits once after final goal application");

@@ -37,7 +37,7 @@ import threading
 import time
 
 import lane
-from twoinst import Checks, Monitor, shot, start  # (also puts tools/ on the path)
+from twoinst import Checks, Monitor, keyframe, shot, start  # (also puts tools/ on the path)
 from sporectl import Console  # noqa: E402
 
 DRIVE = 'interstellardrive'  # tool file name (FNV-1 hash 0x2569FAE8), docs/re/space.md 7.9
@@ -47,6 +47,26 @@ def png_size(path):
     with open(path, 'rb') as f:
         head = f.read(24)
     return struct.unpack('>II', head[16:24])
+
+
+def captain_open(con):
+    """the captain screen (opened by the rank badge over the ship's picture) is up: its "Equipment"
+    panel is shown. It is not a caption (finale busy=0) and the game ignores the mouse wheel while it
+    is up, so a zoom-out to the galaxy view never happens (BUG-0303)"""
+    import uifind
+    return uifind.shown(con, 'Equipment') is not None
+
+
+def close_captain(con, tries=3):
+    """close the captain screen like a player: its OK button (Esc opens the pause menu over it)"""
+    import uifind
+    for _ in range(tries):
+        if not captain_open(con):
+            return True
+        p = uifind.shown(con, 'OK')
+        con.call(f'click {p[0]} {p[1]}' if p else 'click 1224 856')
+        time.sleep(1.5)
+    return not captain_open(con)
 
 
 class Stop(Exception):
@@ -132,7 +152,9 @@ class Player(threading.Thread):
                 players.setdefault(int(f[2]), (int(f[3]), int(f[4])))
             elif f and f[0] == 'obj' and len(f) == 5:
                 x, y = int(f[3]), int(f[4])
-                if 40 < x < self.W - 40 and 60 < y < self.H - 180:  # not under the HUD
+                # not under the HUD; the rank badge over the ship's picture (bottom right, up to
+                # H - 205) opens the captain screen, which blocks the wheel (BUG-0303)
+                if 40 < x < self.W - 40 and 60 < y < self.H - 180 and not (x > self.W - 120 and y > self.H - 225):
                     objs.append((f[1], float(f[2]), x, y))
         return me, players, objs
 
@@ -226,6 +248,17 @@ class Player(threading.Thread):
             self.sleep(self.rng.uniform(1.0, 2.5))
             self.act('key enter')
             self.count('captions_ok')
+            return True
+        # the captain screen (a click on the rank badge): OK closes it, Esc does not (BUG-0303)
+        if captain_open(self.c):
+            close_captain(self.c)
+            self.count('captain_closed')
+            return True
+        # a window that pauses the game without a caption (My Collections, the Sporepedia): Esc
+        # closes it; the wheel and Enter do nothing there (BUG-0336)
+        import coop_space_finale
+        if coop_space_finale.close_stray(self.c, self.name):
+            self.count('windows_closed')
             return True
         # the pause menu (an Esc too many) or the co-op window left open: close them
         for cap in ('Resume Game',):
@@ -672,7 +705,12 @@ def main():
     errs, together_s, samples = [], 0, 0
     stuck, freed, life = {}, {}, {}
     t_last = time.time()
+    keyframe('start', 'both ships in the star system: the partner ship drawn with its model, the Space HUD and the palette in place')
+    kf_mid = [False]
     while time.time() < end and not Monitor.events and ph.is_alive() and pg.is_alive():
+        if not kf_mid[0] and (end - time.time()) < 0.5 * a.minutes * 60:
+            kf_mid[0] = True
+            keyframe('mid', 'play in progress: both ships flying, no black screen, the galaxy view or the planet as the mode says')
         time.sleep(3)
         now = time.time()
         try:
@@ -756,6 +794,7 @@ def main():
                 print('   ', line)
         print(f'  replay: SPORE_LANE={lane.LANE} python3 tools/tests/play_space.py --minutes {a.minutes} --seed {seed}')
     try:
+        keyframe('end', 'after the play: both games in Space, the partner ship drawn where it is, no loading screen')
         shot(host, 'play_space_end_host.png')
         shot(guest, 'play_space_end_guest.png')
         ck.faults(host=host, guest=guest)

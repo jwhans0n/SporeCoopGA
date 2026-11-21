@@ -1,0 +1,53 @@
+{
+  "schema": 1,
+  "profile": "creature",
+  "viewport": [
+    1024,
+    768
+  ],
+  "evidence": "Root C39 host R17 and guest R18 successful native creation Saves; out/preview9-c39-host-creature-design-r2/result.json, preview9-c39-host-creature-save/result.json, preview9-c39-guest-creature-save/result.json",
+  "qualification": "Case-specific current normal-input recipe: focus, held drag, naming waits and blur. Each invocation still requires fresh exact Native request/zero-blocker validation.",
+  "steps": [
+    {
+      "click": [
+        600,
+        650
+      ]
+    },
+    {
+      "frames": 12
+    },
+    {
+      "slow_drag": [
+        60,
+        150,
+        700,
+        340
+      ]
+    },
+    {
+      "frames": 30
+    },
+    {
+      "click": [
+        500,
+        741
+      ]
+    },
+    {
+      "frames": 20
+    },
+    {
+      "text": "{name}"
+    },
+    {
+      "click": [
+        850,
+        600
+      ]
+    },
+    {
+      "frames": 30
+    }
+  ]
+}

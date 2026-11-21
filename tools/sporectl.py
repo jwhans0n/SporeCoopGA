@@ -31,12 +31,24 @@ class Console:
         self.sock = socket.create_connection(('127.0.0.1', self.port), timeout=3)
         self.sock.settimeout(self.timeout)
 
+    # BUG-0430: called with (console, line) before each call; twoinst notes the switches and knobs a test sets
+    on_call = None
+
     def call(self, line):
+        if Console.on_call is not None:
+            Console.on_call(self, line)
         if self.sock is None:
             self.connect()
         self.sock.sendall(line.encode('utf-8') + b'\n')
         while b'\n' not in self.buf:
-            chunk = self.sock.recv(65536)
+            try:
+                chunk = self.sock.recv(65536)
+            except socket.timeout:
+                # BUG-0407: the reply may still come; on this connection it would be taken as the next call's (a
+                # test's fault check read a track row): a new connection for the next call
+                self.sock.close()
+                self.sock, self.buf = None, b''
+                raise
             if not chunk:
                 raise ConnectionError('console closed the connection')
             self.buf += chunk

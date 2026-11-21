@@ -18,6 +18,14 @@ extern "C" {
 #endif
 
 #define SK_ABI_VERSION 1
+/* printf-style checking of the format string (A4, BUG-1122): `%s` with an int or `%d` with a 64-bit value
+ * corrupts the 32-bit varargs; the attribute makes such a call a compile error under -Werror.
+ * SK_PRINTF(f, a): f = the format's parameter number, a = the first vararg (0 for a va_list). */
+#if defined(__GNUC__) || defined(__clang__)
+#define SK_PRINTF(f, a) __attribute__((format(printf, f, a)))
+#else
+#define SK_PRINTF(f, a)
+#endif
 #define SK_EXPORT __declspec(dllexport)
 
 typedef struct SkMod SkMod; /* opaque handle owned by sporekit */
@@ -27,7 +35,7 @@ enum SkLogLevel { SK_DEBUG = 0, SK_INFO = 1, SK_WARN = 2, SK_ERROR = 3 };
 enum SkEvent {
     SK_EV_APP_PREINIT = 0,  /* after App::cAppSystem::PreInit */
     SK_EV_APP_INIT = 1,     /* after App::cAppSystem::Init (game managers exist) */
-    SK_EV_POST_INIT = 2,    /* after App::cSporeApp::Init (main menu ready) */
+    SK_EV_POST_INIT = 2,    /* after App::cSporeApp::Init (main menu ready); not fired when that Init failed */
     SK_EV_FRAME = 3,        /* every frame, before Present. arg = float* dt seconds */
     SK_EV_OVERLAY = 4,      /* every frame, draw on top. arg = IDirect3DDevice9* */
     SK_EV_SHUTDOWN = 5,     /* App::cSporeApp::Shutdown */
@@ -50,6 +58,9 @@ enum SkCommandFlags {
     SK_CMD_ANY_THREAD = 1,  /* executed on the console thread (must be thread safe) */
     SK_CMD_OUTSIDE_FRAME = 2, /* main thread, but outside IDirect3DDevice9::Present: for code that
                                  creates D3D resources (Spore UI windows, fonts, textures) */
+    SK_CMD_NOT_ON_MAIN = 4,   /* with SK_CMD_ANY_THREAD: waits for frames or stops the main thread
+                                 from outside; refused when called on the main thread (the cheat
+                                 console, a mod's command_exec), where it would freeze the game */
 };
 
 typedef void (*SkTaskFn)(void* user);
@@ -63,8 +74,8 @@ typedef struct SkHost {
     uint32_t size; /* sizeof(SkHost) for forward compatibility */
 
     /* logging */
-    void (*log)(SkMod* mod, int level, const char* fmt, ...);
-    void (*logv)(SkMod* mod, int level, const char* fmt, va_list ap);
+    void (*log)(SkMod* mod, int level, const char* fmt, ...) SK_PRINTF(3, 4);
+    void (*logv)(SkMod* mod, int level, const char* fmt, va_list ap) SK_PRINTF(3, 0);
 
     /* symbols: rebased absolute address, or 0 if unknown */
     uintptr_t (*sym)(const char* name);
@@ -85,7 +96,7 @@ typedef struct SkHost {
     /* console commands */
     int (*command_add)(SkMod* mod, const char* name, const char* help, SkCommandFn fn,
                        void* user, int flags);
-    void (*out_printf)(SkOut* out, const char* fmt, ...);
+    void (*out_printf)(SkOut* out, const char* fmt, ...) SK_PRINTF(2, 3);
     /* execute a console command line as if typed into the devkit console
      * (main thread only). Result text is appended to `out` (may be NULL). */
     int (*command_exec)(const char* line, SkOut* out);
@@ -141,7 +152,7 @@ typedef struct SkHost {
 
     /* ---- since 0.3.4 (check size) ---- */
     const char* (*kit_version)(void);
-    const char* (*build_name)(void); /* "GOG 2024", "Steam (the GOG 2024 code)", "GOG 2016", "unknown build ..." */
+    const char* (*build_name)(void); /* "GOG 2024", "Steam (the GOG 2024 code)", "GOG 2016 (not supported...)", "unknown build ..." */
     /* writes mods\logs\SporeCoop-report-<time>.zip: a fresh report-<time>.txt (environment, every
      * mod's diag_context, faults, modules, the last log lines), the current and previous logs, the
      * newest crash reports with minidumps, the settings; its path into out. Returns the path
@@ -154,6 +165,38 @@ typedef struct SkHost {
     /* the previous run's problem: "<what>\n<path of its SporeCoop-report .zip>" ("crashed", "stopped
      * responding", ...), "" when it ended well. Told once: the mark is removed at this boot. */
     const char* (*last_problem)(void);
+
+    /* ---- since 0.3.5 (check size) ---- */
+    /* the session clock of every log line (a co-op session's common time): on != 0: each line
+     * carries "[s <time_seconds() + offset>]" after the local time; on == 0: no session clock */
+    void (*log_session_clock)(double offset, int on);
+    /* a text block put at the top of reports, right after their title (a session summary); NULL or
+     * "" removes it. Copied. Removed automatically when the mod unloads. */
+    void (*diag_headline)(SkMod* mod, const char* text);
+    /* the game files part of the environment: other mods, extra .package files in the game's Data
+     * folders and the player's, known files whose size is not the build's (several lines) */
+    const char* (*diag_files)(void);
+
+    /* ---- since 0.3.6 (check size) ---- */
+    /* a screenshot for report archives: the next frame drawn through Present (with the overlay) is
+     * scaled to at most 1280 px wide and written as a JPEG (under 450 KB) to mods\logs\shots by a
+     * worker thread; the newest 5 stay and every report archive includes them under shots/, listed
+     * in its report with their caption. tag: the file name's start ("mark"); caption: the line the
+     * shot belongs to (the MARK line). Returns 1 when requested, its name ("shots/<tag>-<date>-<time>
+     * [-s<session second>].jpg") in out; 0 when not (busy, another shot under 2 s ago, no device),
+     * the reason in out. Never waits; a capture that fails later is a log line. caption NULL removes
+     * every kept screenshot (the player switched them off). Main thread. */
+    int (*report_shot)(const char* tag, const char* caption, char* out, int cap);
+    /* 1 while the last requested screenshot is not written yet (its frame has not come, or the JPEG is
+     * being made), 0 when it was written, -1 when it failed: a report that should include it waits
+     * until this is not 1 (from its frame tick, never blocking) */
+    int (*report_shot_pending)(void);
+
+    /* ---- since 0.3.15 (check size) ---- */
+    /* n filled triangles in back buffer pixels (xy: 6 floats per triangle, x0 y0 x1 y1 x2 y2), one ARGB colour
+     * (alpha blended), drawn on top like overlay_text and in call order with it. The game's render states are
+     * put back after each call. Valid only during SK_EV_OVERLAY; at most 256 triangles per call. */
+    void (*overlay_tris)(const float* xy, int n, uint32_t argb);
 } SkHost;
 
 typedef struct SkModInfo {

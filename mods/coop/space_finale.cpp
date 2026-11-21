@@ -16,6 +16,7 @@
 //    collectible, the event log line) and the achievement "42"; a partner who joins later learns
 //    that the core was reached and gets the gift too; nobody gets it twice (the game's own flag)
 #include <algorithm>
+#include "player_life.h"
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -23,11 +24,13 @@
 #include <string>
 #include <vector>
 
+#include "fixes.h"
 #include "game.h"
 #include "modes.h"
 #include "space_ext.h"
 #include "spacecoop.h"
 #include "sporekit_game.hpp"
+#include "wire/space_finale.h"
 
 using skg::cdecl_call;
 using skg::thiscall;
@@ -70,6 +73,8 @@ struct Peer {
 
 static std::map<uint8_t, Peer> g_peer;
 static std::map<uint8_t, std::string> g_reached_by; // who entered the core in this session
+PLAYER_STATE("space_finale", [](uint8_t id) { g_peer.erase(id); g_reached_by.erase(id); }, // BUG-0422
+             [](uint8_t id) -> size_t { return g_peer.count(id) + g_reached_by.count(id); });
 static uint32_t g_core;                              // StarID of the core (0 = not found yet)
 static double g_core_scan;
 static uint8_t g_zone, g_flags, g_sent_zone = 0xFF, g_sent_flags = 0xFF;
@@ -80,6 +85,13 @@ static bool g_waiting, g_alone, g_go, g_reward_pending;
 static std::string g_reward_from;
 static uint32_t g_reward_fails;
 static uint32_t g_waits, g_entries, g_entries_with, g_rewards, g_reward_skipped, g_flights, g_blocked;
+// BUG-0320: the wait at the gate ended because every partner arrived. The tick clears g_waiting at
+// that moment, so an entry before the partner's K_REACHED came in was counted as alone.
+// `coop.fix space.finale_waited off`: the old count.
+static bool g_waited_all;
+static bool g_waited_fix = true;
+COOP_FIX("space.finale_waited", "BUG-0320", g_waited_fix,
+         "space finale: an entry after waiting for everybody counts as together");
 
 // a flight to a partner at the core: galaxy view first (the core is not a solar system), then the
 // free instant galaxy travel of the `space -flyto` cheat, then into the system if the partner is there
@@ -90,6 +102,14 @@ struct Fly {
     int steps = 0;
 };
 static Fly g_fly;
+// BUG-1045: "Fly to" a partner at the core from the galaxy view called SpaceTeleportTo directly: the jump spent energy
+// (TravelToStar; with none left it damaged the ship) and a ship disabled after the order still flew. It now goes
+// through spacecoop::teleport_in_galaxy (BUG-0063: the disabled and cinematic checks, the energy refund).
+// `coop.fix space.finale_fly_free off`: the direct call (0.7.13).
+static bool g_fly_free_fix = true;
+COOP_FIX("space.finale_fly_free", "BUG-1045", g_fly_free_fix,
+         "space: Fly to a partner at the galactic core from the galaxy view costs no energy and is refused while disabled");
+static uint32_t g_fly_refused;
 
 // ---------------- the game ----------------
 // (GetCurrentContext reads SpacePlayerData, which exists only in the Space stage: it faults earlier)
@@ -253,6 +273,13 @@ static void evaluate()
 }
 
 // ---------------- entering the core ----------------
+// BUG-0820: a partner who already entered the core (its F_ENTERED flag, or its K_REACHED in this session) and then
+// flew away was still "missing" (not at the gate): the core waited for it for ever, only "Enter now" got in.
+// `coop.fix space.finale_entered off`: every partner not at the gate is waited for (0.7.12).
+static bool g_entered_fix = true;
+COOP_FIX("space.finale_entered", "BUG-0820", g_entered_fix,
+         "space finale: the core does not wait for a partner who already entered it");
+static uint32_t g_not_waited;
 // partners in space who are not at the gate yet (the ones the core waits for)
 static std::vector<std::string> missing()
 {
@@ -261,6 +288,10 @@ static std::vector<std::string> missing()
         return v;
     for (auto& p : spaceext::ctx().partners()) {
         auto it = g_peer.find(p.id);
+        if (g_entered_fix && ((it != g_peer.end() && it->second.flags & F_ENTERED) || g_reached_by.count(p.id))) {
+            g_not_waited++;
+            continue; // it was in the core already
+        }
         if (it == g_peer.end() || it->second.zone != Z_GATE)
             v.push_back(p.name);
     }
@@ -279,6 +310,10 @@ using Enter_t = void(__cdecl*)();
 static Enter_t o_Enter;
 static void __cdecl h_Enter()
 {
+    if (!spaceext::feature_allowed("finale")) { // F3 (BUG-0768): space.finale off: as in a solo game
+        o_Enter();
+        return;
+    }
     bool before = has_flag(kFlagEnteredCore);
     if (!before && !g_go && !g_alone) {
         auto miss = missing();
@@ -298,8 +333,8 @@ static void __cdecl h_Enter()
         }
     }
     g_go = false;
-    bool with = g_waiting || !g_reached_by.empty();
-    g_waiting = false;
+    bool with = g_waiting || (g_waited_all && g_waited_fix) || !g_reached_by.empty();
+    g_waiting = g_waited_all = false;
     o_Enter();
     if (!before && has_flag(kFlagEnteredCore)) {
         g_entries++;
@@ -443,7 +478,16 @@ static void fly_step(void*)
     }
     if (ctx == 2) { // the galaxy view: the free instant travel of the `space -flyto` cheat
         if (active_star_record() != rec) {
-            cdecl_call<void>(a_Teleport, rec);
+            if (g_fly_free_fix) {
+                std::string e = spacecoop::teleport_in_galaxy(g_fly.star);
+                if (!e.empty()) {
+                    g_fly_refused++;
+                    spaceext::notice(std::string(spaceext::tr("Can't fly there: ", "Не долететь: ")) + e);
+                    g_fly = Fly();
+                    return;
+                }
+            } else
+                cdecl_call<void>(a_Teleport, rec);
             g_flights++;
             if (g_fly.enter) {
                 g_fly.next = H->time_seconds() + 1.5;
@@ -531,11 +575,7 @@ static void fly_tick(double now)
 static void send_state()
 {
     net::Writer w;
-    w.u8(g_zone);
-    w.u8(g_flags);
-    w.u32(g_star);
-    w.u32(g_prev);
-    w.f32(g_dist);
+    wire::space_finale::State{g_zone, g_flags, g_star, g_prev, (float)g_dist}.write(w);
     spaceext::send(K_STATE, w);
     g_sent_zone = g_zone;
     g_sent_flags = g_flags;
@@ -545,12 +585,13 @@ static void on_message(uint8_t kind, uint8_t from, net::Reader& r)
 {
     std::string who = spaceext::name_of(from);
     if (kind == K_STATE) {
-        Peer& p = g_peer[from];
-        uint8_t zone = r.u8(), flags = r.u8();
-        uint32_t star = r.u32(), prev = r.u32();
-        float dist = r.f32();
-        if (!r.ok())
+        Peer& p = g_peer[from]; // (also for a cut message, as before)
+        wire::space_finale::State msg;
+        if (!msg.read(r))
             return;
+        uint8_t zone = msg.zone, flags = msg.flags;
+        uint32_t star = msg.star, prev = msg.prev;
+        float dist = msg.dist;
         bool first = p.t == 0;
         p.zone = zone;
         p.flags = flags;
@@ -610,9 +651,10 @@ static void tick(double now)
     if (g_waiting) {
         void* core = core_record();
         if (!core || active_star_record() != core || g_flags & F_ENTERED) {
-            g_waiting = false;
+            g_waiting = g_waited_all = false;
         } else if ((g_alone || missing().empty()) && !busy()) {
             g_enter_at = now; // everybody is here (or "Enter now"): open it
+            g_waited_all = !g_alone;
             g_waiting = false;
         }
     }
@@ -641,7 +683,7 @@ static void session_end()
 {
     g_peer.clear();
     g_reached_by.clear();
-    g_waiting = g_alone = g_go = false;
+    g_waiting = g_alone = g_go = g_waited_all = false;
     g_enter_at = 0;
     g_reward_next = 0;
     g_reward_fails = 0;
@@ -717,7 +759,7 @@ static std::vector<spaceext::Row> rows()
 
 static std::string status()
 {
-    char b[512];
+    char b[560];
     std::string peers;
     for (auto& [id, p] : g_peer) {
         char x[64];
@@ -733,10 +775,10 @@ static std::string status()
     snprintf(b, sizeof b,
              "finale: core=%u ctx=%d busy=%d cin=%08X zone=%u dist=%.1f star=%u entered=%d staff=%d charges=%d waiting=%d alone=%d "
              "reached_by=%s waits=%u blocked=%u entries=%u entries_with=%u rewards=%u reward_skipped=%u flights=%u "
-             "flying=%u peers=[%s ]",
+             "flying=%u not_waited=%u fly_refused=%u peers=[%s ]",
              g_core, context(), busy(), cin, g_zone, g_dist, g_star, (g_flags & F_ENTERED) != 0, (g_flags & F_STAFF) != 0,
              tool_charges(kToolStaff), g_waiting, g_alone, who.c_str(), g_waits, g_blocked, g_entries, g_entries_with,
-             g_rewards, g_reward_skipped, g_flights, g_fly.star, peers.c_str());
+             g_rewards, g_reward_skipped, g_flights, g_fly.star, g_not_waited, g_fly_refused, peers.c_str());
     return b;
 }
 
@@ -773,7 +815,7 @@ static uint32_t star_at_distance(float d)
     return best;
 }
 
-// coop.space finale [core | goto core|near|<StarID> [enter] | enter | alone | reward]
+// coop.space finale [core | goto core|near|<StarID> [enter] [delay <s>] | enter | alone | reward]
 static std::string debug(const std::vector<std::string>& a)
 {
     if (a.empty())
@@ -793,6 +835,8 @@ static std::string debug(const std::vector<std::string>& a)
         if (!s)
             return "no star";
         std::string e = fly_to_star(s, a.size() > 2 && a[2] == "enter");
+        if (e.empty() && a.size() > 3 && a[a.size() - 2] == "delay") // tests (BUG-1045): the step <s> seconds later
+            g_fly.next = H->time_seconds() + atof(a.back().c_str());
         return e.empty() ? "flying to " + std::to_string(s) : e;
     }
     if (a[0] == "enter") { // tests: what the zoom-in at the core's centre does (goes through the wait)
@@ -810,7 +854,7 @@ static std::string debug(const std::vector<std::string>& a)
         schedule_reward("test");
         return "reward";
     }
-    return "usage: coop.space finale [core | goto core|near|<star> [enter] | enter | alone | reward]";
+    return "usage: coop.space finale [core | goto core|near|<star> [enter] [delay <s>] | enter | alone | reward]";
 }
 
 static bool init(const SkHost* h, SkMod* m)

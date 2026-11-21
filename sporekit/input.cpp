@@ -1,12 +1,20 @@
 // Input injection for automated tests: window messages + virtual key state
 // (GetAsyncKeyState/GetKeyState overrides, since the game polls some keys).
 #include "core.h"
+#include "input_policy.h"
 
 #include <atomic>
+#include <cstdio>
+#include <cstring>
+#include <mutex>
 
 namespace sk {
 
 static std::atomic<uint8_t> g_vkdown[256];
+static InputPolicy g_input_policy;
+static bool g_input_policy_frozen = false, g_input_hooks_attempted = false;
+static std::atomic<unsigned> g_input_hooks_installed{0};
+static std::mutex g_input_hooks_mutex;
 
 typedef SHORT(WINAPI* GetAsyncKeyState_t)(int);
 typedef SHORT(WINAPI* GetKeyState_t)(int);
@@ -15,7 +23,9 @@ static GetKeyState_t o_GetKeyState;
 
 static SHORT WINAPI h_GetAsyncKeyState(int vk)
 {
-    SHORT r = o_GetAsyncKeyState(vk);
+    if (g_input_policy.exclusive && vk >= 0 && vk < 256)
+        return g_vkdown[vk] ? (SHORT)0x8001 : 0;
+    SHORT r = o_GetAsyncKeyState ? o_GetAsyncKeyState(vk) : 0;
     if (vk >= 0 && vk < 256 && g_vkdown[vk])
         r |= (SHORT)0x8001;
     return r;
@@ -23,23 +33,52 @@ static SHORT WINAPI h_GetAsyncKeyState(int vk)
 
 static SHORT WINAPI h_GetKeyState(int vk)
 {
-    SHORT r = o_GetKeyState(vk);
+    if (g_input_policy.exclusive && vk >= 0 && vk < 256)
+        return g_vkdown[vk] ? (SHORT)0x8000 : 0;
+    SHORT r = o_GetKeyState ? o_GetKeyState(vk) : 0;
     if (vk >= 0 && vk < 256 && g_vkdown[vk])
         r |= (SHORT)0x8000;
     return r;
 }
 
-static void ensure_hooks()
+// BUG-1016: serialize the first console/main-thread installation attempt while
+// preserving checked trampolines and fail-closed exclusive-input diagnostics.
+static bool ensure_hooks()
 {
-    static bool done = false;
-    if (done)
-        return;
-    done = true;
+    std::lock_guard<std::mutex> lock(g_input_hooks_mutex);
+    if (g_input_hooks_attempted)
+        return g_input_hooks_installed == 2;
+    g_input_hooks_attempted = true;
     HMODULE u = GetModuleHandleW(L"user32.dll");
-    hook_create(&g_kit_mod, (void*)GetProcAddress(u, "GetAsyncKeyState"), (void*)h_GetAsyncKeyState,
-                (void**)&o_GetAsyncKeyState);
-    hook_create(&g_kit_mod, (void*)GetProcAddress(u, "GetKeyState"), (void*)h_GetKeyState,
-                (void**)&o_GetKeyState);
+    if (!u) return false;
+    void* async = (void*)GetProcAddress(u, "GetAsyncKeyState");
+    void* key = (void*)GetProcAddress(u, "GetKeyState");
+    if (async && hook_create(&g_kit_mod, async, (void*)h_GetAsyncKeyState,
+                             (void**)&o_GetAsyncKeyState) == 0 && o_GetAsyncKeyState) ++g_input_hooks_installed;
+    if (key && hook_create(&g_kit_mod, key, (void*)h_GetKeyState,
+                           (void**)&o_GetKeyState) == 0 && o_GetKeyState) ++g_input_hooks_installed;
+    return g_input_hooks_installed == 2;
+}
+
+bool input_install_hooks()
+{
+    if (!g_input_policy_frozen) {
+        g_input_policy = select_input_policy(GetCommandLineW(), invisible_mode(), profile_name(), instance_id());
+        g_input_policy_frozen = true;
+    }
+    const bool ready = !g_input_policy.exclusive || ensure_hooks();
+    SKLOG(SK_INFO, "%s", input_info().c_str());
+    return ready;
+}
+
+std::string input_info()
+{
+    char line[192];
+    snprintf(line, sizeof line, "input policy=%s requested=%u hooks=%u/2 reason=%s",
+             g_input_policy.exclusive ? "exclusive-virtual" : "os-or-virtual",
+             unsigned(g_input_policy.requested), g_input_hooks_installed.load(),
+             input_policy_reason(g_input_policy.reason));
+    return line;
 }
 
 static LPARAM key_lparam(int vk, bool up)
@@ -63,6 +102,14 @@ bool input_key(int vk, const char* mode)
     if (!w || vk <= 0 || vk > 255)
         return false;
     ensure_hooks();
+    if (mode && !strcmp(mode, "elsewhere")) {
+        // BUG-0713 (class BUG-0429): the key pressed while another program has the focus: the physical key state
+        // (GetAsyncKeyState / GetKeyState) is down for a few frames, the game window gets no message
+        g_vkdown[vk] = 1;
+        int v = vk;
+        run_after_frames(3, [v] { g_vkdown[v] = 0; });
+        return true;
+    }
     bool down = !mode || !strcmp(mode, "tap") || !strcmp(mode, "down");
     bool up = !mode || !strcmp(mode, "tap") || !strcmp(mode, "up");
     UINT kd = (vk == VK_MENU || vk == VK_F10) ? WM_SYSKEYDOWN : WM_KEYDOWN;
@@ -111,6 +158,8 @@ bool input_move(int x, int y)
     return true;
 }
 
+WORD wheel_keys();
+
 bool input_wheel(int x, int y, int notches)
 {
     HWND w = (HWND)game_window();
@@ -123,12 +172,28 @@ bool input_wheel(int x, int y, int notches)
     short delta = notches < 0 ? -WHEEL_DELTA : WHEEL_DELTA;
     for (int i = 0; i < n && i < 100; i++)
         run_after_frames(2 + i * 2, [w, delta, pt] {
-            PostMessageW(w, WM_MOUSEWHEEL, MAKEWPARAM(0, delta), MAKELPARAM(pt.x, pt.y));
+            PostMessageW(w, WM_MOUSEWHEEL, MAKEWPARAM(wheel_keys(), delta), MAKELPARAM(pt.x, pt.y));
         });
     return true;
 }
 
-bool input_click(int x, int y, int button)
+// BUG-0859: the keys and buttons a test holds (input_key down, press) at the moment of the wheel notch, as
+// Windows puts them into WM_MOUSEWHEEL's low word: Shift / Ctrl + wheel in an editor scales a part instead of
+// zooming. `kit.fix wheelmk 0`: always 0 (before).
+WORD wheel_keys()
+{
+    if (!fixed(g_fix_wheelmk))
+        return 0;
+    WORD k = 0;
+    k |= g_vkdown[VK_SHIFT] || g_vkdown[VK_LSHIFT] || g_vkdown[VK_RSHIFT] ? MK_SHIFT : 0;
+    k |= g_vkdown[VK_CONTROL] || g_vkdown[VK_LCONTROL] || g_vkdown[VK_RCONTROL] ? MK_CONTROL : 0;
+    k |= g_vkdown[VK_LBUTTON] ? MK_LBUTTON : 0;
+    k |= g_vkdown[VK_RBUTTON] ? MK_RBUTTON : 0;
+    k |= g_vkdown[VK_MBUTTON] ? MK_MBUTTON : 0;
+    return k;
+}
+
+bool input_click(int x, int y, int button, bool release_cursor)
 {
     HWND w = (HWND)game_window();
     if (!w)
@@ -145,9 +210,11 @@ bool input_click(int x, int y, int button)
         g_vkdown[vk] = 1;
         PostMessageW(w, d, mk, MAKELPARAM(x, y));
     });
-    run_after_frames(6, [w, u, x, y, vk] {
+    run_after_frames(6, [w, u, x, y, vk, release_cursor] {
         g_vkdown[vk] = 0;
         PostMessageW(w, u, 0, MAKELPARAM(x, y));
+        if (release_cursor) // BUG-0804: the game reads the real mouse again (it kept the click's point for 5 s)
+            run_after_frames(2, [] { vcursor_release(); });
     });
     return true;
 }

@@ -1,0 +1,20 @@
+# The wire lock of each message family (B6 of 0.7.15, BUG-1137): family rev minor hash. Written by
+# tools/msg_manifest.py lock after a bump; `make test` (msg_manifest.py check) fails when a family's rows
+# or wire files changed and its rev / minor in net/messages.def did not.
+session 2 0 1259eb2f1307fa0a
+world 1 0 ea800256062e0a48
+creature 1 0 f707e2440a8f90fe
+npc 1 0 7a6dd3c2ea2ecf5a
+cell 1 0 7fbf9d5eda123743
+tribe 1 1 97d372dc1ab7a351
+civ 1 0 48e0f86eae490081
+space 1 2 33ee7e052e3b21e3
+shared 1 0 c29c6202f6ae9b35
+creations 1 0 606c630c37dd957b
+adventure 1 0 3a0063720de0c2a4
+editor 1 0 a11f868e625572f6
+# rebased space: C6 (BUG-1133): the Space wire structs join the lock; golden bytes identical (tests/wire_tests.cpp)
+# rebased shared: C6 (BUG-1133): the shared resource wire struct joins the lock; golden bytes identical (tests/wire_tests.cpp)
+# rebased adventure: Native lifetime checks now revalidate listed object identity; existing adventure payload fields and bytes unchanged
+# rebased adventure: Shared native HoldObject ownership and typed ReleaseObject forwarding; existing adventure writer fields, order and wire bytes unchanged
+# rebased adventure: One shared native behavior-tree owner and teardown unsubscription; adventure writer fields, order and bytes unchanged

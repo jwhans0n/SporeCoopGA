@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'tools' / 'tests'))
 from adventure_interaction_fixture import _decode_refpack, _serialized_attributes  # noqa: E402
 
-EXE_SHA256 = 'dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37'
+from large_address_aware import SUPPORTED_EXES
 AUDIO_GROUP, DESCRIPTOR, SAMPLE = 0x021407EE, 0x02B9F662, 0x01A527DB
 
 
@@ -100,12 +100,16 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--game', type=Path, required=True)
     parser.add_argument('--output', type=Path, default=ROOT / 'out/music-resolution')
+    parser.add_argument('--music', type=lambda value: int(value, 16), nargs='*', default=[],
+                        help='Additional reported authored music IDs in hexadecimal')
     args = parser.parse_args()
+    if any(not 0 <= value <= 0xFFFFFFFF for value in args.music):
+        parser.error('Additional music IDs must fit uint32')
     game, output = args.game.resolve(), args.output.resolve()
     if output == game or game in output.parents:
         raise ValueError('audit output must be outside the game installation')
     executable = game / 'SporebinEP1/SporeApp.exe'
-    if hashlib.sha256(executable.read_bytes()).hexdigest() != EXE_SHA256:
+    if hashlib.sha256(executable.read_bytes()).hexdigest() not in SUPPORTED_EXES:
         raise ValueError('requires the verified installed dc04 executable')
     records, candidates, scenarios, music = {}, {}, [], {}
     # GA EP1 records are the last source in this offline baseline. Native testing
@@ -128,9 +132,10 @@ def main():
                     decoded_sha256=hashlib.sha256(data).hexdigest() if typ == DESCRIPTOR else None))
     output.mkdir(parents=True, exist_ok=True)
     write_package(output / 'stock-audio-index.package', records)
-    (output / 'music-ids.txt').write_text(' '.join(sorted(music)) + '\n', encoding='utf-8')
-    report = dict(executable_sha256=EXE_SHA256, scenarios=len(scenarios), act_music_values=music,
-                  scenario_records=scenarios, audio_record_candidates=candidates,
+    extra_ids = [f'{value:08X}' for value in args.music]
+    (output / 'music-ids.txt').write_text(' '.join(sorted(set(music) | set(extra_ids))) + '\n', encoding='utf-8')
+    report = dict(executable_sha256=hashlib.sha256(executable.read_bytes()).hexdigest(), scenarios=len(scenarios), act_music_values=music,
+                  scenario_records=scenarios, additional_music_ids=extra_ids, audio_record_candidates=candidates,
                   note='Offline stock baseline only; sample payloads omitted; no audible or live override proof.')
     (output / 'audit-input.json').write_text(json.dumps(report, indent=2) + '\n', encoding='utf-8')
     print(f'{len(scenarios)} stock scenarios, {len(music)} act music values, {len(records)} indexed audio resources')

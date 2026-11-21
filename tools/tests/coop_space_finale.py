@@ -23,6 +23,7 @@ import sys
 import tarfile
 import time
 
+from harness import sp, waiter
 import fixtures
 import lane
 from coop_ui import VK_F9, Ui
@@ -30,10 +31,6 @@ from twoinst import Checks, shot, start
 
 STAFF_TOOL = 0x72E076A7  # genesisdevice
 CORE_CINEMATIC = '2F7C7BDA'
-
-
-def sp(con, *a):
-    return con.call('coop.space ' + ' '.join(str(x) for x in a))['out'].strip()
 
 
 def fin(con):
@@ -60,18 +57,52 @@ def fixture_planet():
     return fixtures.planet_of('space')
 
 
-def wait(pred, timeout, step=1.0):
-    t0 = time.time()
-    while time.time() - t0 < timeout:
-        r = pred()
-        if r:
-            return r
-        time.sleep(step)
-    return None
+wait = waiter(step=1.0)
+
+
+def stray_window(con):
+    """the game time is paused (finale busy=1) without a caption or a cinematic: a window a bot's
+    click opened, such as My Collections / Mission Log (the 4th small HUD button bottom left) or the
+    Sporepedia. It takes no mouse wheel and no Enter (BUG-0336). OLD_FINALE_TOOL=1: not looked for"""
+    if os.environ.get('OLD_FINALE_TOOL') == '1':
+        return False
+    f = fin(con)
+    if f.get('busy') != '1' or f.get('cin', '0').strip('0'):
+        return False
+    hp = sp(con, 'hp')
+    return 'cine=0' in hp and 'movie=0' in hp and 'state=2' not in hp
+
+
+def close_stray(con, who):
+    """Esc closes such a window like a player; an Esc that opened the pause menu instead is undone
+    with Resume Game"""
+    import uifind
+    if not stray_window(con):
+        return False
+    print(f'  {who}: a window pauses the game (no caption): Esc closes it', flush=True)
+    if uifind.shown(con, 'Resume Game'):
+        uifind.press(con, 'Resume Game')
+    else:
+        con.call('key esc')
+    time.sleep(2)
+    if uifind.shown(con, 'Resume Game'):
+        uifind.press(con, 'Resume Game')
+        time.sleep(1)
+    return True
+
+
+def death_caption(con):
+    """BUG-0991: the death caption ("...you return to your homeworld, a new spaceship at the ready") holds the input
+    and waits for its OK, but the finale's busy flag does not show it; `coop.space hp` does (cine=1, or state=2: the
+    ship destroyed). OLD_FINALE_DEATH=1: not looked for (the 0.7.13 bot, to see it stuck)"""
+    if os.environ.get('OLD_FINALE_DEATH') == '1':
+        return False
+    hp = sp(con, 'hp')
+    return 'cine=1' in hp or 'state=2' in hp
 
 
 def settle(con, who, secs=4, timeout=120):
-    """press OK on every caption (tutorial texts, badges) until nothing plays for `secs`. A caption
+    """press OK on every caption (tutorial texts, badges, the death caption) until nothing plays for `secs`. A caption
     is confirmed only after it has been up for 6 s: an Enter while a caption is still coming up
     crashed the game in the UI (AV at 0xCCCCCCCC from App::Canvas::Tick, docs/06-testing.md)"""
     quiet = 0.0
@@ -80,10 +111,12 @@ def settle(con, who, secs=4, timeout=120):
     t0 = time.time()
     while time.time() - t0 < timeout:
         f = fin(con)
-        if f.get('busy') == '1':
+        if f.get('busy') == '1' or death_caption(con):
             quiet = 0.0
             since = since or time.time()
-            if time.time() - since >= 6:
+            if time.time() - since >= 6 and close_stray(con, who):  # (BUG-0336)
+                since = None
+            elif time.time() - since >= 6:
                 presses += 1
                 # some captions only take the green check button (bottom right)
                 con.call('key enter' if presses % 2 else 'click 1410 1048')
@@ -107,13 +140,55 @@ def get_drive(con, who, ck):
 
 
 def to_galaxy(con, who, ck):
-    """zoom out with the mouse wheel like a player (the drive allows it) until the galaxy view"""
-    for _ in range(10):
+    """zoom out with the mouse wheel like a player (the drive allows it) until the galaxy view.
+    A captain screen left open (a bot's click on the rank badge) takes no wheel: close it first
+    (BUG-0303; OLD_FINALE_TOOL=1 skips that, to see the old tool fail)"""
+    import play_space
+    n = 0
+    tries = 10
+    died = False
+    # BUG-1079: the interstellar drive the bots added (play_space's drive) goes with a ship the game replaced since (a
+    # respawn after a destruction the death caption did not show: the mod's forced respawn while the cinematics were
+    # off, BUG-1073; a ship lost while disabled); without it the wheel stops at the solar system (campaign finales of
+    # lab 20261113-060756, -082316, -101808, 20261112-175447). The ship has it before the first wheel turn.
+    if os.environ.get('OLD_FINALE_DRIVE') != '1' and 'state=0' in sp(con, 'hp'):
+        r = sp(con, 'tool add interstellardrive')
+        if r != 'already there':
+            print(f'  {who}: the ship had no interstellar drive (a new ship since the play): added again ({r})', flush=True)
+            time.sleep(3)
+            settle(con, who, timeout=30)
+    while tries > 0:
+        tries -= 1
         if fin(con).get('ctx') == '2':
             break
+        if os.environ.get('OLD_FINALE_TOOL') != '1' and play_space.captain_open(con):
+            print(f'  {who}: the captain screen is open: OK closes it')
+            play_space.close_captain(con)
+        close_stray(con, who)  # My Collections, Sporepedia (BUG-0336)
+        if death_caption(con):  # BUG-0991: the ship was destroyed: its caption takes no wheel until OK
+            print(f'  {who}: the ship was destroyed: OK on the death caption first', flush=True)
+            settle(con, who, timeout=60)
+            # the respawn: the new ship travels to a colony under a caption; the wheel does nothing until it is there
+            wait(lambda: all(k in sp(con, 'hp') for k in ('state=0', 'cine=0', 'movie=0')), 90, 2)
+            time.sleep(5)
+            settle(con, who, timeout=60)
+            tries = 25  # the respawned ship: the wheel did nothing for ~20 s after it arrived (lab 20261113-020049-2)
+            died = True
+        # the new ship has the save's tools: the drive the bots added is gone (lab 20261113-014338-2)
+        if died and 'state=0' in sp(con, 'hp'):
+            r = sp(con, 'tool add interstellardrive')  # ("already there" when the ship kept it)
+            if r != 'already there':
+                print(f'  {who}: the new ship had no interstellar drive: added again ({r})', flush=True)
+                time.sleep(3)
+                settle(con, who, timeout=30)
         con.call('wheel 720 540 -5')
+        n += 1
         time.sleep(1.5)
+    print(f'  {who}: zoomed out with {n} x 5 notches')
     ok = wait(lambda: fin(con).get('ctx') == '2', 20)
+    if not ok:  # what held the wheel (BUG-1079): the finale state, the ship, its tools
+        print(f'  {who}: still not in the galaxy view: {fin(con).get("line", "")[:160]} | {sp(con, "hp")[:100]} | '
+              f'drive: {sp(con, "tool add interstellardrive")[:60]}', flush=True)
     ck(ok, f'{who}: zoomed out to the galaxy view')
     time.sleep(3)
     settle(con, who)  # the drive's first galaxy view shows a tutorial caption
@@ -198,12 +273,19 @@ def main():
     ok = wait(lambda: fin(host).get('zone') == '3', 30)
     ck(ok, f'host: at the gate of the galactic core ({fin(host)["line"]})')
     settle(host, 'host')
-    for _ in range(10):
+    # the wheel in at the core like a player. It takes as many notches as the galaxy camera is out:
+    # 10 x 3 landed on the last one in every measured run and missed by one in 3 of 4 runs on main
+    # e5fe623 (the ctx switch came seconds after the check, BUG-0213), so keep wheeling up to 40 x 3
+    t0, n = time.time(), 0
+    for _ in range(40):
         if fin(host).get('ctx') == '1':
             break
         host.call('wheel 720 540 3')
+        n += 1
         time.sleep(1.5)
-    ck(fin(host).get('ctx') == '1', 'host: zoomed into the core\'s system')
+    ok = wait(lambda: fin(host).get('ctx') == '1', 10)
+    print(f'  host: {n} x 3 notches in, ctx={fin(host).get("ctx")} after {time.time() - t0:.0f} s')
+    ck(ok, 'host: zoomed into the core\'s system')
     time.sleep(3)
     settle(host, 'host')
     shot(host, 'finale_core_system.png')

@@ -20,15 +20,12 @@ same system.
 import re
 import time
 
+from harness import sp, waiter
 import lane
 from coop_ui import VK_F9, Ui
 from fixtures import FIXTURES
 from play_space import Player
 from twoinst import Checks, shot, start, wait_guest_in
-
-
-def sp(con, *a):
-    return con.call('coop.space ' + ' '.join(str(x) for x in a))['out'].strip()
 
 
 def riv(con):
@@ -50,14 +47,7 @@ def hp(con):
     return (float(m.group(1)), float(m.group(2)), int(m.group(3))) if m else (0, 0, -1)
 
 
-def wait(pred, t=20, step=0.5):
-    t0 = time.time()
-    while time.time() - t0 < t:
-        v = pred()
-        if v:
-            return v
-        time.sleep(step)
-    return pred()
+wait = waiter(timeout=20, step=0.5, final=True)
 
 
 def row_of(con, button):
@@ -143,10 +133,23 @@ def main():
     total = money(host)
     ck(total and money(guest) == total, f'shared money before: host {money(host)} guest {money(guest)}')
     # both on the home planet (fights happen on planets: the weapons are for the planet view)
-    for p in (ph, pg):
-        if p.ctx() == 'system':
-            p.land_retry(home)
-    ck(ph.place()[0] == pg.place()[0] and ph.ctx() == 'planet', f'both on the home planet ({sp(guest, "dist")})')
+    # BUG-0262: one player's landing can take longer than one land_retry right after the load (1 of 4
+    # runs: the check ran with one ship still in the system and the host had no puppet of the guest):
+    # land whoever is still in the system again, then wait until both are there and the host's game
+    # shows the guest's puppet
+    def together():
+        return ph.place()[0] == pg.place()[0] and ph.ctx() == 'planet' and pg.ctx() == 'planet'
+    for rnd in range(2):
+        for p in (ph, pg):
+            if p.ctx() == 'system':
+                p.land_retry(home)
+        if wait(together, 30, 1):
+            break
+        print(f'  not together yet (round {rnd + 1}): host {ph.place()} {ph.ctx()} / guest {pg.place()} {pg.ctx()}')
+    ck(together(), f'both on the home planet ({sp(guest, "dist")}; host {ph.place()} {ph.ctx()}, '
+       f'guest {pg.place()} {pg.ctx()})')
+    ck(wait(lambda: 'puppet 1 ' in sp(host, 'rivalry pol'), 30),
+       f'the host\'s game has the guest\'s puppet here ({sp(host, "rivalry pol")})')
     # the host needs some money to split
     if total < 10000:
         host.call('coop.res add money 20000')
@@ -176,11 +179,15 @@ def main():
     print('  host:', riv(host)['text'])
     print('  guest:', riv(guest)['text'])
 
-    # neutral: no PvP
+    # neutral: no PvP. BUG-1146: the rivalry counters are diagnostics of the game process (only `coop.space rivalry`
+    # prints them, no player sees them) and count since the game started: a warm game holds the hits and the PvP
+    # death of the run before (hits_got=43 pvp_deaths=1 in 20261115-042847), so every check reads what this run added
+    base = riv(guest)
     hp0 = hp(guest)
     out = sp(host, 'rivalry shoot 1 20')
     time.sleep(2)
-    ck(hp(guest)[0] == hp0[0] and riv(guest).get('hits_got', 0) == 0, f'neutral players cannot hurt each other ({out})')
+    got = riv(guest).get('hits_got', 0) - base.get('hits_got', 0)
+    ck(hp(guest)[0] == hp0[0] and got == 0, f'neutral players cannot hurt each other ({out}; hits_got +{got:.0f})')
 
     # ---- war by the guest's real click
     press(ug, guest, 'Declare war', ck, 'guest')
@@ -191,6 +198,7 @@ def main():
     close_page(ug, guest)
     time.sleep(1)
     pol = sp(host, 'rivalry pol')
+    ck('puppet 1 ' in pol, f'the host still has the guest\'s puppet ({pol})')
     ck('puppet 1 FFFFFFFF' in pol, f'the guest\'s puppet on the host belongs to no empire ({pol})')
     print('  guest pol:', sp(guest, 'rivalry pol'))
 
@@ -206,13 +214,14 @@ def main():
     time.sleep(2)
     hp1 = hp(guest)
     g = riv(guest)
-    ck(g.get('hits_got', 0) > 0 and (hp1[0] < hp0[0] or hp1[2] == 2),
-       f'the host\'s hits damage the guest\'s ship: hp {hp0[0]:.0f} -> {hp1[0]:.0f} (hits_got={g.get("hits_got")})')
+    ck(g.get('hits_got', 0) > base.get('hits_got', 0) and (hp1[0] < hp0[0] or hp1[2] == 2),
+       f'the host\'s hits damage the guest\'s ship: hp {hp0[0]:.0f} -> {hp1[0]:.0f} (hits_got={g.get("hits_got")}, '
+       f'{base.get("hits_got", 0):.0f} at the start)')
     shot(guest, 'space_rivalry_hit.png')
     # a lethal hit: the native death (no rescue by an enemy), OK on the caption, the respawn
     print('  ', sp(host, 'rivalry shoot 1 5000'))
     st = wait(lambda: hp(guest)[2] == 2, 10)
-    ck(st and 'down=0' in sp(guest, 'hp') and riv(guest).get('pvp_deaths') == 1,
+    ck(st and 'down=0' in sp(guest, 'hp') and riv(guest).get('pvp_deaths', 0) - base.get('pvp_deaths', 0) == 1,
        f'a lethal PvP hit destroys the guest\'s ship, the enemy does not rescue it ({sp(guest, "hp")})')
     t0 = time.time()
     while time.time() - t0 < 90 and (hp(guest)[2] == 2 or 'movie=1' in sp(guest, 'hp')):

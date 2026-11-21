@@ -28,12 +28,15 @@ struct Ctx {
     std::function<bool(uint8_t,float)> captain_heal;
     // Called on every peer, including observers, to fence older movement packets.
     std::function<void(uint8_t,uint64_t,const net::Vec3&,const net::Quat&)> teleport;
+    // Accept a host NPC discontinuity before looking up its local native binding.
+    // Returns the newest accepted pose, so delayed effect cleanup cannot rewind it.
+    std::function<bool(Identity,uint64_t,net::Vec3&,net::Quat&)> actor_teleport;
     std::function<void(const std::string&)> failed; // cancel safely outside the packet iterator
 };
 bool init(const SkHost*, SkMod*, Ctx);
 bool available();
 void tick();
-void on_message(uint8_t from,net::Reader&); // owns subkinds 152..155
+void on_message(uint8_t from,net::Reader&); // owns subkinds 152..156
 void reset(); // outside the frame; restores only fields owned by this module
 bool activate(void* object,void* captain); // native contact bridge, outside the frame
 float adjust_damage(uint8_t recipient,float amount); // host captain authority, once per hit

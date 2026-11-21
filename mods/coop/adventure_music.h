@@ -28,6 +28,7 @@ using Loader = std::function<Lookup(const dbpf::Key&, bool bytes, Record&, std::
 struct Result {
     std::vector<dbpf::Key> dependencies;
     bool native_control = false;
+    bool direct_sample = false;
 };
 
 // IDs remain authored values. This verifies installed stock audio; custom audio is

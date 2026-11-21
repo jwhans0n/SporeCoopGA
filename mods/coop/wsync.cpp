@@ -1,0 +1,1862 @@
+// Host-owned world state (wsync.h, docs/sync-architecture-plan.md#sync-wsync).
+#include "lifecycle.h"
+#include "wsync.h"
+
+#include <windows.h>
+
+#include <cmath>
+#include <cstdio>
+#include <algorithm>
+#include <cstring>
+#include <map>
+#include <vector>
+
+#include "cellsync.h"
+#include "civ.h"
+#include "designs.h"
+#include "fixes.h"
+#include "own_world.h"
+#include "game.h"
+#include "modes.h"
+#include "net/protocol.h"
+#include "sporekit_game.hpp"
+
+namespace wsync {
+
+static const SkHost* H;
+static SkMod* M;
+static Ctx C;
+
+static uintptr_t S(const char* n) { return H ? H->sym(n) : 0; }
+template <typename T>
+static T F(void* p, uintptr_t off) { return *(T*)((uint8_t*)p + off); }
+static bool R(void* p, size_t n) { return p && skg::readable(p, n); }
+static uint32_t fbits(float f) { uint32_t u; memcpy(&u, &f, 4); return u; }
+static float bitsf(uint32_t u) { float f; memcpy(&f, &u, 4); return f; }
+
+constexpr int kMaxV = 6, kMaxN = 48;
+struct Entry {
+    uint32_t key = 0;
+    uint32_t v[kMaxV] = {};
+};
+using Table = std::vector<Entry>;
+
+struct Row {
+    uint8_t id;
+    const char* name;
+    uint8_t nv;
+    const bool* on;          // the row's fix switch (off: the guest applies nothing of this row; kRowOn: none)
+    bool (*active)(uint32_t mode);
+    bool (*read)(Table& out); // this game's own values (false: not available now)
+    // guest: bring this game to `want`; apply false: only count the differences. Returns the differences seen.
+    int (*sync)(const Table& want, bool apply);
+    bool continuous;         // changes every frame (the sky): sent once a second, a change does not trigger a send
+    std::string (*fmt)(const Entry& e);
+};
+
+// ---- the rows (a row's own switch: COOP_FIX next to its code; off = the code before the fix)
+// the `on` of a row whose fix switch retired (BUG-1138): always in play
+static const bool kRowOn = true;
+// BUG-0579: the sky (planet context orientation) and the day's length as a row, re-applied whenever the guest's
+// differs (row tod / day)
+// BUG-0565: how every village feels about the player tribe follows the host's (ApplyRelationship, row tribe_rel)
+// BUG-0564 (goal): the Tribe goal card's village and the stage's goal progress follow the host's (row tribe_goal)
+// BUG-0577: the stages done (cPlayer consequence traits) follow the host's (row stages)
+
+// ---- game access
+static void* noun_mgr()
+{
+    uintptr_t f = S("Simulator::cGameNounManager::Get");
+    return f ? skg::cdecl_call<void*>(f) : nullptr;
+}
+static void* player_tribe()
+{
+    void* nm = noun_mgr();
+    void* t = R(nm, 0x78) ? F<void*>(nm, 0x70) : nullptr;
+    return R(t, 0x350) ? t : nullptr;
+}
+static void* cplayer()
+{
+    void* nm = noun_mgr();
+    void* p = R(nm, 0x78) ? F<void*>(nm, 0x74) : nullptr;
+    return R(p, 0x1280) ? p : nullptr;
+}
+static void* rel_mgr()
+{
+    uintptr_t f = S("Simulator::cRelationshipManager::Get");
+    return f ? skg::cdecl_call<void*>(f) : nullptr;
+}
+static uint32_t pol(void* o) { return o ? skg::vcall<uint32_t>(o, 0x4C / 4) : 0xFFFFFFFFu; }
+static float rel_abs(void* mgr, uint32_t a, uint32_t b)
+{
+    uintptr_t f = S("Simulator::cRelationshipManager::CalculateRelationshipAbsolute");
+    return mgr && f ? skg::thiscall<float>(f, mgr, a, b, 0) : NAN;
+}
+static float rel(void* mgr, uint32_t a, uint32_t b)
+{
+    uintptr_t f = S("Simulator::cRelationshipManager::CalculateRelationship");
+    return mgr && f ? skg::thiscall<float>(f, mgr, a, b, 0) : NAN;
+}
+
+constexpr uint32_t kTribeNoun = 0x018C6D19;
+struct TribeRef {
+    void* t;
+    uint32_t pol;
+    float x, y, z;
+};
+static std::vector<TribeRef> npc_tribes()
+{
+    std::vector<TribeRef> out;
+    void* pt = player_tribe();
+    game::for_each_object(
+        [](void* o, uint32_t noun, void* u) {
+            auto* v = (std::vector<TribeRef>*)u;
+            if (noun == kTribeNoun && game::object_alive(o) && R(o, 0x350) && v->size() < kMaxN) {
+                float* p = (float*)((uint8_t*)o + 0x124);
+                v->push_back({o, pol(o), p[0], p[1], p[2]});
+            }
+            return true;
+        },
+        &out);
+    for (auto it = out.begin(); it != out.end();)
+        it = it->t == pt ? out.erase(it) : std::next(it);
+    return out;
+}
+// the guest's tribe for a host entry. BUG-0591: a village the host's game formed during play is made on the guest
+// (BUG-0381, SpawnNpcTribe at the host's centre, 0.0 m) with the guest's own next political id: the host's
+// new villages 2, 3, 4 and the guest's copies got ids in another order, so the host's id of one village was the
+// guest's id of another and its relation and food went to that one (play_tribe lab 20261105-015320, from the host's
+// forming at 418 s on). Villages do not move: the closest within 40 m first, the same political id only when no
+// village is that close (BUG-0591).
+static const TribeRef* match(const std::vector<TribeRef>& mine, uint32_t hpol, float x, float y, float z)
+{
+    const TribeRef* best = nullptr;
+    float bd = 40.f * 40.f;
+    for (auto& t : mine) {
+        float d = (t.x - x) * (t.x - x) + (t.y - y) * (t.y - y) + (t.z - z) * (t.z - z);
+        if (d < bd)
+            bd = d, best = &t;
+    }
+    if (best)
+        return best;
+    for (auto& t : mine)
+        if (t.pol == hpol)
+            return &t;
+    return best;
+}
+
+static bool planet(uint32_t m)
+{
+    return m == modes::kCell || m == modes::kCreature || m == modes::kTribe || m == modes::kCiv || m == modes::kSpace;
+}
+// BUG-0712: on a Space planet the two games' skies stood 160-172 deg apart (the detector's All:state:time_of_day): the sky
+// row was in play in Creature, Tribe and Civ only, each game ran the planet's day from its own load. With
+// wsync.space_tod the row is in play in Space too while the players are on the same planet (Ctx::space_sky; the day's
+// length row stays as before). Off: 0.7.10.
+static bool g_space_tod_fix = true;
+COOP_FIX("wsync.space_tod", "BUG-0712", g_space_tod_fix,
+         "wsync: on a Space planet a guest's sky follows the host's while both are on that planet");
+static bool sky(uint32_t m)
+{
+    if (m == modes::kSpace)
+        return g_space_tod_fix && C.space_sky && C.space_sky();
+    return m == modes::kCreature || m == modes::kTribe || m == modes::kCiv;
+}
+static bool sky_day(uint32_t m) { return m == modes::kCreature || m == modes::kTribe || m == modes::kCiv; }
+static bool tribe_mode(uint32_t m) { return m == modes::kTribe; }
+
+static char g_fmt[160];
+static std::string fmt_f(const Entry& e, int n)
+{
+    std::string s;
+    snprintf(g_fmt, sizeof g_fmt, "key=%08X", e.key);
+    s = g_fmt;
+    for (int i = 0; i < n; i++) {
+        snprintf(g_fmt, sizeof g_fmt, " %.4f", bitsf(e.v[i]));
+        s += g_fmt;
+    }
+    return s;
+}
+
+// ---- row: the sky (the planet context's orientation, as MSG_WORLD_TIME sends it)
+static bool r_tod(Table& out)
+{
+    net::Quat q;
+    if (!game::time_of_day(q))
+        return false;
+    Entry e;
+    e.v[0] = fbits(q.x), e.v[1] = fbits(q.y), e.v[2] = fbits(q.z), e.v[3] = fbits(q.w);
+    out.push_back(e);
+    return true;
+}
+static int s_tod(const Table& want, bool apply)
+{
+    net::Quat q;
+    if (want.empty() || !game::time_of_day(q))
+        return 0;
+    const Entry& w = want[0];
+    float wx = bitsf(w.v[0]), wy = bitsf(w.v[1]), wz = bitsf(w.v[2]), ww = bitsf(w.v[3]);
+    float dot = std::fabs(q.x * wx + q.y * wy + q.z * wz + q.w * ww);
+    // 1e-4: about 0.03 rad of the day (30 s of a 16 min day); the host's sends are 1 s apart
+    if (1.f - dot <= 1e-4f)
+        return 0;
+    if (apply)
+        game::set_time_of_day(net::Quat{wx, wy, wz, ww});
+    return 1;
+}
+static std::string f_tod(const Entry& e) { return fmt_f(e, 4); }
+
+// ---- row: the day's length (cTimeOfDay +0x24, SetDayDuration)
+static void* tod_obj()
+{
+    uintptr_t f = S("Simulator::cTimeOfDay::Get");
+    void* t = f ? skg::cdecl_call<void*>(f) : nullptr;
+    return R(t, 0x28) ? t : nullptr;
+}
+static bool r_day(Table& out)
+{
+    void* t = tod_obj();
+    if (!t)
+        return false;
+    Entry e;
+    e.v[0] = fbits(F<float>(t, 0x24));
+    out.push_back(e);
+    return true;
+}
+static int s_day(const Table& want, bool apply)
+{
+    void* t = tod_obj();
+    uintptr_t set = S("Simulator::cTimeOfDay::SetDayDuration");
+    if (want.empty() || !t)
+        return 0;
+    float w = bitsf(want[0].v[0]);
+    if (!(w > 1.f) || std::fabs(F<float>(t, 0x24) - w) < 0.01f)
+        return 0;
+    if (apply && set)
+        skg::thiscall<void>(set, t, w);
+    return 1;
+}
+static std::string f_day(const Entry& e) { return fmt_f(e, 1); }
+
+// ---- row: the stages done (cPlayer +0x10FC..+0x110C, docs/re/creations.md#creations-cplayer-fields)
+static bool r_stages(Table& out)
+{
+    void* p = cplayer();
+    if (!p)
+        return false;
+    Entry e;
+    for (int i = 0; i < 5; i++)
+        e.v[i] = F<uint32_t>(p, 0x10FC + 4 * i);
+    out.push_back(e);
+    return true;
+}
+static int s_stages(const Table& want, bool apply)
+{
+    void* p = cplayer();
+    if (want.empty() || !p)
+        return 0;
+    int n = 0;
+    for (int i = 0; i < 5; i++) {
+        uint32_t& mine = *(uint32_t*)((uint8_t*)p + 0x10FC + 4 * i);
+        if (mine == want[0].v[i])
+            continue;
+        n++;
+        if (apply)
+            mine = want[0].v[i]; // no setter: the History bar and the stage cards read the field
+    }
+    return n;
+}
+static std::string f_stages(const Entry& e)
+{
+    snprintf(g_fmt, sizeof g_fmt, "traits=%08X,%08X,%08X,%08X,%08X", e.v[0], e.v[1], e.v[2], e.v[3], e.v[4]);
+    return g_fmt;
+}
+
+// ---- row: how every NPC tribe feels about the player tribe (docs/re/tribe.md B)
+constexpr uint32_t kRelDelta = 0x530CF07; // the social success's event: its scale is a raw delta
+static bool r_rel(Table& out)
+{
+    void* pt = player_tribe();
+    void* mgr = rel_mgr();
+    if (!pt || !mgr)
+        return false;
+    uint32_t pp = pol(pt);
+    for (auto& t : npc_tribes()) {
+        Entry e;
+        e.key = t.pol;
+        e.v[0] = fbits(rel(mgr, t.pol, pp));
+        e.v[1] = fbits(t.x), e.v[2] = fbits(t.y), e.v[3] = fbits(t.z);
+        out.push_back(e);
+    }
+    return true;
+}
+static uint32_t g_rel_stuck; // tests: applies the game did not take
+static int s_rel(const Table& want, bool apply)
+{
+    void* pt = player_tribe();
+    void* mgr = rel_mgr();
+    uintptr_t ap = S("Simulator::cRelationshipManager::ApplyRelationship");
+    if (!pt || !mgr || !ap)
+        return 0;
+    uint32_t pp = pol(pt);
+    auto mine = npc_tribes();
+    int n = 0;
+    for (auto& w : want) {
+        const TribeRef* t = match(mine, w.key, bitsf(w.v[1]), bitsf(w.v[2]), bitsf(w.v[3]));
+        if (!t)
+            continue;
+        float hv = bitsf(w.v[0]);
+        float cur = rel(mgr, t->pol, pp);
+        if (!std::isfinite(hv) || !std::isfinite(cur) || std::fabs(cur - hv) < 0.05f)
+            continue;
+        n++;
+        if (!apply)
+            continue;
+        // the delta to the unclamped value (CalculateRelationship clamps to -10..10): the result is the host's
+        float a = rel_abs(mgr, t->pol, pp);
+        float d = hv - (std::isfinite(a) ? a : cur);
+        skg::thiscall<float>(ap, mgr, t->pol, pp, kRelDelta, d);
+        if (std::fabs(rel(mgr, t->pol, pp) - hv) >= 0.05f)
+            g_rel_stuck++;
+    }
+    return n;
+}
+static std::string f_rel(const Entry& e)
+{
+    snprintf(g_fmt, sizeof g_fmt, "key=%08X rel=%.2f pos=(%.1f %.1f %.1f)", e.key, bitsf(e.v[0]), bitsf(e.v[1]),
+             bitsf(e.v[2]), bitsf(e.v[3]));
+    return g_fmt;
+}
+
+// ---- row: the Tribe goal card (the Tribe Mission Manager's current mission, docs/re/tribe.md#tribe-wsync) and the
+// stage's goal progress (cPlayer +0x10F0 / +0x10F4)
+static void* mission_mgr()
+{
+    uintptr_t g = S("SporeCoop::TribeMissionManager_Get");
+    void* m = g ? skg::cdecl_call<void*>(g) : nullptr;
+    return R(m, 0x88) ? m : nullptr;
+}
+static void* current_target(void* mgr, uint32_t* state)
+{
+    void* m = mgr ? F<void*>(mgr, 0x74) : nullptr;
+    if (!R(m, 0x94))
+        return nullptr;
+    if (state)
+        *state = F<uint32_t>(m, 0x7C);
+    void* t = F<void*>(m, 0x80);
+    return R(t, 0x350) ? t : nullptr;
+}
+static int g_goal_card = -1;
+static bool r_goal(Table& out)
+{
+    void* p = cplayer();
+    void* mgr = mission_mgr();
+    if (!p || !mgr)
+        return false;
+    uint32_t st = 0;
+    void* t = current_target(mgr, &st);
+    Entry e;
+    e.key = t ? pol(t) : 0xFFFFFFFFu;
+    float* pos = t ? (float*)((uint8_t*)t + 0x124) : nullptr;
+    e.v[0] = fbits(pos ? pos[0] : 0), e.v[1] = fbits(pos ? pos[1] : 0), e.v[2] = fbits(pos ? pos[2] : 0);
+    e.v[3] = st;
+    e.v[4] = fbits(F<float>(p, 0x10F0)), e.v[5] = fbits(F<float>(p, 0x10F4));
+    out.push_back(e);
+    g_goal_card = -1; // tests: the HUD shows a card of the current mission (read only for the dump)
+    uintptr_t pg = S("SporeCoop::MissionCardPanel_Get"), has = S("SporeCoop::MissionCardPanel_HasCard");
+    void* panel = pg ? skg::cdecl_call<void*>(pg) : nullptr;
+    void* m = F<void*>(mgr, 0x74);
+    if (panel && has && m)
+        g_goal_card = skg::thiscall<bool>(has, panel, m) ? 1 : 0;
+    return true;
+}
+static void* g_goal_target; // the tribe SetTargetTribe is called with outside the frame (UI: the goal card)
+static void goal_task(void*)
+{
+    void* mgr = mission_mgr();
+    uintptr_t set = S("SporeCoop::TribeMission_SetTargetTribe");
+    void* t = g_goal_target;
+    g_goal_target = nullptr;
+    if (!mgr || !set || !t || !game::object_alive(t) || game::mode_id() != modes::kTribe)
+        return;
+    bool still = false; // the tribe is still in the game's list (not freed since the frame)
+    for (auto& x : npc_tribes())
+        still |= x.t == t;
+    if (still)
+        skg::thiscall<void>(set, mgr, t);
+}
+bool goal_target(void* tribe)
+{
+    void* mgr = mission_mgr();
+    if (!mgr || !tribe || game::mode_id() != modes::kTribe || current_target(mgr, nullptr) == tribe)
+        return false;
+    bool pending = g_goal_target != nullptr;
+    g_goal_target = tribe; // goal_task takes the latest one
+    if (!pending)
+        H->run_outside_frame(goal_task, nullptr);
+    return true;
+}
+static int s_goal(const Table& want, bool apply)
+{
+    void* p = cplayer();
+    void* mgr = mission_mgr();
+    if (want.empty() || !p || !mgr)
+        return 0;
+    const Entry& w = want[0];
+    int n = 0;
+    float hp = bitsf(w.v[4]), ht = bitsf(w.v[5]);
+    float& gp = *(float*)((uint8_t*)p + 0x10F0);
+    float& gt = *(float*)((uint8_t*)p + 0x10F4);
+    if (std::isfinite(hp) && std::isfinite(ht) && ht > 0 && (std::fabs(gp - hp) > 1e-3f || std::fabs(gt - ht) > 1e-3f)) {
+        n++;
+        if (apply)
+            gp = hp, gt = ht; // the HUD's bar reads them every frame (0xCCDDB0)
+    }
+    if (w.key != 0xFFFFFFFFu) {
+        auto mine = npc_tribes();
+        const TribeRef* want_t = match(mine, w.key, bitsf(w.v[0]), bitsf(w.v[1]), bitsf(w.v[2]));
+        void* cur = current_target(mgr, nullptr);
+        if (want_t && cur != want_t->t) {
+            n++;
+            if (apply && !g_goal_target) {
+                g_goal_target = want_t->t;
+                H->run_outside_frame(goal_task, nullptr);
+            }
+        }
+    }
+    return n;
+}
+static std::string f_goal(const Entry& e)
+{
+    snprintf(g_fmt, sizeof g_fmt, "target=%08X pos=(%.1f %.1f %.1f) state=%u progress=%.1f/%.1f card=%d", e.key,
+             bitsf(e.v[0]), bitsf(e.v[1]), bitsf(e.v[2]), e.v[3], bitsf(e.v[4]), bitsf(e.v[5]), g_goal_card);
+    return g_fmt;
+}
+
+// ---- BUG-0942 (realign.village_goal): a mission of a village this guest's realign destroys. The game never
+// destroys a tribe in the Tribe stage, so its cTribeToTribeMission keeps the tribe (an intrusive pointer: the block
+// stays, the hut pointer +0x368 is null, no members) in the manager's current mission +0x74 (the HUD's goal card),
+// its vector +0x14 and its map +0x78. The card's text function 0xC30000 reads `tribe->hut->combatant state` when the
+// tribe has no members: a read of 0x154 through the null hut, in the manager's update every frame once a goal event
+// marked it dirty (the fault unwinds before the dirty byte is cleared): 813 caught faults on a campaign guest.
+// Two parts: the card of the village goes with the village (the manager's own RemoveMission, outside the frame: the
+// HUD panel), and the text function is skipped for a mission whose village has neither a hut nor members (the
+// missions left in the vector and the map, refreshed by pol). Off: both as before.
+static bool g_village_goal_fix = true;
+COOP_FIX("realign.village_goal", "BUG-0942", g_village_goal_fix,
+         "tribe: the goal card of a village a guest's realign removed goes with it; no card text for a village without a hut");
+using CardText_t = void(SK_THISCALL*)(void*);
+static CardText_t o_card_text;
+static uint32_t g_card_skipped, g_cards_dropped;
+static bool village_is_gone(void* mission)
+{
+    void* t = R(mission, 0x84) ? F<void*>(mission, 0x80) : nullptr;
+    if (!R(t, 0x36C) || F<void*>(t, 0x368))
+        return false;
+    uintptr_t cnt = S("SporeCoop::cTribe_PopulationCount");
+    return cnt && skg::thiscall<int>(cnt, t) == 0; // the game's own test before it reads the hut
+}
+static void SK_THISCALL h_card_text(void* mission)
+{
+    if (g_village_goal_fix && village_is_gone(mission)) {
+        if (g_card_skipped++ == 0)
+            H->log(M, SK_INFO, "wsync: the goal card text of a mission whose village is gone (no hut, no members) is "
+                               "not refreshed (realign.village_goal, BUG-0942)");
+        return;
+    }
+    o_card_text(mission);
+}
+static void* g_gone_mission; // the manager's current mission to remove outside the frame (compared, never read)
+static void drop_card_task(void*)
+{
+    void* m = g_gone_mission;
+    g_gone_mission = nullptr;
+    void* mgr = mission_mgr();
+    uintptr_t rm = S("SporeCoop::TribeMissionManager_RemoveMission");
+    if (!mgr || !rm || !m || F<void*>(mgr, 0x74) != m)
+        return;
+    skg::thiscall<void>(rm, mgr, m);
+    g_cards_dropped++;
+    H->log(M, SK_INFO, "wsync: the goal card was on a village removed here: the card goes with it (realign.village_goal, BUG-0942)");
+}
+void village_gone(void* tribe)
+{
+    void* mgr = mission_mgr();
+    void* m = mgr ? F<void*>(mgr, 0x74) : nullptr;
+    if (!g_village_goal_fix || !tribe || !R(m, 0x84) || F<void*>(m, 0x80) != tribe)
+        return;
+    g_gone_mission = m;
+    H->run_outside_frame(drop_card_task, nullptr);
+}
+
+// ---- row: Cell, the DNA the host's editors spent (cCellSerializableData +0x2C; the food +0x1C is MSG_CELL_FOOD's):
+// what the guest's Cell DNA shows is DNAForFood(food) - spent (docs/re/cell.md#cell-editor-dna)
+static bool cell_mode(uint32_t m) { return m == modes::kCell; }
+static bool r_spent(Table& out)
+{
+    int v;
+    if (!cellsync::spent_dna(v))
+        return false;
+    Entry e;
+    e.v[0] = (uint32_t)v;
+    e.v[1] = (uint32_t)cellsync::editor_budget();
+    out.push_back(e);
+    return true;
+}
+static int s_spent(const Table& want, bool apply)
+{
+    int v;
+    if (want.empty() || !cellsync::spent_dna(v) || v == (int)want[0].v[0])
+        return 0;
+    if (apply)
+        cellsync::set_spent_dna((int)want[0].v[0]);
+    return 1;
+}
+static std::string f_spent(const Entry& e)
+{
+    snprintf(g_fmt, sizeof g_fmt, "spent=%d budget=%d", (int)e.v[0], (int)e.v[1]);
+    return g_fmt;
+}
+
+// ---- row: every NPC tribe's food (BUG-0580): the bundles of its cGameBundleContainer (+0x20C, vector +4/+8, amount
+// +0x134, as cTribe::GetTotalFood sums them). A guest's NPC tribes are the host's members' mirrors: they gather and
+// spend nothing of the host's (the detector's Tribe:state:tribe_food, 145 on the host, 0 on the guest). The guest
+// changes its copy by the difference through the game's own cTribe::AddFood (positive: the bundles a gathering
+// makes; negative: the game's spending, RemoveBundles), as res.food_add does for the player tribe.
+static float npc_food(void* t)
+{
+    uint8_t* cont = (uint8_t*)t + 0x20C;
+    if (!R(cont, 0xC))
+        return NAN;
+    void** b = F<void**>(cont, 4);
+    void** e = F<void**>(cont, 8);
+    if (b == e)
+        return 0.f; // never filled or emptied by the game's spending
+    if (!b || e < b || e - b > 256 || !R(b, (e - b) * 4))
+        return NAN;
+    float v = 0;
+    for (void** it = b; it < e; it++)
+        if (*it && R(*it, 0x138))
+            v += F<float>(*it, 0x134);
+    return v;
+}
+static bool r_tfood(Table& out)
+{
+    if (!player_tribe())
+        return false;
+    for (auto& t : npc_tribes()) {
+        float f = npc_food(t.t);
+        if (!std::isfinite(f))
+            continue;
+        Entry e;
+        e.key = t.pol;
+        e.v[0] = fbits(std::floor(f)); // whole food: the fraction a gathering adds a frame at a time is not sent
+        e.v[1] = fbits(t.x), e.v[2] = fbits(t.y), e.v[3] = fbits(t.z);
+        out.push_back(e);
+    }
+    return true;
+}
+static uint32_t g_tfood_adds; // tests: AddFood calls on NPC tribes
+static int s_tfood(const Table& want, bool apply)
+{
+    uintptr_t add = S("SporeCoop::cTribe_AddFood");
+    if (!add || !player_tribe())
+        return 0;
+    auto mine = npc_tribes();
+    int n = 0;
+    for (auto& w : want) {
+        const TribeRef* t = match(mine, w.key, bitsf(w.v[1]), bitsf(w.v[2]), bitsf(w.v[3]));
+        if (!t)
+            continue;
+        float hv = bitsf(w.v[0]), cur = npc_food(t->t);
+        if (!std::isfinite(hv) || !std::isfinite(cur))
+            continue;
+        int d = (int)std::lround(hv - std::floor(cur));
+        if (d == 0)
+            continue;
+        n++;
+        if (!apply)
+            continue;
+        skg::thiscall<void>(add, t->t, d);
+        g_tfood_adds++;
+    }
+    return n;
+}
+static std::string f_tfood(const Entry& e)
+{
+    snprintf(g_fmt, sizeof g_fmt, "key=%08X food=%.0f pos=(%.1f %.1f %.1f)", e.key, bitsf(e.v[0]), bitsf(e.v[1]),
+             bitsf(e.v[2]), bitsf(e.v[3]));
+    return g_fmt;
+}
+
+// ---- Civ (BUG-0593): the NPC civilizations' feelings about the player civilization and their money, and the
+// owners of every city's buildings and turrets. A guest's Civ AI is the host's mirror (it captures, buys and converts
+// nothing itself), so what the host's game changes there stayed the save's on the guest: the relation a capture
+// costs (000021CB -3.21 on the host, 3.00 on the guest), an NPC's money, and the buildings of a captured city (the
+// city's owner comes with MSG_CIV_STATE, civ.cpp guest_cities, through the game's cCity::ChangeOwner, which gives
+// the buildings the new owner only when Capture set the city's +0x2E2 flag first: 0xBE4C80 City_SetPartsOwner).
+constexpr uint32_t kCivNoun = 0x018C816A, kCityNoun = 0x018C43E8;
+static bool civ_mode(uint32_t m) { return m == modes::kCiv; }
+static void* player_civ()
+{
+    void* nm = noun_mgr();
+    uintptr_t f = S("Simulator::cGameNounManager::GetPlayerCivilization");
+    return nm && f ? skg::thiscall<void*>(f, nm) : nullptr;
+}
+static std::vector<void*> objects_of(uint32_t want)
+{
+    struct Q {
+        uint32_t noun;
+        std::vector<void*> v;
+    } q{want, {}};
+    game::for_each_object(
+        [](void* o, uint32_t noun, void* u) {
+            auto* q = (Q*)u;
+            if (noun == q->noun && game::object_alive(o) && q->v.size() < kMaxN)
+                q->v.push_back(o);
+            return true;
+        },
+        &q);
+    return q.v;
+}
+static std::vector<void*> npc_civs()
+{
+    void* pc = player_civ();
+    std::vector<void*> out;
+    for (void* c : objects_of(kCivNoun))
+        if (c != pc && R(c, 0x9C))
+            out.push_back(c);
+    return out;
+}
+
+static bool r_civ_rel(Table& out)
+{
+    void* pc = player_civ();
+    void* mgr = rel_mgr();
+    if (!pc || !mgr)
+        return false;
+    uint32_t pp = pol(pc);
+    for (void* c : npc_civs()) {
+        Entry e;
+        e.key = pol(c);
+        e.v[0] = fbits(rel(mgr, e.key, pp));
+        out.push_back(e);
+    }
+    return true;
+}
+static int s_civ_rel(const Table& want, bool apply)
+{
+    void* pc = player_civ();
+    void* mgr = rel_mgr();
+    uintptr_t ap = S("Simulator::cRelationshipManager::ApplyRelationship");
+    if (!pc || !mgr || !ap)
+        return 0;
+    uint32_t pp = pol(pc);
+    std::vector<uint32_t> mine;
+    for (void* c : npc_civs())
+        mine.push_back(pol(c));
+    int n = 0;
+    for (auto& w : want) {
+        if (std::find(mine.begin(), mine.end(), w.key) == mine.end())
+            continue; // the civilizations come from the save: the same political ids in both games
+        float hv = bitsf(w.v[0]), cur = rel(mgr, w.key, pp);
+        if (!std::isfinite(hv) || !std::isfinite(cur) || std::fabs(cur - hv) < 0.05f)
+            continue;
+        n++;
+        if (!apply)
+            continue;
+        float a = rel_abs(mgr, w.key, pp);
+        skg::thiscall<float>(ap, mgr, w.key, pp, kRelDelta, hv - (std::isfinite(a) ? a : cur));
+        if (std::fabs(rel(mgr, w.key, pp) - hv) >= 0.05f)
+            g_rel_stuck++;
+    }
+    return n;
+}
+static std::string f_civ_rel(const Entry& e)
+{
+    snprintf(g_fmt, sizeof g_fmt, "key=%08X rel=%.2f", e.key, bitsf(e.v[0]));
+    return g_fmt;
+}
+
+static bool r_civ_money(Table& out)
+{
+    if (!player_civ())
+        return false;
+    for (void* c : npc_civs()) {
+        Entry e;
+        e.key = pol(c);
+        e.v[0] = fbits(std::floor(F<float>(c, 0x98))); // cCivilization mWealth (GetMoney adds the NPC budgets +0x4AC / +0x4B0)
+        out.push_back(e);
+    }
+    return true;
+}
+static int s_civ_money(const Table& want, bool apply)
+{
+    if (!player_civ())
+        return 0;
+    int n = 0;
+    for (void* c : npc_civs()) {
+        uint32_t cp = pol(c);
+        for (auto& w : want) {
+            if (w.key != cp)
+                continue;
+            float hv = bitsf(w.v[0]);
+            float& cur = *(float*)((uint8_t*)c + 0x98);
+            if (!std::isfinite(hv) || std::fabs(cur - hv) < 1.f)
+                break;
+            n++;
+            if (apply)
+                cur = hv; // no setter: AddMoney applies the difficulty, SpendMoney refills an NPC's budget
+            break;
+        }
+    }
+    return n;
+}
+static std::string f_civ_money(const Entry& e)
+{
+    snprintf(g_fmt, sizeof g_fmt, "key=%08X money=%.0f", e.key, bitsf(e.v[0]));
+    return g_fmt;
+}
+
+// city_owner: key = the city's owner, v0..2 its position; a guest's city near it whose buildings or turrets have
+// another owner than the city gets them through the game's own City_SetPartsOwner (ChangeOwner's +0x2E2 step:
+// SetPoliticalID of every building, turret and +0x308 part, then the new owner's building models)
+static uint32_t g_parts_fixed; // tests: City_SetPartsOwner calls
+static int parts_off(void* city, uint32_t cp)
+{
+    int n = 0;
+    for (uintptr_t off : {0x340u, 0x354u}) { // mBuildings, mTurrets
+        void** b = F<void**>(city, off);
+        void** e = F<void**>(city, off + 4);
+        if (!b || e < b || e - b > 64 || !R(b, (e - b) * 4))
+            continue;
+        for (void** it = b; it < e; it++)
+            if (*it && R(*it, 0x40) && pol(*it) != cp)
+                n++;
+    }
+    return n;
+}
+static bool r_city(Table& out)
+{
+    if (!player_civ())
+        return false;
+    for (void* c : objects_of(kCityNoun)) {
+        if (!R(c, 0x7F0))
+            continue;
+        float* p = (float*)((uint8_t*)c + 0x124);
+        Entry e;
+        e.key = pol(c);
+        e.v[0] = fbits(p[0]), e.v[1] = fbits(p[1]), e.v[2] = fbits(p[2]);
+        e.v[3] = (uint32_t)parts_off(c, e.key); // the host's own (0 when the game is right)
+        out.push_back(e);
+    }
+    return true;
+}
+static int s_city(const Table& want, bool apply)
+{
+    void* nm = noun_mgr();
+    uintptr_t byPol = S("Simulator::cGameNounManager::GetCivilizationByPoliticalID");
+    uintptr_t setParts = S("SporeCoop::City_SetPartsOwner");
+    if (!nm || !byPol || !setParts || !player_civ())
+        return 0;
+    auto mine = objects_of(kCityNoun);
+    int n = 0;
+    for (auto& w : want) {
+        float x = bitsf(w.v[0]), y = bitsf(w.v[1]), z = bitsf(w.v[2]);
+        void* best = nullptr;
+        float bd = 30.f * 30.f;
+        for (void* c : mine) {
+            if (!R(c, 0x7F0))
+                continue;
+            float* p = (float*)((uint8_t*)c + 0x124);
+            float d = (p[0] - x) * (p[0] - x) + (p[1] - y) * (p[1] - y) + (p[2] - z) * (p[2] - z);
+            if (d < bd)
+                bd = d, best = c;
+        }
+        if (!best)
+            continue;
+        uint32_t cp = pol(best);
+        bool city_differs = cp != w.key; // MSG_CIV_STATE changes the city's owner (civ.cpp), counted here
+        int off = parts_off(best, cp);
+        if (!city_differs && off == 0)
+            continue;
+        n++;
+        if (!apply || city_differs || civ::planner_holds_city(best))
+            continue;
+        void* civ = skg::thiscall<void*>(byPol, nm, cp);
+        if (!civ)
+            continue;
+        skg::thiscall<void>(setParts, best, civ);
+        g_parts_fixed++;
+    }
+    return n;
+}
+static std::string f_city(const Entry& e)
+{
+    snprintf(g_fmt, sizeof g_fmt, "owner=%08X pos=(%.1f %.1f %.1f) parts_other=%u", e.key, bitsf(e.v[0]), bitsf(e.v[1]),
+             bitsf(e.v[2]), e.v[3]);
+    return g_fmt;
+}
+
+// ---- row: the player species' home nest and its migration (BUG-0640, BUG-0496; docs/re/creature.md#creature-nest-follow)
+// The migration to a new nest is the game's own state on each machine: property 0x514A219 of cPlayer (1 pending, 2 the
+// goal "Migrate to a new nest", gone with the claim), set by CreatureGame_AfterEditor when the stage's DNA total crossed
+// a brain threshold since the last one (0x54FB6BF). A guest's game ran it only when it loaded a world saved after the
+// host's (BUG-0019); since the evolution in place (BUG-0508) no world goes and the guest's game never migrated: no
+// goal, no claim, no DNA, its respawn and heal stayed at the old nest. The row carries the host's state and the
+// position of the host's home nest (its avatar's herd's nest); a guest whose home nest is not the one the host is
+// migrating from or to starts the same migration in its own game (property 1 and the avatar herd's brain range
+// emptied, as AfterEditor does), when its own game has the same target nest: its own goal, claim cinematic, DNA,
+// respawn and heal follow. Off: the guest's nest follows only a reloaded world (0.7.9).
+static bool g_nest_fix = true;
+COOP_FIX("wsync.creature_nest", "BUG-0640", g_nest_fix,
+         "wsync: a guest's game migrates to the host's new nest (goal, claim, respawn, heal) without a world load");
+constexpr uint32_t kMigrationProp = 0x514A219;
+static unsigned g_mig_started;
+static bool creature_mode(uint32_t m) { return m == modes::kCreature; }
+static int migration_state(void* p)
+{
+    uintptr_t f = S("SporeCoop::Player_GetProperty");
+    return f && p ? skg::thiscall<int>(f, p, kMigrationProp) : -1;
+}
+static bool home_nest(net::Vec3& out)
+{
+    void* av = game::mode_id() == modes::kCreature ? game::avatar() : nullptr;
+    return av && game::nest_position(av, out);
+}
+static bool target_nest(net::Vec3& out) // the game's next nest: CreatureGame_NestHerdFor(1)
+{
+    uintptr_t f = S("SporeCoop::CreatureGame_NestHerdFor"), np = S("SporeCoop::Herd_NestPosition");
+    void* h = f ? skg::cdecl_call<void*>(f, 1) : nullptr;
+    if (!np || !R(h, 0x164) || !game::herd_nest(h))
+        return false;
+    const float* q = skg::thiscall<const float*>(np, h);
+    if (!R((void*)q, 12))
+        return false;
+    out = {q[0], q[1], q[2]};
+    return true;
+}
+static float nest_dist(const net::Vec3& a, const net::Vec3& b)
+{
+    return std::sqrt((a.x - b.x) * (a.x - b.x) + (a.y - b.y) * (a.y - b.y) + (a.z - b.z) * (a.z - b.z));
+}
+static bool r_nest(Table& out)
+{
+    void* p = cplayer();
+    net::Vec3 h;
+    if (!p || !home_nest(h))
+        return false;
+    Entry e;
+    int st = migration_state(p);
+    e.v[0] = (uint32_t)(st < 0 ? 0 : st);
+    e.v[1] = fbits(h.x), e.v[2] = fbits(h.y), e.v[3] = fbits(h.z);
+    out.push_back(e);
+    return true;
+}
+constexpr float kSameNest = 30.f; // m: one nest (nests lie hundreds of metres apart)
+static int s_nest(const Table& want, bool apply)
+{
+    void* p = cplayer();
+    void* av = game::avatar();
+    net::Vec3 mine, target;
+    if (want.empty() || !p || !av || !home_nest(mine))
+        return 0;
+    int st = migration_state(p);
+    net::Vec3 host{bitsf(want[0].v[1]), bitsf(want[0].v[2]), bitsf(want[0].v[3])};
+    uint32_t hst = want[0].v[0];
+    static double pending_since = -1;
+    if (st == 1 && hst != 1) {
+        // pending here while the host's goal is set (or claimed): a world saved during the host's CRG_SpeciesMigrate
+        // left this game's creature a hatchling (age 0) that never turns the pending migration into the goal
+        // (docs/re/creature.md 16): after 15 s the goal state, so the claim on arrival works
+        double now = H->time_seconds();
+        if (pending_since < 0)
+            pending_since = now;
+        if (now - pending_since < 15)
+            return 0;
+        if (apply) {
+            uintptr_t set = S("SporeCoop::Player_SetProperty");
+            if (set)
+                skg::thiscall<void>(set, p, kMigrationProp, 2u);
+            pending_since = -1;
+            g_mig_started++;
+            H->log(M, SK_INFO, "wsync: this game's migration stayed pending while the host's went on (state %u): goal state "
+                   "set (BUG-0640)", hst);
+        }
+        return 1;
+    }
+    pending_since = -1;
+    if (st != 0)
+        return 0; // this game migrates already (its own or started here): its NestTick goes on
+    bool same_home = nest_dist(mine, host) < kSameNest;
+    // the host migrates from the nest this game still lives in, or it lives in a nest this game never claimed
+    bool behind = hst != 0 ? same_home : !same_home;
+    if (!behind || !target_nest(target) || nest_dist(target, mine) < kSameNest)
+        return 0;
+    if (hst == 0 && nest_dist(target, host) >= kSameNest)
+        return 0; // this game's next nest is not the host's: nothing to follow
+    if (!apply)
+        return 1;
+    uintptr_t set = S("SporeCoop::Player_SetProperty");
+    void* herd = game::herd_of(av);
+    if (!set || !R(herd, 0x128))
+        return 1;
+    skg::thiscall<void>(set, p, kMigrationProp, 1u);
+    *(int32_t*)((uint8_t*)herd + 0x124) = -1; // as CreatureGame_AfterEditor: the avatar's herd is no nest to stay in
+    *(int32_t*)((uint8_t*)herd + 0x120) = 5;
+    g_mig_started++;
+    H->log(M, SK_INFO, "wsync: the host's species migrates (state %u, home nest (%.0f %.0f %.0f)): this game migrates to "
+           "(%.0f %.0f %.0f) too (BUG-0640)", hst, host.x, host.y, host.z, target.x, target.y, target.z);
+    return 1;
+}
+static std::string f_nest(const Entry& e)
+{
+    snprintf(g_fmt, sizeof g_fmt, "migration=%u home=(%.1f %.1f %.1f)", e.v[0], bitsf(e.v[1]), bitsf(e.v[2]), bitsf(e.v[3]));
+    return g_fmt;
+}
+
+// ---- row: the player tribe's level (BUG-0645, docs/re/tribe.md#tribe-level): cTribe +0x38, set by the hut upgrade
+// 0xCDA4F0 (the TRG_Upgrade cinematic) from the goal progress when it passes a threshold of prop 0x16D19C8A; the
+// population cap is the level's (cTribe_MaxPopulation 0xC8EC70: 6, 9, 12, 15, 30, 45, 60) and the upgrade copies
+// it into the Tribe HUD (+0x10 of [0x169B41C]). A guest gets the goal progress (tribe_goal) but its game never runs
+// the upgrade: its tribe stayed at level 0, cap 6, with the host's 12 members ("12/6", and no member could be added).
+static bool g_tribe_level_fix = true;
+COOP_FIX("wsync.tribe_level", "BUG-0645", g_tribe_level_fix, "wsync: a guest's player tribe has the host's level and population cap (the hut upgrades)");
+static bool r_tlevel(Table& out)
+{
+    void* t = player_tribe();
+    if (!t)
+        return false;
+    Entry e;
+    e.v[0] = F<uint32_t>(t, 0x38);
+    out.push_back(e);
+    return true;
+}
+static int s_tlevel(const Table& want, bool apply)
+{
+    void* t = player_tribe();
+    if (want.empty() || !t || want[0].v[0] >= 8)
+        return 0;
+    uint32_t w = want[0].v[0];
+    uintptr_t capf = S("SporeCoop::cTribe_MaxPopulation"), hudp = S("SporeCoop::TribeHud_ptr");
+    void* hud = hudp && R((void*)hudp, 4) ? *(void**)hudp : nullptr;
+    int cap = capf ? skg::thiscall<int>(capf, t) : -1;
+    bool hud_off = hud && R(hud, 0x14) && cap >= 0 && F<int>(hud, 0x10) != cap;
+    if (F<uint32_t>(t, 0x38) == w && !hud_off)
+        return 0;
+    if (apply) {
+        *(uint32_t*)((uint8_t*)t + 0x38) = w; // the game's own setter is this one store (0xFF0260)
+        if (hud && R(hud, 0x14) && capf)
+            *(int*)((uint8_t*)hud + 0x10) = skg::thiscall<int>(capf, t);
+    }
+    return 1;
+}
+static std::string f_tlevel(const Entry& e)
+{
+    snprintf(g_fmt, sizeof g_fmt, "level=%u", e.v[0]);
+    return g_fmt;
+}
+
+// ---- row: every village's ID colour (BUG-0644, docs/re/tribe.md#tribe-id-colour): cTribe +0x230 is an identity colour
+// block (serializer 0x1320F20: +4 mIDColorID, a colour id 0x053DBCxx of the game's list 0x156B0BC; +0x24 mCachedColor,
+// RGB, 0 until drawn). A new tribe takes the next colour of the list, so a guest that made the host's villages in
+// another order, or had a village of its own, gave them other colours than the host's ("village color is desynced")
+static bool g_tribe_color_fix = true;
+COOP_FIX("wsync.tribe_color", "BUG-0644", g_tribe_color_fix, "wsync: a guest's villages have the host's colours");
+constexpr uintptr_t kTribeColorId = 0x234, kTribeCachedColor = 0x254;
+static bool r_tcolor(Table& out)
+{
+    if (!player_tribe())
+        return false;
+    for (auto& t : npc_tribes()) {
+        if (!R(t.t, kTribeCachedColor + 12))
+            continue;
+        Entry e;
+        e.key = t.pol;
+        e.v[0] = F<uint32_t>(t.t, kTribeColorId);
+        e.v[1] = fbits(t.x), e.v[2] = fbits(t.y), e.v[3] = fbits(t.z);
+        out.push_back(e);
+    }
+    return true;
+}
+static int s_tcolor(const Table& want, bool apply)
+{
+    auto mine = npc_tribes();
+    int n = 0;
+    for (auto& w : want) {
+        const TribeRef* t = match(mine, w.key, bitsf(w.v[1]), bitsf(w.v[2]), bitsf(w.v[3]));
+        if (!t || !R(t->t, kTribeCachedColor + 12) || (w.v[0] >> 8) != 0x053DBC)
+            continue;
+        if (F<uint32_t>(t->t, kTribeColorId) == w.v[0])
+            continue;
+        n++;
+        if (!apply)
+            continue;
+        uint8_t* b = (uint8_t*)t->t;
+        *(uint32_t*)(b + kTribeColorId) = w.v[0];
+        memset(b + kTribeCachedColor, 0, 12); // the cached RGB is made again from the id
+    }
+    return n;
+}
+static std::string f_tcolor(const Entry& e)
+{
+    snprintf(g_fmt, sizeof g_fmt, "key=%08X color=%08X pos=(%.1f %.1f %.1f)", e.key, e.v[0], bitsf(e.v[1]),
+             bitsf(e.v[2]), bitsf(e.v[3]));
+    return g_fmt;
+}
+
+// ---- row: the NPC nests' evolution (BUG-0668, BUG-0639; docs/re/creature.md#creature-herd-evolution-owner)
+// The game evolves every NPC herd in CreatureGame_Update 0xD45740: while the creature game's +0x48 is set (the pack's
+// DNA changed) and the tuning bool 0x1582DF4 (property 0x9040F372) is on, each herd with +0x85 mbShouldEvolve, a species
+// +0xA4 other than the player's and 0 < +0x94 mDNAEvolutionThreshold < the DNA total goes to generation +0xF0 + 1: its
+// species becomes cHerd_EvolvedSpecies(gen) (the key +0xA8[gen] of the save's chain), and cHerd_ApplyProfile 0xC6E3A0
+// draws a new threshold (random, FUN_004DF340 of the profile's range). Each game ran it on its own: other thresholds,
+// another moment, and a herd extinct on the host (+0x85 = 0 there) evolved on the guest. The row carries the host's
+// generation, species key, threshold, +0x85 and extinct bit per nest (matched by the herd's home +0x34, the save's);
+// the guest's own evolution step is off (0x1582DF4 = 0 while it is a guest in Creature) and its herds take the host's
+// values. Off: each game evolves its own nests (0.7.9).
+static bool g_herd_evo_fix = true;
+COOP_FIX("wsync.herd_evo", "BUG-0668", g_herd_evo_fix,
+         "wsync: the NPC nests evolve in the host's game only; a guest's nests show the host's species and generation");
+constexpr int kHerdEvoMax = 30; // entries of 28 bytes: the whole MSG_WSTATE stays within one packet
+static unsigned g_herd_evo_set;
+static bool herd_evo_saved = false;
+static uint8_t herd_evo_orig = 1;
+static uint32_t species_inst(void* sp) { return R(sp, 0x510) ? F<uint32_t>(sp, 0x504) : 0; }
+static uint32_t species_group(void* sp) { return R(sp, 0x510) ? F<uint32_t>(sp, 0x50C) : 0; }
+static void* player_species()
+{
+    uintptr_t g = S("Editors::cSpeciesManager::Get"), ps = S("SporeCoop::cSpeciesManager_PlayerSpecies");
+    void* m = g ? skg::cdecl_call<void*>(g) : nullptr;
+    return m && ps ? skg::thiscall<void*>(ps, m) : nullptr;
+}
+struct HerdRef {
+    void* h;
+    float x, y, z;
+};
+static std::vector<HerdRef> npc_herds()
+{
+    struct U {
+        std::vector<HerdRef> v;
+        void* ps;
+    } u{{}, player_species()};
+    game::for_each_object(
+        [](void* o, uint32_t noun, void* p) {
+            auto* u = (U*)p;
+            if (noun != game::kHerdNoun || !game::object_alive(o) || !R(o, 0x220) || F<uint8_t>(o, 0x84))
+                return true;
+            void* sp = game::herd_species(o);
+            if (!R(game::herd_nest(o), 0x130) || !sp || sp == u->ps)
+                return true; // only nests of other species (the game never evolves the player's)
+            const float* hp = (const float*)((uint8_t*)o + 0x34);
+            u->v.push_back({o, hp[0], hp[1], hp[2]});
+            return true;
+        },
+        &u);
+    return u.v;
+}
+// 134 nests on the fixture's planet: more than one packet. Each send carries the nests whose generation, species or
+// bits changed in the last 3 s first, then a window of the others that moves on once a second (all of them within
+// ~5 s); a guest merges the entries by home (on_message), so it holds every nest the host sent.
+static uint64_t home_key(uint32_t x, uint32_t y, uint32_t z) { return ((uint64_t)x * 0x9E3779B1u) ^ ((uint64_t)y << 21) ^ z; }
+static bool r_herd_evo(Table& out)
+{
+    if (!game::avatar())
+        return false;
+    auto hs = npc_herds();
+    std::sort(hs.begin(), hs.end(), [](const HerdRef& p, const HerdRef& q) { return p.x != q.x ? p.x < q.x : p.z < q.z; });
+    struct Seen {
+        uint32_t v3, key;
+        double changed;
+    };
+    static std::map<uint64_t, Seen> seen;
+    double now = H->time_seconds();
+    std::vector<Entry> all, changed, rest;
+    for (auto& r : hs) {
+        void* sp = game::herd_species(r.h);
+        Entry e;
+        e.key = species_inst(sp);
+        e.v[0] = fbits(r.x), e.v[1] = fbits(r.y), e.v[2] = fbits(r.z);
+        e.v[3] = (uint32_t)(F<int32_t>(r.h, 0xF0) & 0xFF) | (F<uint8_t>(r.h, 0x85) ? 0x100u : 0) | (F<uint8_t>(r.h, 0x190) ? 0x200u : 0);
+        e.v[4] = F<uint32_t>(r.h, 0x94);
+        e.v[5] = species_group(sp);
+        auto it = seen.find(home_key(e.v[0], e.v[1], e.v[2]));
+        if (it == seen.end())
+            seen[home_key(e.v[0], e.v[1], e.v[2])] = {e.v[3], e.key, -100};
+        else if (it->second.v3 != e.v[3] || it->second.key != e.key)
+            it->second = {e.v[3], e.key, now};
+        bool recent = it != seen.end() && now - it->second.changed < 3.0;
+        (recent ? changed : rest).push_back(e);
+    }
+    for (auto& e : changed)
+        if ((int)out.size() < kHerdEvoMax)
+            out.push_back(e);
+    int room = kHerdEvoMax - (int)out.size();
+    if (room > 0 && !rest.empty()) {
+        size_t pages = (rest.size() + room - 1) / room;
+        size_t start = ((size_t)now % pages) * room;
+        for (size_t i = start; i < rest.size() && (int)out.size() < kHerdEvoMax; i++)
+            out.push_back(rest[i]);
+    }
+    return true;
+}
+static int s_herd_evo(const Table& want, bool apply)
+{
+    if (want.empty())
+        return 0;
+    uintptr_t evolved = S("SporeCoop::cHerd_EvolvedSpecies");
+    auto mine = npc_herds();
+    int n = 0;
+    for (auto& w : want) {
+        float x = bitsf(w.v[0]), y = bitsf(w.v[1]), z = bitsf(w.v[2]);
+        void* h = nullptr;
+        for (auto& r : mine)
+            if ((r.x - x) * (r.x - x) + (r.y - y) * (r.y - y) + (r.z - z) * (r.z - z) < 4.f) {
+                h = r.h;
+                break;
+            }
+        if (!h)
+            continue;
+        int gen = (int)(w.v[3] & 0xFF);
+        uint8_t evolve = (w.v[3] & 0x100) ? 1 : 0;
+        void* sp = game::herd_species(h);
+        bool species_differs = F<int32_t>(h, 0xF0) != gen || species_inst(sp) != w.key;
+        bool rest_differs = F<uint32_t>(h, 0x94) != w.v[4] || F<uint8_t>(h, 0x85) != evolve;
+        if (!species_differs && !rest_differs)
+            continue;
+        n++;
+        if (!apply)
+            continue;
+        uint8_t* p = (uint8_t*)h;
+        if (species_differs && evolved) {
+            // as the game's evolution step does (0xD45E1C..0xD45E3A): the chain's key at gen, then gen and species
+            uint8_t* kb = F<uint8_t*>(h, 0xA8);
+            uint8_t* ke = F<uint8_t*>(h, 0xAC);
+            int nk = kb && ke >= kb ? (int)(ke - kb) / 12 : 0;
+            if (gen < nk && R(kb, (gen + 1) * 12)) {
+                uint32_t* k = (uint32_t*)(kb + gen * 12);
+                if (k[0] != w.key) {
+                    k[0] = w.key;
+                    k[2] = w.v[5];
+                }
+                void* ns = skg::thiscall<void*>(evolved, h, (uint32_t)gen);
+                if (ns && species_inst(ns) == w.key) {
+                    *(int32_t*)(p + 0xF0) = gen;
+                    *(void**)(p + 0xA4) = ns;
+                    g_herd_evo_set++;
+                    H->log(M, SK_INFO, "wsync: the nest at (%.0f %.0f %.0f) is the host's generation %d, species %08X (BUG-0668)",
+                           x, y, z, gen, w.key);
+                }
+            }
+        }
+        *(uint32_t*)(p + 0x94) = w.v[4];
+        p[0x85] = evolve;
+    }
+    return n;
+}
+static std::string f_herd_evo(const Entry& e)
+{
+    snprintf(g_fmt, sizeof g_fmt, "home=(%.1f %.1f %.1f) gen=%u should_evolve=%u extinct=%u threshold=%.0f species=%08X",
+             bitsf(e.v[0]), bitsf(e.v[1]), bitsf(e.v[2]), e.v[3] & 0xFF, (e.v[3] >> 8) & 1, (e.v[3] >> 9) & 1, bitsf(e.v[4]), e.key);
+    return g_fmt;
+}
+// the guest's own evolution step: the tuning bool CreatureGame_HerdEvolveOn read by 0xD45A41 is 0 while this game is a
+// guest in Creature with the row on; the game's value comes back otherwise (it is written once by the tuning load 0xD3D979)
+// BUG-0803: the step is off only while the guest plays the host's world: in a Creature world of its own (joined from
+// its own game, or loaded one while connected: own_world::elsewhere) no host value replaces it (MSG_WSTATE is dropped
+// there) and its nests never evolved, its save kept that. Off: off for any connected guest in Creature (0.7.12).
+static bool g_herd_evo_own_fix = true;
+COOP_FIX("wsync.herd_evo_own", "BUG-0803", g_herd_evo_own_fix,
+         "wsync: a guest's NPC nests evolve in a Creature world of its own");
+// BUG-0818: no row of the host's Space save is applied while this guest plays a Space save of its own
+// (own_world::space_other): the "stages" row wrote the host's stage history (cPlayer +0x10FC..) into it, and the
+// game saved it. Off: applied in any Space save (0.7.12).
+static bool g_space_own_fix = true;
+COOP_FIX("wsync.space_own", "BUG-0818", g_space_own_fix,
+         "wsync: a guest in a Space save of its own keeps its own stage history");
+static unsigned g_space_own_held;
+static void herd_evo_guard()
+{
+    uintptr_t a = S("SporeCoop::CreatureGame_HerdEvolveOn");
+    if (!a)
+        return;
+    uint8_t* b = (uint8_t*)a;
+    bool off = g_herd_evo_fix && C.sess && C.sess->connected() && C.sess->role() == net::Role::Client &&
+               game::mode_id() == modes::kCreature && !(g_herd_evo_own_fix && own_world::elsewhere());
+    if (off) {
+        if (!herd_evo_saved) {
+            herd_evo_orig = *b;
+            herd_evo_saved = true;
+        }
+        if (*b)
+            *b = 0;
+    } else if (herd_evo_saved) {
+        *b = herd_evo_orig;
+        herd_evo_saved = false;
+    }
+}
+
+// ---- row: Tribe, the spot records' markers (BUG-0740, docs/re/tribe.md#tribe-attack-marker)
+// The game keeps a sorted table of planet cells with a "spot record" (the fixed vector SpotRecord_Table: 0x60-byte
+// entries, +0 the cell id, the record at +8: +0 its surface position, +0x24 a noun 0x2E72CAE object, +0x28 its
+// marker, an ornament of model 0x356EB8A with a minimap blip). SpotRecord_CellId (cdecl(const Vector3* pos, bool))
+// finds the record nearest pos in a window of cells or makes one at the first land cell of the window, and a new
+// record gets its marker (TribeMarker_Place). Both games make the records of their villages themselves, but the
+// creature attack's start (0xD73930) runs only in the host's game: the record (and marker) it makes at an attacked
+// place far from a village was the host's only. The table is emptied only by the stage modes' enter / exit.
+// Row: key = cell id, v = the record's position and the position the game asked SpotRecord_CellId for (the hook
+// below remembers it; the guest's game asked the same makes the same cell); only records made since the host's load. The guest's apply asks its own game
+// the same (outside the frame: the minimap), or places the marker on a record it has without one, and takes back
+// the markers it made when the host's record is gone (SpotRecord_Release, as the table's clear does).
+static bool g_marker_fix = true;
+COOP_FIX("wsync.tribe_marker", "BUG-0740", g_marker_fix,
+         "wsync: a guest's game shows the host's creature attack markers (the spot records' ornaments, minimap blips)");
+using CellIdFn = uint32_t(__cdecl*)(const float*, uint32_t);
+static CellIdFn g_cellid_orig;
+struct Vec3f {
+    float x, y, z;
+};
+static std::map<uint32_t, Vec3f> g_spot_asked; // cell id -> the position the game asked for when the record was made
+static unsigned g_spot_made = 0;
+struct SpotRec {
+    uint32_t id;
+    uint8_t* rec;
+};
+static std::vector<SpotRec> spot_table()
+{
+    std::vector<SpotRec> v;
+    uintptr_t a = S("SporeCoop::SpotRecord_Table");
+    if (!a || !R((void*)a, 8))
+        return v;
+    uint8_t* b = *(uint8_t**)a;
+    uint8_t* e = *(uint8_t**)(a + 4);
+    if (!b || e < b || (e - b) % 0x60 || (e - b) / 0x60 > 256 || !R(b, e - b))
+        return v;
+    for (uint8_t* p = b; p < e; p += 0x60)
+        v.push_back({F<uint32_t>(p, 0), p + 8});
+    return v;
+}
+static size_t spot_count()
+{
+    uintptr_t a = S("SporeCoop::SpotRecord_Table");
+    if (!a || !R((void*)a, 8))
+        return 0;
+    uint8_t* b = *(uint8_t**)a;
+    uint8_t* e = *(uint8_t**)(a + 4);
+    return b && e >= b ? (size_t)(e - b) / 0x60 : 0;
+}
+static uint32_t __cdecl cellid_hook(const float* pos, uint32_t make)
+{
+    size_t before = spot_count();
+    float p[3] = {0, 0, 0};
+    bool ok = pos && R((void*)pos, 12);
+    if (ok)
+        memcpy(p, pos, 12);
+    uint32_t id = g_cellid_orig(pos, make);
+    if (ok && spot_count() > before && id != 0xFFFFFFFFu) {
+        if (spot_count() == 1)
+            g_spot_asked.clear(); // a new table (the stage mode's enter emptied it)
+        if (g_spot_asked.size() < 512)
+            g_spot_asked[id] = {p[0], p[1], p[2]};
+        if (g_spot_made++ < 40)
+            H->log(M, SK_INFO, "wsync: the game made the spot record of cell %08X for (%.1f %.1f %.1f) (from %p, BUG-0740)", id,
+                   p[0], p[1], p[2], __builtin_return_address(0));
+    }
+    return id;
+}
+constexpr size_t kMarkerRows = 12;
+static void* spot_marker(uint8_t* rec) { return R(rec, 0x2C) ? F<void*>(rec, 0x28) : nullptr; }
+static bool r_marker(Table& out)
+{
+    if (!S("SporeCoop::SpotRecord_Table"))
+        return false;
+    // only the records this game made since its load (a guest's load of the host's world carries the older ones: the
+    // share save has them, lab 20261108-063825), at most kMarkerRows: MSG_WSTATE is one unreliable packet for all rows
+    for (auto& s : spot_table()) {
+        auto it = g_spot_asked.find(s.id);
+        if (!spot_marker(s.rec) || it == g_spot_asked.end() || out.size() >= kMarkerRows)
+            continue;
+        Entry e;
+        e.key = s.id;
+        const float* rp = (const float*)s.rec;
+        Vec3f a = it->second;
+        e.v[0] = fbits(rp[0]), e.v[1] = fbits(rp[1]), e.v[2] = fbits(rp[2]);
+        e.v[3] = fbits(a.x), e.v[4] = fbits(a.y), e.v[5] = fbits(a.z);
+        out.push_back(e);
+    }
+    return true;
+}
+// guest: what the apply asked for, run outside the frame (TribeMarker_Place adds a minimap blip)
+struct MarkerJob {
+    uint32_t key;
+    bool release;
+    float pos[3], asked[3];
+};
+static std::vector<MarkerJob> g_marker_jobs;
+static std::map<uint32_t, int> g_marker_tries; // cell id -> places asked (at most 2 each, per table)
+static std::map<uint32_t, bool> g_marker_mine;  // the markers this game made for the host's records
+static unsigned g_marker_placed = 0, g_marker_released = 0, g_marker_missed = 0;
+static size_t g_marker_tab_was = 0;
+static uint8_t* spot_find(uint32_t id)
+{
+    for (auto& s : spot_table())
+        if (s.id == id)
+            return s.rec;
+    return nullptr;
+}
+static void marker_task(void*)
+{
+    std::vector<MarkerJob> jobs;
+    jobs.swap(g_marker_jobs);
+    if (game::mode_id() != modes::kTribe)
+        return;
+    uintptr_t place = S("SporeCoop::TribeMarker_Place"), rel = S("SporeCoop::SpotRecord_Release");
+    for (auto& j : jobs) {
+        uint8_t* rec = spot_find(j.key);
+        if (j.release) {
+            if (rec && spot_marker(rec) && rel) {
+                skg::thiscall<void>(rel, rec); // fastcall(record): its +0x24 / +0x28 objects destroyed, +0x3C effect
+                g_marker_released++;
+                H->log(M, SK_INFO, "wsync: the host's spot record of cell %08X is gone: its marker taken back (BUG-0740)", j.key);
+            }
+            g_marker_mine.erase(j.key);
+            continue;
+        }
+        if (rec && spot_marker(rec))
+            continue;
+        if (rec && place)
+            skg::thiscall<void>(place, rec, (const float*)j.pos, 10.0f);
+        else if (!rec && S("SporeCoop::SpotRecord_CellId")) {
+            uint32_t id = skg::cdecl_call<uint32_t>(S("SporeCoop::SpotRecord_CellId"), (const float*)j.asked, 0u);
+            if (id != j.key) {
+                g_marker_missed++;
+                H->log(M, SK_WARN, "wsync: this game's spot record for (%.1f %.1f %.1f) is cell %08X, the host's %08X (BUG-0740)",
+                       j.asked[0], j.asked[1], j.asked[2], id, j.key);
+            }
+        }
+        rec = spot_find(j.key);
+        if (rec && spot_marker(rec)) {
+            g_marker_placed++;
+            g_marker_mine[j.key] = true;
+            H->log(M, SK_INFO, "wsync: the host's marker of cell %08X placed at (%.1f %.1f %.1f) (BUG-0740)", j.key, j.pos[0],
+                   j.pos[1], j.pos[2]);
+        }
+    }
+}
+static int s_marker(const Table& want, bool apply)
+{
+    if (!S("SporeCoop::SpotRecord_Table"))
+        return 0;
+    auto mine = spot_table();
+    if (mine.size() < g_marker_tab_was || mine.empty()) { // the table was emptied (a mode's enter / exit): a new one
+        g_marker_tries.clear();
+        g_marker_mine.clear();
+    }
+    g_marker_tab_was = mine.size();
+    auto has = [&](uint32_t id) -> uint8_t* {
+        for (auto& s : mine)
+            if (s.id == id)
+                return s.rec;
+        return nullptr;
+    };
+    int n = 0;
+    bool queued = false;
+    for (auto& w : want) {
+        uint8_t* rec = has(w.key);
+        if (rec && spot_marker(rec))
+            continue;
+        n++;
+        if (apply && g_marker_tries[w.key] < 2 && g_marker_jobs.size() < 64) {
+            g_marker_tries[w.key]++;
+            MarkerJob j{w.key, false, {bitsf(w.v[0]), bitsf(w.v[1]), bitsf(w.v[2])}, {bitsf(w.v[3]), bitsf(w.v[4]), bitsf(w.v[5])}};
+            g_marker_jobs.push_back(j);
+            queued = true;
+        }
+    }
+    for (auto it = g_marker_mine.begin(); it != g_marker_mine.end() && want.size() < kMarkerRows; ++it) {
+        bool wanted = false;
+        for (auto& w : want)
+            wanted |= w.key == it->first;
+        uint8_t* rec = has(it->first);
+        if (wanted || !rec || !spot_marker(rec))
+            continue;
+        n++;
+        if (apply && g_marker_jobs.size() < 64) {
+            g_marker_jobs.push_back(MarkerJob{it->first, true, {}, {}});
+            queued = true;
+        }
+    }
+    if (queued)
+        H->run_outside_frame(marker_task, nullptr);
+    return n;
+}
+static std::string f_marker(const Entry& e)
+{
+    uint8_t* rec = spot_find(e.key);
+    void* o = rec ? spot_marker(rec) : nullptr;
+    uint32_t model = o && R(o, 0x230) ? F<uint32_t>(o, 0x228) : 0;
+    snprintf(g_fmt, sizeof g_fmt, "cell=%08X pos=(%.1f %.1f %.1f) asked=(%.1f %.1f %.1f) marker=%p model=%08X", e.key, bitsf(e.v[0]),
+             bitsf(e.v[1]), bitsf(e.v[2]), bitsf(e.v[3]), bitsf(e.v[4]), bitsf(e.v[5]), o, model);
+    return g_fmt;
+}
+
+// ---- E4 (designs.cpp): the player tribe's outfit (BUG-1156) and the player civilization's designs (BUG-1157)
+static Table to_table(const std::vector<designs::Val>& v)
+{
+    Table t;
+    for (auto& x : v) {
+        Entry e;
+        e.key = x.key;
+        memcpy(e.v, x.v, sizeof e.v);
+        t.push_back(e);
+    }
+    return t;
+}
+static std::vector<designs::Val> to_vals(const Table& t)
+{
+    std::vector<designs::Val> v;
+    for (auto& e : t) {
+        designs::Val x;
+        x.key = e.key;
+        memcpy(x.v, e.v, sizeof x.v);
+        v.push_back(x);
+    }
+    return v;
+}
+static bool r_outfit(Table& out)
+{
+    std::vector<designs::Val> v;
+    if (!designs::outfit_read(v))
+        return false;
+    out = to_table(v);
+    return true;
+}
+static int s_outfit(const Table& want, bool apply) { return designs::outfit_sync(to_vals(want), apply); }
+static std::string f_outfit(const Entry& e)
+{
+    designs::Val x;
+    memcpy(x.v, e.v, sizeof x.v);
+    return designs::outfit_fmt(x);
+}
+static bool r_design(Table& out)
+{
+    std::vector<designs::Val> v;
+    if (!designs::civ_read(v))
+        return false;
+    out = to_table(v);
+    return true;
+}
+static int s_design(const Table& want, bool apply) { return designs::civ_sync(to_vals(want), apply); }
+static std::string f_design(const Entry& e)
+{
+    designs::Val x;
+    x.key = e.key;
+    memcpy(x.v, e.v, sizeof x.v);
+    return designs::civ_fmt(x);
+}
+
+static const Row kRows[] = {
+    {1, "tod", 4, &kRowOn, sky, r_tod, s_tod, true, f_tod},
+    {2, "day", 1, &kRowOn, sky_day, r_day, s_day, false, f_day},
+    {3, "stages", 5, &kRowOn, planet, r_stages, s_stages, false, f_stages},
+    {4, "tribe_rel", 4, &kRowOn, tribe_mode, r_rel, s_rel, false, f_rel},
+    {5, "tribe_goal", 6, &kRowOn, tribe_mode, r_goal, s_goal, false, f_goal},
+    {6, "cell_spent", 2, &kRowOn, cell_mode, r_spent, s_spent, false, f_spent},
+    {7, "tribe_food", 4, &kRowOn, tribe_mode, r_tfood, s_tfood, false, f_tfood},
+    {8, "civ_rel", 1, &kRowOn, civ_mode, r_civ_rel, s_civ_rel, false, f_civ_rel},
+    {9, "civ_money", 1, &kRowOn, civ_mode, r_civ_money, s_civ_money, false, f_civ_money},
+    {10, "city_owner", 4, &kRowOn, civ_mode, r_city, s_city, false, f_city},
+    {11, "creature_nest", 4, &g_nest_fix, creature_mode, r_nest, s_nest, false, f_nest},
+    {12, "tribe_level", 1, &g_tribe_level_fix, tribe_mode, r_tlevel, s_tlevel, false, f_tlevel},
+    {13, "tribe_color", 4, &g_tribe_color_fix, tribe_mode, r_tcolor, s_tcolor, false, f_tcolor},
+    {14, "herd_evo", 6, &g_herd_evo_fix, creature_mode, r_herd_evo, s_herd_evo, false, f_herd_evo},
+    {15, "tribe_marker", 6, &g_marker_fix, tribe_mode, r_marker, s_marker, false, f_marker},
+    {16, "tribe_outfit", 6, &designs::g_outfit_fix, tribe_mode, r_outfit, s_outfit, false, f_outfit}, // BUG-1156
+    {17, "civ_design", 3, &designs::g_civ_fix, civ_mode, r_design, s_design, false, f_design},       // BUG-1157
+};
+constexpr int kNRows = sizeof kRows / sizeof kRows[0];
+
+// ---- engine state
+struct HostRow {
+    Table sent;
+};
+struct GuestRow {
+    Table want;
+    uint32_t mode = 0;
+    double t = -1; // received
+    uint32_t received = 0, applied = 0, reapplied = 0, checks = 0;
+    int differ = 0;         // at the last check
+    bool matched = false;   // the last check found no difference (an apply after it is a re-alignment)
+};
+static HostRow g_host[kNRows];
+static GuestRow g_guest[kNRows];
+static double g_send_at = 0, g_check_at = 0, g_read_at = 0;
+static bool g_force = true;
+constexpr double kRefresh = 1.0, kRead = 0.25, kCheck = 0.5, kForget = 6.0;
+
+void init(const SkHost* host, SkMod* mod, const Ctx& ctx);
+
+void on_session_end()
+{
+    designs::on_session_end(); // E4: no key of ours left in the guest's tribe profile
+    for (auto& g : g_guest)
+        g = GuestRow{};
+    for (auto& h : g_host)
+        h = HostRow{};
+    g_force = true;
+}
+LIFECYCLE_HOOK("wsync.session", lifecycle::kSessionEnd, -13, [](const lifecycle::Ctx&) { on_session_end(); }, true); // C2 (BUG-1141): end_session
+
+void on_player_join() { g_force = true; }
+
+bool owns_time_of_day()
+{
+    return C.sess && C.sess->role() == net::Role::Client;
+}
+
+static bool same(const Table& a, const Table& b, int nv)
+{
+    if (a.size() != b.size())
+        return false;
+    for (size_t i = 0; i < a.size(); i++) {
+        if (a[i].key != b[i].key)
+            return false;
+        for (int j = 0; j < nv; j++)
+            if (a[i].v[j] != b[i].v[j])
+                return false;
+    }
+    return true;
+}
+
+static void host_tick(double now)
+{
+    uint32_t mode = game::mode_id();
+    if (now - g_read_at < kRead && !g_force)
+        return;
+    g_read_at = now;
+    bool due = g_force || now - g_send_at >= kRefresh;
+    Table cur[kNRows];
+    bool have[kNRows] = {};
+    for (int i = 0; i < kNRows; i++) {
+        const Row& r = kRows[i];
+        if (!r.active(mode) || !r.read(cur[i]))
+            continue;
+        have[i] = true;
+        if (!r.continuous && !same(cur[i], g_host[i].sent, r.nv))
+            due = true;
+    }
+    if (!due)
+        return;
+    net::Writer w;
+    w.u8(0);
+    w.u32(mode);
+    int n = 0;
+    for (int i = 0; i < kNRows; i++)
+        n += have[i];
+    w.u8((uint8_t)n);
+    for (int i = 0; i < kNRows; i++) {
+        if (!have[i])
+            continue;
+        const Row& r = kRows[i];
+        w.u8(r.id);
+        w.u8(r.nv);
+        w.u8((uint8_t)cur[i].size());
+        for (auto& e : cur[i]) {
+            w.u32(e.key);
+            for (int j = 0; j < r.nv; j++)
+                w.u32(e.v[j]);
+        }
+        g_host[i].sent = cur[i];
+    }
+    for (auto& p : C.sess->players())
+        if (p.id != 0)
+            C.sess->send_unreliable_to(p.id, net::MSG_WSTATE, w);
+    g_send_at = now;
+    g_force = false;
+}
+
+static void guest_tick(double now)
+{
+    if (now - g_check_at < kCheck)
+        return;
+    g_check_at = now;
+    uint32_t mode = game::mode_id();
+    bool playing = !C.playing || C.playing();
+    if (mode == modes::kSpace && g_space_own_fix && own_world::space_other()) {
+        g_space_own_held++; // BUG-0818
+        for (auto& g : g_guest)
+            g.matched = false;
+        return;
+    }
+    for (int i = 0; i < kNRows; i++) {
+        const Row& r = kRows[i];
+        GuestRow& g = g_guest[i];
+        if (g.t < 0 || now - g.t > kForget || g.mode != mode || !r.active(mode) || !playing) {
+            g.matched = false;
+            continue;
+        }
+        bool on = *r.on;
+        if (!on) { // the switch off: this game is not touched or read (the code before the row)
+            g.differ = -1;
+            g.matched = false;
+            continue;
+        }
+        int d = r.sync(g.want, true);
+        g.checks++;
+        g.differ = d;
+        if (d > 0 && on) {
+            g.applied++;
+            if (g.matched)
+                g.reapplied++; // the game drifted away after a match: a transition, re-aligned
+        }
+        g.matched = d == 0;
+    }
+}
+
+void tick(double now)
+{
+    herd_evo_guard();
+    if (!C.sess || !C.sess->connected())
+        return;
+    if (C.sess->role() == net::Role::Host)
+        host_tick(now);
+    else if (C.sess->role() == net::Role::Client)
+        guest_tick(now);
+}
+
+void on_message(uint8_t type, uint8_t from, net::Reader& rd)
+{
+    if (type != net::MSG_WSTATE || from != 0 || !C.sess || C.sess->role() != net::Role::Client)
+        return;
+    if (rd.u8() != 0)
+        return;
+    uint32_t mode = rd.u32();
+    int n = rd.u8();
+    double now = H->time_seconds();
+    for (int k = 0; k < n && rd.ok(); k++) {
+        uint8_t id = rd.u8();
+        int nv = rd.u8();
+        int ne = rd.u8();
+        if (!rd.ok() || nv > kMaxV || ne > kMaxN)
+            return;
+        Table t;
+        for (int e = 0; e < ne; e++) {
+            Entry x;
+            x.key = rd.u32();
+            for (int j = 0; j < nv; j++)
+                x.v[j] = rd.u32();
+            t.push_back(x);
+        }
+        if (!rd.ok())
+            return;
+        for (int i = 0; i < kNRows; i++)
+            if (kRows[i].id == id && kRows[i].nv == nv) {
+                if (kRows[i].sync == s_herd_evo && g_guest[i].mode == mode && g_guest[i].t >= 0) {
+                    // BUG-0668: a window of the nests: merged by home into what the guest holds
+                    Table& w = g_guest[i].want;
+                    for (auto& x : t) {
+                        auto it = std::find_if(w.begin(), w.end(), [&](const Entry& y) {
+                            return y.v[0] == x.v[0] && y.v[1] == x.v[1] && y.v[2] == x.v[2];
+                        });
+                        if (it != w.end())
+                            *it = x;
+                        else if (w.size() < 512)
+                            w.push_back(x);
+                    }
+                } else
+                    g_guest[i].want = std::move(t);
+                g_guest[i].mode = mode;
+                g_guest[i].t = now;
+                g_guest[i].received++;
+                break;
+            }
+    }
+}
+
+std::string status()
+{
+    std::string out;
+    char b[200];
+    double now = H->time_seconds();
+    bool host = C.sess && C.sess->role() == net::Role::Host;
+    for (int i = 0; i < kNRows; i++) {
+        const Row& r = kRows[i];
+        const GuestRow& g = g_guest[i];
+        snprintf(b, sizeof b, "row %s on=%d active=%d %s want=%d age=%.1f received=%u checks=%u differ=%d applied=%u reapplied=%u\n",
+                 r.name, (int)*r.on, (int)r.active(game::mode_id()), host ? "host" : "guest", (int)g.want.size(),
+                 g.t < 0 ? -1.0 : now - g.t, g.received, g.checks, g.differ, g.applied, g.reapplied);
+        out += b;
+    }
+    snprintf(b, sizeof b, "rel_stuck=%u tribe_food_adds=%u city_parts_fixed=%u migrations_started=%u herd_evo_set=%u space_own_held=%u\n", g_rel_stuck, g_tfood_adds,
+             g_parts_fixed, g_mig_started, g_herd_evo_set, g_space_own_held);
+    out += b;
+    snprintf(b, sizeof b, "spot records %u made, markers placed %u released %u missed %u (BUG-0740)\n", (unsigned)g_spot_made,
+             g_marker_placed, g_marker_released, g_marker_missed);
+    out += b;
+    return out;
+}
+
+// `coop.wsync` the rows' sync state; `coop.wsync dump [row]` this game's own values (tests compare the host's and
+// the guest's); `coop.wsync want <row>` the host's values a guest holds; `coop.wsync rel <pol hex> <delta>` the
+// game's ApplyRelationship on this game (tests: a village's feelings change in the host's game)
+static int c_wsync(void*, int argc, const char* const* argv, SkOut* out)
+{
+    std::string o;
+    if (argc >= 2 && !strcmp(argv[1], "sky")) { // tests (BUG-0712): this game's sky, whatever the stage
+        net::Quat q;
+        if (game::time_of_day(q))
+            H->out_printf(out, "sky %.4f %.4f %.4f %.4f\n", q.x, q.y, q.z, q.w);
+        else
+            H->out_printf(out, "no sky\n");
+        return 0;
+    }
+    if (argc >= 2 && (!strcmp(argv[1], "dump") || !strcmp(argv[1], "want"))) {
+        bool want = !strcmp(argv[1], "want");
+        for (int i = 0; i < kNRows; i++) {
+            const Row& r = kRows[i];
+            if (argc >= 3 && strcmp(argv[2], r.name))
+                continue;
+            Table t;
+            if (want)
+                t = g_guest[i].want;
+            else if (!r.active(game::mode_id()) || !r.read(t))
+                continue;
+            for (auto& e : t)
+                o += std::string(r.name) + " " + r.fmt(e) + "\n";
+        }
+        H->out_printf(out, "%send wsync\n", o.c_str());
+        return 0;
+    }
+    if (argc >= 4 && !strcmp(argv[1], "food")) { // food <pol hex> <n>: the game's AddFood on that NPC tribe here
+        uint32_t np = (uint32_t)strtoul(argv[2], nullptr, 16);
+        uintptr_t add = S("SporeCoop::cTribe_AddFood");
+        for (auto& t : npc_tribes())
+            if (t.pol == np && add) {
+                float before = npc_food(t.t);
+                skg::thiscall<void>(add, t.t, atoi(argv[3]));
+                H->out_printf(out, "food %08X: %.1f -> %.1f\n", np, before, npc_food(t.t));
+                return 0;
+            }
+        H->out_printf(out, "no such NPC tribe here\n");
+        return 0;
+    }
+    if (argc >= 4 && !strcmp(argv[1], "civmoney")) { // civmoney <pol hex> <n>: an NPC civilization's wealth += n here
+        uint32_t np = (uint32_t)strtoul(argv[2], nullptr, 16);
+        for (void* c : npc_civs())
+            if (pol(c) == np) {
+                float& w = *(float*)((uint8_t*)c + 0x98);
+                float before = w;
+                w += (float)atof(argv[3]);
+                H->out_printf(out, "civmoney %08X: %.0f -> %.0f\n", np, before, w);
+                return 0;
+            }
+        H->out_printf(out, "no such NPC civilization here\n");
+        return 0;
+    }
+    if (argc >= 4 && !strcmp(argv[1], "rel")) {
+        void* pt = game::mode_id() == modes::kCiv ? player_civ() : player_tribe(); // Civ: the player civilization
+        void* mgr = rel_mgr();
+        uintptr_t ap = S("Simulator::cRelationshipManager::ApplyRelationship");
+        uint32_t np = (uint32_t)strtoul(argv[2], nullptr, 16);
+        if (!pt || !mgr || !ap) {
+            H->out_printf(out, "no player tribe here\n");
+            return 0;
+        }
+        float before = rel(mgr, np, pol(pt));
+        skg::thiscall<float>(ap, mgr, np, pol(pt), kRelDelta, (float)atof(argv[3]));
+        H->out_printf(out, "rel %08X -> %08X: %.2f -> %.2f\n", np, pol(pt), before, rel(mgr, np, pol(pt)));
+        return 0;
+    }
+    if (argc >= 4 && !strcmp(argv[1], "stage")) { // tests: `stage <0..4> <hex>` writes a consequence trait here
+        void* p = cplayer();
+        int i = atoi(argv[2]);
+        if (!p || i < 0 || i > 4) {
+            H->out_printf(out, "no cPlayer here\n");
+            return 0;
+        }
+        *(uint32_t*)((uint8_t*)p + 0x10FC + 4 * i) = (uint32_t)strtoul(argv[3], nullptr, 16);
+        H->out_printf(out, "stage %d trait %08X\n", i, F<uint32_t>(p, 0x10FC + 4 * i));
+        return 0;
+    }
+    if (argc >= 5 && !strcmp(argv[1], "spot")) { // tests (BUG-0740): this game's SpotRecord_CellId for a position
+        static float p[3];
+        p[0] = (float)atof(argv[2]), p[1] = (float)atof(argv[3]), p[2] = (float)atof(argv[4]);
+        H->run_outside_frame(
+            [](void*) {
+                uintptr_t f = S("SporeCoop::SpotRecord_CellId");
+                if (f && game::mode_id() == modes::kTribe) {
+                    uint32_t id = skg::cdecl_call<uint32_t>(f, (const float*)p, 0u);
+                    H->log(M, SK_INFO, "wsync: tests: SpotRecord_CellId(%.1f %.1f %.1f) = %08X, %u records", p[0], p[1], p[2], id,
+                           (unsigned)spot_count());
+                }
+            },
+            nullptr);
+        H->out_printf(out, "spot asked for (%.1f %.1f %.1f)\n", p[0], p[1], p[2]);
+        return 0;
+    }
+    if (argc >= 2 && !strcmp(argv[1], "spots")) { // tests (BUG-0740): this game's spot record table
+        for (auto& s : spot_table()) {
+            const float* rp = (const float*)s.rec;
+            void* o = spot_marker(s.rec);
+            uint32_t model = o && R(o, 0x230) ? F<uint32_t>(o, 0x228) : 0;
+            H->out_printf(out, "spot cell=%08X pos=(%.1f %.1f %.1f) marker=%p model=%08X\n", s.id, rp[0], rp[1], rp[2], o, model);
+        }
+        H->out_printf(out, "end spots\n");
+        return 0;
+    }
+    if (argc >= 3 && !strcmp(argv[1], "goal") && !strcmp(argv[2], "dirty")) {
+        // tests (BUG-0942): the manager's own "a goal changed, refresh the cards" (vt 0x28 with pol 0), what the game's
+        // relation changes, orders and mission events end with
+        void* mgr = mission_mgr();
+        uintptr_t rf = S("SporeCoop::TribeMissionManager_Refresh");
+        if (!mgr || !rf) {
+            H->out_printf(out, "no mission manager\n");
+            return 0;
+        }
+        // `goal dirty <pol hex>`: with a village's pol, as its relation events do (the map's mission of that pol
+        // gets its text at once)
+        uint32_t rp = argc >= 4 ? (uint32_t)strtoul(argv[3], nullptr, 16) : 0;
+        skg::thiscall<void>(rf, mgr, rp);
+        H->out_printf(out, "goal refresh asked (pol %08X; card text skipped %u, cards dropped %u)\n", rp, g_card_skipped,
+                      g_cards_dropped);
+        return 0;
+    }
+    if (argc >= 3 && !strcmp(argv[1], "goal")) { // tests: the host's goal card on the village of this pol
+        uint32_t np = (uint32_t)strtoul(argv[2], nullptr, 16);
+        for (auto& t : npc_tribes())
+            if (t.pol == np) {
+                g_goal_target = t.t;
+                H->run_outside_frame(goal_task, nullptr);
+                H->out_printf(out, "goal %08X set\n", np);
+                return 0;
+            }
+        H->out_printf(out, "no tribe %08X\n", np);
+        return 0;
+    }
+    H->out_printf(out, "%s", status().c_str());
+    return 0;
+}
+
+void init(const SkHost* host, SkMod* mod, const Ctx& ctx)
+{
+    H = host;
+    M = mod;
+    C = ctx;
+    designs::init(host, mod, ctx.sess); // E4: the tribe outfit and civilization design rows
+    H->command_add(mod, "coop.wsync",
+                   "coop.wsync [dump [row]|want <row>|rel <pol> <delta>|goal <pol>|goal dirty [pol]] - host-owned world state (time of day, "
+                   "stages done, village relations, the Tribe goal): rows, this game's values",
+                   c_wsync, nullptr, SK_CMD_MAIN_THREAD);
+    // BUG-0740: the position each new spot record was asked for (the host's row sends it)
+    uintptr_t ci = S("SporeCoop::SpotRecord_CellId");
+    bool spot = ci && H->hook_create(M, (void*)ci, (void*)&cellid_hook, (void**)&g_cellid_orig) == 0;
+    if (!spot)
+        g_cellid_orig = nullptr;
+    H->log(M, SK_INFO, "wsync: spot record hook %s", spot ? "on" : "off");
+    // BUG-0942: the goal card's text function, for a mission whose village is gone
+    uintptr_t ct = S("SporeCoop::TribeMission_RefreshCard");
+    if (!ct || H->hook_create(M, (void*)ct, (void*)&h_card_text, (void**)&o_card_text) != 0)
+        H->log(M, SK_WARN, "wsync: no goal card text hook (realign.village_goal guards the card only)");
+}
+
+} // namespace wsync

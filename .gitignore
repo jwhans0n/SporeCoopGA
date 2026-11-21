@@ -3,3 +3,6 @@ out/
 __pycache__/
 *.pyc
 build-v*/
+
+# Preserve the ticket allocator fallback mutex as local metadata.
+/docs/tickets/.lock

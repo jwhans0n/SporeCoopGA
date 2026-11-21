@@ -104,6 +104,7 @@ int main()
 {
     table[0x0C / 4] = reinterpret_cast<void*>(&owning_object);
     symbols = {
+        {"Simulator::BehaviorTreeTickGeneric", reinterpret_cast<uintptr_t>(&native_tree)},
         {"SporeCoop::Adventure::TickBehaviorTree", reinterpret_cast<uintptr_t>(&native_tree)},
         {"SporeCoop::Adventure::TickVehicleWeapons", reinterpret_cast<uintptr_t>(&native_weapon)},
         {"SporeCoop::Adventure::TickVehicleTimers", reinterpret_cast<uintptr_t>(&native_timer)},

@@ -10,8 +10,14 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 
+#include "../updater/pending.h"
+
 typedef int(__cdecl *SporekitBootFn)(HMODULE loader);
 typedef DWORD(WINAPI *EntryFn)(void *);
+
+/* BUG-0851: the loader's tag as a line of its own: uninstall.bat (without the setup) finds it with
+ * findstr, which reads a file line by line (in one long binary "line" Wine's findstr misses it) */
+__attribute__((used)) static const char g_marker_line[] = "\r\nsporekit-loader (SporeCoop)\r\n";
 
 static HMODULE g_self;
 static BYTE *g_entry;
@@ -33,63 +39,23 @@ static void restore_entry(void)
 
 /* An update could not replace a file the game had open (Data\SporeCoop.package): it left
  * <file>.new and listed the file (relative to the game folder) in mods\sporecoop.pending.
- * Here, before the game opens anything, the new files take their place. */
+ * Here, before the game opens anything, the new files take their place (updater/pending.h:
+ * an entry that still cannot be swapped stays listed for the next start, BUG-0150). */
 static void apply_pending(void)
 {
-    wchar_t root[MAX_PATH], list[MAX_PATH];
+    wchar_t root[MAX_PATH];
     DWORD n = GetModuleFileNameW(g_self, root, MAX_PATH);
+    /* BUG-1033: 0 (no path) or MAX_PATH (cut): no root to look the pending list up in (it would be the drive's) */
+    if (n == 0 || n >= MAX_PATH) {
+        dbg("[sporekit-loader] the game folder's path is too long or unknown: pending updates not applied\n");
+        return;
+    }
     int seps = 0;
     while (n > 0 && seps < 2) /* ...\SPORE\SporebinEP1\steam_api.dll -> ...\SPORE */
         if (root[--n] == L'\\' || root[n] == L'/')
             seps++;
     root[n] = 0;
-    lstrcpyW(list, root);
-    lstrcatW(list, L"\\SporebinEP1\\mods\\sporecoop.pending");
-    HANDLE f = CreateFileW(list, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
-    if (f == INVALID_HANDLE_VALUE)
-        return;
-    char buf[4096];
-    DWORD got = 0;
-    ReadFile(f, buf, sizeof buf - 1, &got, NULL);
-    CloseHandle(f);
-    buf[got] = 0;
-    char *line = buf;
-    while (*line) {
-        char *end = line;
-        while (*end && *end != '\n' && *end != '\r')
-            end++;
-        char c = *end;
-        *end = 0;
-        /* plain relative names only (the updater writes them; never "..", drives or roots) */
-        int bad = !*line || line[0] == '/' || line[0] == '\\';
-        for (char *p = line; *p; p++)
-            if (*p == ':' || (p[0] == '.' && p[1] == '.'))
-                bad = 1;
-        if (!bad) {
-            wchar_t target[MAX_PATH * 2], fresh[MAX_PATH * 2], old[MAX_PATH * 2];
-            lstrcpyW(target, root);
-            lstrcatW(target, L"\\");
-            int k = lstrlenW(target);
-            for (char *p = line; *p && k < MAX_PATH * 2 - 8; p++)
-                target[k++] = (wchar_t)(*p == '/' ? '\\' : (unsigned char)*p);
-            target[k] = 0;
-            lstrcpyW(fresh, target);
-            lstrcatW(fresh, L".new");
-            lstrcpyW(old, target);
-            lstrcatW(old, L".old");
-            if (GetFileAttributesW(fresh) != INVALID_FILE_ATTRIBUTES) {
-                MoveFileExW(target, old, MOVEFILE_REPLACE_EXISTING);
-                if (!MoveFileExW(fresh, target, MOVEFILE_REPLACE_EXISTING))
-                    MoveFileExW(old, target, MOVEFILE_REPLACE_EXISTING); /* keep the game working */
-                else
-                    DeleteFileW(old);
-            }
-        }
-        if (!c)
-            break;
-        line = end + 1;
-    }
-    DeleteFileW(list);
+    sc_apply_pending(root, 1);
 }
 
 static void boot_sporekit(void)
@@ -101,8 +67,18 @@ static void boot_sporekit(void)
     }
     wchar_t path[MAX_PATH];
     DWORD n = GetModuleFileNameW(g_self, path, MAX_PATH);
+    /* BUG-1033: a 0 return loaded "sporekit.dll" by the DLL search order; a path cut at MAX_PATH let the append below
+     * write past path[] (the folder part can be 259 characters then) */
+    if (n == 0 || n >= MAX_PATH) {
+        dbg("[sporekit-loader] the game folder's path is too long or unknown, starting game without mods\n");
+        return;
+    }
     while (n > 0 && path[n - 1] != L'\\' && path[n - 1] != L'/')
         n--;
+    if (n + 12 >= MAX_PATH) { /* "sporekit.dll" and the terminator must fit */
+        dbg("[sporekit-loader] the game folder's path is too long, starting game without mods\n");
+        return;
+    }
     path[n] = 0;
     lstrcatW(path, L"sporekit.dll");
     HMODULE kit = LoadLibraryW(path);

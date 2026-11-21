@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# suite: none (opt-in native Windows fixture requiring an already-owned hidden lab and explicit private inputs; automatic launcher qualification is tracked by BUG-1259)
 """Observe natural host NPC acquisition and damage of a nearby party captain.
 
 Uses the stock locked-captain Crystal Mine and the existing owner-local placement

@@ -16,6 +16,9 @@
 // page. The receiver of a gift, a sale or an offer decides (adds it or not, pays or not) and
 // answers; the sender keeps what is on its way and gives it back on a "no" or when the partner
 // leaves before answering.
+#include <windows.h>
+#include <shlobj.h>
+
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -27,9 +30,15 @@
 
 #include "game.h"
 #include "modes.h"
+#include "net/protocol.h"
+#include "net/validate.h"
 #include "space_ext.h"
 #include "space_map.h"
 #include "sporekit_game.hpp"
+#include "space_kept.h"
+#include "wire/space_trade.h"
+#include "fixes.h"
+#include "own_world.h"
 
 
 using skg::cdecl_call;
@@ -46,6 +55,10 @@ enum Kind : uint8_t {
     K_OFFER = 74,      // rivals: {to, id, planet, key[3], n, price, name}: an offer `to` may accept
     K_OFFER_ACK = 75,  // rivals: {to, id, accepted, reason}: accepted = paid and taken, 0 = declined
     K_OFFER_CANCEL = 76, // rivals: {to, id}: the seller withdraws (the receiver answers with a decline)
+    // BUG-0678: a guest's own inventory across a rejoin or a reload (see "own inventory" below)
+    K_INV = 77,        // guest -> host {to 0, serial, fresh u8, inventory}: what my cargo hold has now
+    K_INV_KEPT = 78,   // host -> guest {to, serial, inventory}: your own inventory, kept since you were here
+    K_INV_DONE = 79,   // guest -> host {to 0, serial, restored u16, failed u16}: applied (or not needed)
 };
 
 constexpr uint32_t kToolType = 0x707459F0; // cSpaceToolData::TYPE (Cast)
@@ -56,6 +69,7 @@ constexpr uint32_t kMsgInventoryChanged = 0x057F3749; // posted by AddItem / Tak
 constexpr double kSalePremium = 2.0, kOfferPremium = 1.5;
 constexpr int kSaleStep = 10, kDemand = 30;   // a partner colony buys up to kDemand units ...
 constexpr double kDemandWindow = 600.0;        // ... per 10 minutes
+constexpr size_t kMaxOffers = 16;             // partners' offers waiting for an answer
 constexpr double kOfferLife = 120.0;           // an unanswered offer is declined after 2 minutes
 
 static const SkHost* H;
@@ -66,23 +80,8 @@ static uintptr_t a_SpaceGame, a_AddItemByKey, a_AddAmmo, a_ConsumeAmmo, a_Tradin
 template <typename T>
 static T& F(void* p, uintptr_t off) { return *(T*)((uint8_t*)p + off); }
 
-struct Key {
-    uint32_t v[3] = {};
-    bool operator==(const Key& o) const { return v[0] == o.v[0] && v[1] == o.v[1] && v[2] == o.v[2]; }
-};
-
-static void put_key(net::Writer& w, const Key& k)
-{
-    for (uint32_t x : k.v)
-        w.u32(x);
-}
-static Key get_key(net::Reader& r)
-{
-    Key k;
-    for (auto& x : k.v)
-        x = r.u32();
-    return k;
-}
+using Key = wire::Key3; // the payloads: wire/space_trade.h (C6)
+namespace tw = wire::space_trade;
 
 // ---------------- state ----------------
 struct Out {               // something of ours on its way to a partner
@@ -95,7 +94,66 @@ struct Out {               // something of ours on its way to a partner
     std::string name;
     double t;
     bool cancel_sent = false;
+    void* emp = nullptr;   // BUG-0058: the player's cEmpire it was taken from (a load makes a new one)
+    uint32_t saves = 0;    // spaceext::saves() when it was taken
+    spacelogic::WorldTag tag; // BUG-0225: the Space world and save file it was taken from
+    // BUG-0542: the reliable message that carried it ([rel_lo, rel_hi) on the connection it went
+    // out on) and whether the partner's side acknowledged it (then it arrived: the receiver adds a
+    // gift or a sale at once, only an offer waits for a click)
+    bool rel_marked = false, delivered = false;
+    uint16_t rel_lo = 0, rel_hi = 0;
 };
+// BUG-0058: what comes back while we are not in Space (an editor, the menu, a load) waits here and
+// is paid once we are back in Space. Before, the refund ran at once (outside Space: "no room, lost",
+// or into an inventory the mod did not know to be valid) and a session end outside Space dropped
+// everything on its way. `coop.space trade refundfix 0` restores that (tests).
+struct Owed {
+    Out o;
+    int n;
+    std::string why;
+};
+static std::vector<Owed> g_owed;
+static bool g_refund_fix = true;
+COOP_FIX("trade.refund", "BUG-0058", g_refund_fix, "space: gifts that come back outside Space wait until Space");
+static bool g_away;        // tests: the feature acts as outside Space (no inventory), BUG-0058
+// BUG-1034: a gift (K_TOOL) or a sale (K_SELL) that reaches a rejoined guest while its kept hold is still to come
+// (inv_restore_pending: up to 20 s after its fresh hold went) went into the host's copy of the hold, which the restore
+// (apply_inv) then replaced: the item was lost in both games (the sender was told it was taken). Now such a message
+// waits here and is handled (added and answered) once the restore is done; an offer is not accepted in that window.
+// Off: added at once (0.7.13).
+static bool g_wait_restore_fix = true;
+COOP_FIX("space.trade_wait_restore", "BUG-1034", g_wait_restore_fix,
+         "space: a gift or a sale reaching a rejoined guest before its own cargo hold is back waits for it");
+static spacekept::HeldQueue g_waiting; // the whole payloads (C5: space_kept.h)
+static uint32_t g_offer_waits;
+static bool inv_restore_pending();
+static bool g_restore_hold; // tests (BUG-1034): the guest's restore waits (no own record, K_INV_KEPT not taken)
+static int g_hold;         // tests: 1 do not answer gifts (the answer is still on its way); 2 add
+                           // gifts and sales but do not answer (the answer is lost, BUG-0542)
+// BUG-0542: the own session ends with a gift or a sale on its way: what the partner's side had
+// acknowledged arrived (the receiver keeps it) and does not come back, which doubled it. Off: all
+// of it comes back (before).
+static bool g_delivered_fix = true;
+COOP_FIX("trade.delivered", "BUG-0542", g_delivered_fix, "space: a gift the partner had received does not come back when the session ends");
+// BUG-0832: such a delivered sale was paid (the export bonus) only when the seller was in Space at that moment: a
+// seller in an editor or an adventure got nothing. The payment is owed now and paid in the first Space frame of the
+// same game (the world tag of the sale, as refunds are). `coop.fix trade.sale_owed off`: not paid (0.7.12).
+static bool g_sale_owed_fix = true;
+COOP_FIX("trade.sale_owed", "BUG-0832", g_sale_owed_fix,
+         "space: a spice sale that arrived is paid when the seller was out of Space at the session end");
+struct OwedSale {
+    int total, n;
+    std::string name;
+    spacelogic::WorldTag tag;
+};
+static std::vector<OwedSale> g_owed_sales;
+static uint32_t g_sales_owed, g_sales_owed_paid, g_sales_owed_dropped;
+static uint32_t g_kept_at_end;
+static uint32_t g_owed_paid, g_owed_dropped;
+static uint32_t g_owed_kept;        // BUG-0225: owed items kept for another game (as last decided)
+static uint32_t g_owed_seen_epoch;  // the world the kept items were last decided in
+static double g_owed_seen_t;        // and when (decided again every 2 s or on a new world / item)
+static bool g_owed_new;
 struct Offer {             // rivals: a partner's offer to us
     uint32_t id;
     uint8_t from;
@@ -118,6 +176,8 @@ static int64_t g_earned, g_paid;
 // ---------------- the game ----------------
 static void* inventory()
 {
+    if (g_away)
+        return nullptr;
     void* sg = a_SpaceGame ? *(void**)a_SpaceGame : nullptr;
     return sg ? F<void*>(sg, 0x40) : nullptr;
 }
@@ -528,6 +588,28 @@ static bool best_deal(Deal& d, std::string* why = nullptr)
 }
 
 // ---------------- actions ----------------
+// the connection a message of ours to `to` goes out on (a guest sends everything to the host)
+static net::Connection* conn_for(uint8_t to)
+{
+    if (!spaceext::connected())
+        return nullptr;
+    return spaceext::ctx().sess->conn_to(spaceext::is_host() ? to : 0);
+}
+
+// send `o`'s message and mark it (BUG-0542), then keep it until the answer
+static void send_out(Out& o, const net::Writer& w)
+{
+    net::Connection* c = conn_for(o.to);
+    uint16_t lo = c ? c->next_rel_id() : 0;
+    spaceext::send(o.kind, w);
+    if (c && c == conn_for(o.to) && c->next_rel_id() != lo) {
+        o.rel_marked = true;
+        o.rel_lo = lo;
+        o.rel_hi = c->next_rel_id();
+    }
+    g_out.push_back(o);
+}
+
 static uint32_t new_id() { return (uint32_t)spaceext::my_id() << 24 | (++g_next_id & 0xFFFFFF); }
 
 static std::string give_tool(const Key& key, int n, uint8_t to)
@@ -545,14 +627,18 @@ static std::string give_tool(const Key& key, int n, uint8_t to)
     if (!take_charges(key, n))
         return "not enough charges";
     Out o{new_id(), K_TOOL, to, key, n, 0, 0, nm, H->time_seconds()};
-    g_out.push_back(o);
+    o.emp = empire();
+    o.saves = spaceext::saves();
+    o.tag = spaceext::world_tag();
+    tw::Tool m;
+    m.to = to;
+    m.id = o.id;
+    m.key = key;
+    m.n = n;
+    m.name = nm;
     net::Writer w;
-    w.u8(to);
-    w.u32(o.id);
-    put_key(w, key);
-    w.u32((uint32_t)n);
-    w.str8(nm);
-    spaceext::send(K_TOOL, w);
+    m.write(w);
+    send_out(o, w);
     g_gifts_sent++;
     g_charges_sent += n;
     spaceext::notice(std::to_string(n) + " x " + nm + spaceext::tr(" sent to ", " отправлено: ") + spaceext::name_of(to));
@@ -573,18 +659,22 @@ static std::string sell(int n_max = kSaleStep)
     bool rivals = spaceext::rivals();
     Out o{new_id(), rivals ? K_OFFER : K_SELL, d.col.owner, d.spice.key, n, d.price, d.col.planet, d.spice.name,
           H->time_seconds()};
-    g_out.push_back(o);
+    o.emp = empire();
+    o.saves = spaceext::saves();
+    o.tag = spaceext::world_tag();
     if (!rivals)
         note_demand(d.col.planet, n, o.t);
+    tw::Sell m; // K_SELL and K_OFFER: the same bytes
+    m.to = o.to;
+    m.id = o.id;
+    m.planet = o.planet;
+    m.key = o.key;
+    m.n = n;
+    m.price = o.price;
+    m.name = o.name;
     net::Writer w;
-    w.u8(o.to);
-    w.u32(o.id);
-    w.u32(o.planet);
-    put_key(w, o.key);
-    w.u32((uint32_t)n);
-    w.u32((uint32_t)o.price);
-    w.str8(o.name);
-    spaceext::send(o.kind, w);
+    m.write(w);
+    send_out(o, w);
     if (rivals) {
         g_offers_sent++;
         spaceext::notice(spaceext::tr("Offer sent to ", "Предложение отправлено: ") + spaceext::name_of(o.to) + ": " +
@@ -593,10 +683,29 @@ static std::string sell(int n_max = kSaleStep)
     return "";
 }
 
+static bool here() { return !g_away && spaceext::in_space() && inventory() && empire(); }
+
+static void pay_now(const Out& o, int n, const std::string& why);
 static void refund(const Out& o, int n, const std::string& why)
 {
     if (n <= 0)
         return;
+    if (g_refund_fix && !here()) { // not in Space now: owed until we are back
+        g_owed.push_back({o, n, why});
+        g_owed_new = true;
+        return;
+    }
+    // BUG-0225: in Space, but maybe another Space world than the one it was taken from (a load came
+    // between): pay_owed decides with the world tag
+    if (g_refund_fix && spaceext::owed_id() && o.tag.epoch != spaceext::world_epoch()) {
+        g_owed.push_back({o, n, why});
+        g_owed_new = true;
+        return;
+    }
+    pay_now(o, n, why);
+}
+static void pay_now(const Out& o, int n, const std::string& why)
+{
     bool ok = o.kind == K_TOOL ? [&] { bool is_new; return add_charges(o.key, n, is_new) > 0; }() : add_spice(o.key, n);
     g_refunds++;
     spaceext::notice(std::to_string(n) + " x " + o.name + spaceext::tr(" came back", " вернулось") +
@@ -604,16 +713,24 @@ static void refund(const Out& o, int n, const std::string& why)
                      (ok ? "" : spaceext::tr(": no room, lost", ": нет места, потеряно")));
 }
 
-static void answer_offer(uint32_t id, bool accept)
+static void answer_offer(uint32_t id, bool accept, int from = -1)
 {
     for (size_t i = 0; i < g_offers.size(); i++) {
-        if (g_offers[i].id != id)
+        if (g_offers[i].id != id || (from >= 0 && g_offers[i].from != from))
             continue;
+        if (accept && g_wait_restore_fix && inv_restore_pending()) { // BUG-1034: the hold is not ours yet
+            g_offer_waits++;
+            spaceext::notice(spaceext::tr("Your cargo hold is being restored: accept in a moment",
+                                          "Ваш трюм ещё восстанавливается: примите чуть позже"));
+            return; // the offer stays
+        }
         Offer of = g_offers[i];
         g_offers.erase(g_offers.begin() + i);
         uint8_t reason = 0; // 0 declined, 1 no money, 2 no cargo room, 3 not in space
         int got = 0;
-        int total = of.n * of.price;
+        int total = 0;
+        if (!net::money_total(of.n, of.price, total))
+            accept = false; // (K_OFFER keeps the sum in range)
         if (accept) {
             if (!spaceext::in_space() || !inventory())
                 reason = 3;
@@ -633,21 +750,23 @@ static void answer_offer(uint32_t id, bool accept)
                                        spaceext::tr(" for $", " за $") + std::to_string(total)
                                  : spaceext::tr("Can't buy: ", "Не купить: ") + std::string(spaceext::tr(en[reason], ru[reason])));
         }
+        tw::OfferAck m;
+        m.to = of.from;
+        m.id = of.id;
+        m.got = got;
+        m.reason = reason;
         net::Writer w;
-        w.u8(of.from);
-        w.u32(of.id);
-        w.u32((uint32_t)got);
-        w.u8(reason);
+        m.write(w);
         spaceext::send(K_OFFER_ACK, w);
         return;
     }
 }
 
 // ---------------- messages ----------------
-static Out* pending(uint32_t id, uint8_t kind)
+static Out* pending(uint32_t id, uint8_t kind, uint8_t to)
 {
     for (auto& o : g_out)
-        if (o.id == id && o.kind == kind)
+        if (o.id == id && o.kind == kind && o.to == to)
             return &o;
     return nullptr;
 }
@@ -656,29 +775,114 @@ static void drop(uint32_t id)
     g_out.erase(std::remove_if(g_out.begin(), g_out.end(), [id](const Out& o) { return o.id == id; }), g_out.end());
 }
 
+// back in Space: pay what is owed, once. Taken from this very game (the same cEmpire) or saved
+// since it was taken: it comes back. Else a load brought back a game from before it was taken,
+// which still has it: nothing to pay (it would be doubled).
+static bool inv_restore_pending();
+static void pay_owed()
+{
+    if (g_owed.empty() || !here() || inv_restore_pending()) // BUG-0678: not into a hold about to be replaced
+        return;
+    if (spaceext::owed_id()) { // BUG-0225: kept items wait for their game; decide again only when needed
+        double now = H->time_seconds();
+        if (!g_owed_new && g_owed_seen_epoch == spaceext::world_epoch() && now - g_owed_seen_t < 2.0)
+            return;
+        g_owed_new = false;
+        g_owed_seen_epoch = spaceext::world_epoch();
+        g_owed_seen_t = now;
+        g_owed_kept = 0;
+    }
+    auto owed = std::move(g_owed);
+    g_owed.clear();
+    void* emp = empire();
+    for (auto& w : owed) {
+        if (spaceext::owed_id()) { // BUG-0225: by the world and its save file
+            switch (spaceext::owed_action(w.o.tag)) {
+            case spacelogic::OwedAction::Pay:
+                g_owed_paid++;
+                pay_now(w.o, w.n, w.why);
+                break;
+            case spacelogic::OwedAction::Drop:
+                g_owed_dropped++;
+                H->log(M, SK_INFO, "trade: %d x %s owed from world %u (%s) dropped: that game still has it or is gone",
+                       w.n, w.o.name.c_str(), w.o.tag.epoch, w.o.tag.game.c_str());
+                break;
+            case spacelogic::OwedAction::Keep:
+                g_owed_kept++;
+                g_owed.push_back(std::move(w)); // another game: paid when that one is loaded again
+                break;
+            }
+            continue;
+        }
+        if (w.o.emp == emp || spaceext::saves() != w.o.saves) {
+            g_owed_paid++;
+            refund(w.o, w.n, w.why);
+        } else
+            g_owed_dropped++;
+    }
+    while (g_owed.size() > spacelogic::kOwedKeepMax) {
+        g_owed_dropped++;
+        g_owed.erase(g_owed.begin());
+    }
+}
+
+static void inv_message(uint8_t kind, uint8_t origin, net::Reader& r);
+static void handle(uint8_t kind, uint8_t origin, net::Reader& r);
 static void on_message(uint8_t kind, uint8_t origin, net::Reader& r)
 {
-    uint8_t to = r.u8();
-    uint32_t id = r.u32();
-    if (!r.ok() || to != spaceext::my_id())
+    net::Reader peek = r; // the header first: the rest is read by the kind's struct (wire/space_trade.h)
+    tw::Head h;
+    if (!h.read(peek) || h.to != spaceext::my_id())
         return;
+    // BUG-1034: not into the hold the restore is about to replace
+    if ((kind == K_TOOL || kind == K_SELL) && g_wait_restore_fix && inv_restore_pending() &&
+        g_waiting.hold(kind, origin, r.cur(), r.left())) {
+        H->log(M, SK_INFO, "trade: %s from %s waits for the own hold's restore (BUG-1034)", kind == K_TOOL ? "a gift" : "a sale",
+               spaceext::name_of(origin).c_str());
+        return;
+    }
+    handle(kind, origin, r);
+}
+
+// BUG-1034: the gifts and sales that waited for the restore, once it is done (or the session ended)
+static void handle_waiting()
+{
+    if (g_waiting.empty() || inv_restore_pending())
+        return;
+    for (auto& w : g_waiting.take()) {
+        net::Reader r(w.payload.data(), w.payload.size());
+        handle(w.kind, w.origin, r);
+    }
+}
+
+// decode -> check -> apply: every kind's payload is its struct of wire/space_trade.h
+static void handle(uint8_t kind, uint8_t origin, net::Reader& r)
+{
     std::string from = spaceext::name_of(origin);
     switch (kind) {
     case K_TOOL: {
-        Key k = get_key(r);
-        int n = (int)r.u32();
-        std::string nm = r.str8();
-        if (!r.ok() || n <= 0 || n > 999)
+        tw::Tool m;
+        if (!m.read(r))
             return;
+        const Key& k = m.key;
+        int n = m.n;
+        const std::string& nm = m.name;
+        uint32_t id = m.id;
+        if (g_hold == 1)
+            return; // tests: the answer is still on its way
         bool is_new = false;
         int got = spaceext::in_space() ? add_charges(k, n, is_new) : 0;
         g_gifts_got++;
         g_charges_got += got;
+        if (g_hold == 2)
+            return; // tests: kept, the answer is lost
+        tw::ToolAck a;
+        a.to = origin;
+        a.id = id;
+        a.got = got;
+        a.back = n - got;
         net::Writer w;
-        w.u8(origin);
-        w.u32(id);
-        w.u32((uint32_t)got);
-        w.u32((uint32_t)(n - got));
+        a.write(w);
         spaceext::send(K_TOOL_ACK, w);
         if (got)
             spaceext::notice(from + spaceext::tr(" gave you ", " дарит вам ") + std::to_string(got) + " x " + nm +
@@ -689,10 +893,14 @@ static void on_message(uint8_t kind, uint8_t origin, net::Reader& r)
         break;
     }
     case K_TOOL_ACK: {
-        int got = (int)r.u32(), back = (int)r.u32();
-        Out* o = pending(id, K_TOOL);
-        if (!r.ok() || !o)
+        tw::ToolAck m;
+        if (!m.read(r))
             return;
+        int got = m.got, back = m.back;
+        Out* o = pending(m.id, K_TOOL, origin);
+        if (!o)
+            return;
+        uint32_t id = m.id;
         Out copy = *o;
         drop(id);
         if (back > 0) {
@@ -704,32 +912,38 @@ static void on_message(uint8_t kind, uint8_t origin, net::Reader& r)
         break;
     }
     case K_SELL: {
-        uint32_t planet = r.u32();
-        Key k = get_key(r);
-        int n = (int)r.u32(), price = (int)r.u32();
-        std::string nm = r.str8();
-        if (!r.ok() || n <= 0 || n > 999)
+        tw::Sell m;
+        if (!m.read(r))
             return;
-        (void)planet;
-        int got = spaceext::in_space() && add_spice(k, n) ? n : 0;
+        int n = m.n, price = m.price;
+        const std::string& nm = m.name;
+        int got = spaceext::in_space() && add_spice(m.key, n) ? n : 0;
         g_bought += got;
+        if (g_hold == 2)
+            return; // tests: kept, the answer is lost
+        tw::SellAck a;
+        a.to = origin;
+        a.id = m.id;
+        a.got = got;
         net::Writer w;
-        w.u8(origin);
-        w.u32(id);
-        w.u32((uint32_t)got);
+        a.write(w);
         spaceext::send(K_SELL_ACK, w);
         spaceext::notice(got ? from + spaceext::tr(" sold ", " продал(а) вашей колонии ") + std::to_string(n) + " " + nm +
                                    spaceext::tr(" to your colony: it is in your cargo hold (the galaxy paid $",
                                                 ": они в вашем трюме (галактика заплатила $") +
-                                   std::to_string(n * price) + ")"
+                                   std::to_string((long long)n * price) + ")"
                              : from + spaceext::tr(" wanted to sell you spice: no free cargo slot",
                                                    " хотел(а) продать вам специи: в трюме нет места"));
         break;
     }
     case K_SELL_ACK: {
-        int got = (int)r.u32();
-        Out* o = pending(id, K_SELL);
-        if (!r.ok() || !o)
+        tw::SellAck m;
+        if (!m.read(r))
+            return;
+        int got = m.got;
+        uint32_t id = m.id;
+        Out* o = pending(id, K_SELL, origin);
+        if (!o)
             return;
         Out copy = *o;
         drop(id);
@@ -753,23 +967,35 @@ static void on_message(uint8_t kind, uint8_t origin, net::Reader& r)
         break;
     }
     case K_OFFER: {
-        uint32_t planet = r.u32();
-        Key k = get_key(r);
-        int n = (int)r.u32(), price = (int)r.u32();
-        std::string nm = r.str8();
-        if (!r.ok() || n <= 0 || n > 999 || price < 0)
+        tw::Offer m;
+        if (!m.read(r))
             return;
+        uint32_t id = m.id, planet = m.planet;
+        const Key& k = m.key;
+        int n = m.n, price = m.price;
+        const std::string& nm = m.name;
+        int sum = 0;
+        net::money_total(n, price, sum); // (checked by read)
+        for (auto& of : g_offers)
+            if (of.id == id && of.from == origin)
+                return; // this offer again
+        if (g_offers.size() >= kMaxOffers)
+            return; // the page shows a few; an answer frees a place
         g_offers.push_back({id, origin, k, n, price, planet, nm, H->time_seconds()});
         g_offers_got++;
         spaceext::notice(from + spaceext::tr(" offers ", " предлагает ") + std::to_string(n) + " " + nm + spaceext::tr(" for $", " за $") +
-                         std::to_string(n * price) + spaceext::tr(": accept on the Space page (F9)", ": принять на странице Космос (F9)"));
+                         std::to_string(sum) + spaceext::tr(": accept on the Space page (F9)", ": принять на странице Космос (F9)"));
         break;
     }
     case K_OFFER_ACK: {
-        int got = (int)r.u32();
-        uint8_t reason = r.u8();
-        Out* o = pending(id, K_OFFER);
-        if (!r.ok() || !o)
+        tw::OfferAck m;
+        if (!m.read(r))
+            return;
+        int got = m.got;
+        uint8_t reason = m.reason;
+        uint32_t id = m.id;
+        Out* o = pending(id, K_OFFER, origin);
+        if (!o)
             return;
         Out copy = *o;
         drop(id);
@@ -789,19 +1015,699 @@ static void on_message(uint8_t kind, uint8_t origin, net::Reader& r)
             refund(copy, copy.n - got, from + ": " + spaceext::tr(en[std::min<int>(reason, 3)], ru[std::min<int>(reason, 3)]));
         break;
     }
-    case K_OFFER_CANCEL:
-        answer_offer(id, false);
+    case K_OFFER_CANCEL: {
+        tw::OfferCancel m;
+        if (m.read(r))
+            answer_offer(m.id, false, origin);
+        break;
+    }
+    case K_INV:
+    case K_INV_KEPT:
+    case K_INV_DONE:
+        inv_message(kind, origin, r);
         break;
     default:
         break;
     }
 }
 
+// ---------------- own inventory across a rejoin or a reload (BUG-0678) ----------------
+// Every player flies in a copy of the host's save: the cargo hold (tools and their charges, spice,
+// other cargo, the cargo slots) is the game's cPlayerInventory (cSimulatorSpaceGame +0x40,
+// docs/re/space.md 7.7), saved with the world. A guest that leaves and joins again (or loads the
+// host's world again in a session) loads the host's share save, so its own hold was replaced by the
+// host's (Discord 2026-11-07: "their items disappear and the host's items appear").
+// The guest sends its hold to the host whenever it changes (K_INV; the first one of every Space world
+// it loaded from the host is marked fresh). The host keeps the last one per player key (space_kept.h) for the Space
+// world it plays (world_epoch, memory only, like the kept colonies of space_map.cpp, BUG-0195); a fresh
+// hold of a player it kept one for is the host's copy: the host sends the kept one back (K_INV_KEPT),
+// takes no hold of that player until the answer (K_INV_DONE, resent after 10 s), and the guest makes its
+// game's hold that one: the host's items it never had leave, its own come back (AddItemByKey for tools,
+// the tool's charges, CreateTradingObject for spice, the stack count of other cargo, AddCargoSlots).
+// A first join has nothing kept: the guest starts with the save's hold, as before.
+// `coop.fix space.keep_items off`: nothing comes back, the rejoined guest has the host's hold (0.7.9).
+static bool g_keep_items_fix = true;
+COOP_FIX("space.keep_items", "BUG-0678", g_keep_items_fix, "space: a guest's own cargo hold comes back when it rejoins or reloads (the host keeps it)");
+// BUG-0816: all of that only while the guest plays the host's Space save. A connected guest that loads a Space save of
+// its own (own_world::space_other) sent that save's hold as a fresh one, the host answered with the co-op hold it kept
+// (K_INV_KEPT) and the guest's game replaced its own save's tools, spice and cargo with it (and the host kept the
+// own save's hold as the guest's co-op one). Off: as 0.7.12.
+static bool g_inv_own_save_fix = true;
+COOP_FIX("space.hold_own_save", "BUG-0816", g_inv_own_save_fix, "space: a guest's own Space save keeps its own cargo hold");
+static uint32_t g_inv_own_held;
+static bool inv_own_save() { return g_inv_own_save_fix && own_world::space_other(); }
+
+using InvItem = tw::InvItem; // a cargo hold and its bytes: wire/space_trade.h (C6)
+using Inv = tw::Inv;
+
+static bool read_inv(Inv& out)
+{
+    void* inv = inventory();
+    if (!inv)
+        return false;
+    out = Inv{};
+    out.slots = vcall<int>(inv, 0x88 / 4);
+    int n = vcall<int>(inv, 0x5C / 4);
+    for (int i = 0; i < n && i < 256; i++) {
+        void* it = vcall<void*>(inv, 0x60 / 4, i);
+        if (!it || F<int>(it, 0x14) == 3)
+            continue;
+        InvItem x;
+        x.type = (uint8_t)F<int>(it, 0x14);
+        memcpy(x.key.v, vcall<const uint32_t*>(it, 0x18 / 4), 12);
+        x.count = F<int>(it, 0x10);
+        if (void* t = as_tool(it))
+            x.ammo = (F<uint32_t>(t, kFlags) & 0x20) ? F<int>(t, kAmmo) : -1;
+        out.items.push_back(x);
+    }
+    return true;
+}
+
+using tw::put_inv;
+using tw::get_inv;
+
+static std::vector<uint8_t> inv_bytes(const Inv& v)
+{
+    net::Writer w;
+    put_inv(w, v);
+    return w.data;
+}
+
+static const InvItem* find_item(const Inv& v, uint8_t type, const Key& k)
+{
+    for (auto& x : v.items)
+        if (x.type == type && x.key == k)
+            return &x;
+    return nullptr;
+}
+
+// BUG-0679 (docs/re/space.md#space-kept-hold-limits): the limits of space.keep_items.
+// * space.keep_items_slots: a hold with fewer cargo slots than the host's copy had kept the host's extra (empty) slots;
+//   now the free ones beyond the own count go (the game's RemoveItem, vt+0x78: a free slot item points at nothing).
+// * space.keep_items_cargo: plant, animal and artifact cargo (types 0, 1/6, 5) the host's copy lacked could not be made
+//   again; now the game's own factories make it (the ones its mission rewards use, 0xC53500 GOG 2024): animals
+//   0xAC0C00 (by species key, type 6 with the flag), plants the plant cargo cache 0xB90560 + the template's Clone (vt
+//   +0x24), artifacts 0xC87A60 (by key), then AddItem like spice.
+// * space.keep_items_local: the kept hold lived in the host's memory only (a host restart, or another world loaded,
+//   lost it) and what changed in the guest's hold while it was away never reached it. Now the guest also keeps its
+//   own hold on its disk per host world (host name + planet file: <AppData>\Spore\SporeCoop\holds\<crc>.txt), written
+//   whenever it changes in a world whose hold is its own (also after the session ended, as long as that world is
+//   open), and a world loaded from the host again gets that hold at once (the host's kept one is then not needed).
+static bool g_keep_slots_fix = true, g_keep_cargo_fix = true, g_keep_local_fix = true;
+COOP_FIX("space.keep_items_slots", "BUG-0679", g_keep_slots_fix,
+         "space: a guest's kept hold has its own number of cargo slots again, not the host's extra ones");
+COOP_FIX("space.keep_items_cargo", "BUG-0679", g_keep_cargo_fix,
+         "space: a guest's kept plant, animal and artifact cargo comes back too (the game's own factories)");
+COOP_FIX("space.keep_items_local", "BUG-0679", g_keep_local_fix,
+         "space: a guest keeps its own hold on its disk per host world (host restarts, changes while away)");
+static uintptr_t a_AnimalCargo, a_AnimalMgr, a_PlantMgr, a_PlantFind, a_ArtifactCargo;
+static uint32_t g_inv_slots_removed, g_inv_cargo_made;
+
+// a plant / animal / artifact cargo item made by the game's factory (nullptr: no factory, no such species)
+static void* make_cargo(uint8_t type, const Key& k, int n)
+{
+    void* out = nullptr;
+    if ((type == 1 || type == 6) && a_AnimalCargo && a_AnimalMgr) {
+        void* mgr = cdecl_call<void*>(a_AnimalMgr);
+        thiscall<void>(a_AnimalCargo, mgr, &out, k.v, n, type == 6);
+    } else if (type == 0 && a_PlantMgr && a_PlantFind) {
+        void* mgr = cdecl_call<void*>(a_PlantMgr);
+        void* tpl = mgr ? thiscall<void*>(a_PlantFind, mgr, k.v) : nullptr;
+        if (tpl)
+            vcall<void>(tpl, 0x24 / 4, &out); // Clone
+    } else if (type == 5 && a_ArtifactCargo)
+        cdecl_call<void>(a_ArtifactCargo, &out, k.v[0], k.v[1], k.v[2]);
+    if (out && (F<int>(out, 0x14) != type || IsBadReadPtr(out, 0x7C))) {
+        H->log(M, SK_WARN, "trade: own hold: the factory made type %d for a type %d cargo", F<int>(out, 0x14), type);
+        vcall<void>(out, 0x08 / 4);
+        return nullptr;
+    }
+    if (out)
+        F<int>(out, 0x10) = n;
+    return out;
+}
+
+static bool add_cargo(uint8_t type, const Key& k, int n)
+{
+    void* inv = inventory();
+    void* it = inv && n > 0 ? make_cargo(type, k, n) : nullptr;
+    if (!it)
+        return false;
+    bool ok = vcall<bool>(inv, 0x80 / 4, it, (void*)nullptr, true); // AddItem
+    vcall<void>(it, 0x08 / 4);                                       // Release
+    g_inv_cargo_made += ok;
+    return ok;
+}
+
+// BUG-0826: the items a restore could not make (a plant or animal the game's factory does not know here, spice
+// without a free slot) were gone for good: the record on disk and the host's kept copy took the reduced hold right
+// after. Now they are kept for the Space world of that restore (memory) and added to what this game records and
+// sends as its hold, so the next restore (a rejoin, another load) tries them again. `coop.fix space.keep_items_missed
+// off`: the reduced hold is recorded (0.7.12).
+static bool g_keep_missed_fix = true;
+COOP_FIX("space.keep_items_missed", "BUG-0826", g_keep_missed_fix,
+         "space: cargo a rejoin could not put back stays in the guest's kept hold for the next try");
+static std::vector<InvItem> g_inv_missed;
+static uint32_t g_inv_missed_epoch, g_inv_missed_kept;
+
+// make the game's hold `want`; returns how many items could not be made as they were (logged); `missed` gets them
+static uint32_t g_inv_restored, g_inv_failed, g_inv_removed;
+static int apply_inv(const Inv& want, std::vector<InvItem>* missed = nullptr)
+{
+    void* inv = inventory();
+    if (!inv)
+        return -1;
+    int failed = 0, removed = 0;
+    // 1. what is not mine leaves (the host's items), what is more than mine shrinks: the game's TakeItem
+    for (int guard = 0; guard < 256; guard++) {
+        int n = vcall<int>(inv, 0x5C / 4), hit = -1, take = -1;
+        for (int i = 0; i < n && i < 256 && hit < 0; i++) {
+            void* it = vcall<void*>(inv, 0x60 / 4, i);
+            if (!it || F<int>(it, 0x14) == 3)
+                continue;
+            Key k;
+            memcpy(k.v, vcall<const uint32_t*>(it, 0x18 / 4), 12);
+            uint8_t type = (uint8_t)F<int>(it, 0x14);
+            const InvItem* w = find_item(want, type, k);
+            if (!w)
+                hit = i, take = -1; // the whole item
+            else if (type != 2 && F<int>(it, 0x10) > w->count && w->count > 0)
+                hit = i, take = F<int>(it, 0x10) - w->count;
+        }
+        if (hit < 0)
+            break;
+        void* out = nullptr;
+        if (!vcall<bool>(inv, 0x7C / 4, hit, &out, take)) { // TakeItem
+            failed++;
+            H->log(M, SK_WARN, "trade: own hold: item %d not taken out", hit);
+            break;
+        }
+        if (out)
+            vcall<void>(out, 0x08 / 4); // Release
+        removed++;
+    }
+    // 2. my cargo slots (bought upgrades): AddCargoSlots(n) vt+0x94 (0xFF39E0, ret 4); never fewer
+    int slots = vcall<int>(inv, 0x88 / 4);
+    if (want.slots > slots && want.slots - slots <= 64)
+        vcall<void>(inv, 0x94 / 4, want.slots - slots);
+    // BUG-0679: fewer: the free slots beyond mine go (the host's items left in step 1, so theirs are free)
+    for (int guard = 0; g_keep_slots_fix && want.slots >= 0 && guard < 64 && vcall<int>(inv, 0x88 / 4) > want.slots; guard++) {
+        void* free_slot = nullptr;
+        int n = vcall<int>(inv, 0x5C / 4);
+        for (int i = n - 1; i >= 0 && !free_slot; i--) {
+            void* it = vcall<void*>(inv, 0x60 / 4, i);
+            if (it && F<int>(it, 0x14) == 3 && vcall<bool>(inv, 0x98 / 4, it)) // IsSlotFree
+                free_slot = it;
+        }
+        if (!free_slot || !vcall<bool>(inv, 0x78 / 4, free_slot)) // RemoveItem
+            break;
+        g_inv_slots_removed++;
+    }
+    // 3. mine comes back: tools first (an upgrade needs its base tool: a few passes), then cargo
+    std::vector<const InvItem*> todo;
+    for (auto& x : want.items)
+        todo.push_back(&x);
+    for (int pass = 0; pass < 4 && !todo.empty(); pass++) {
+        std::vector<const InvItem*> again;
+        for (const InvItem* x : todo) {
+            int i = vcall<int>(inv, 0x64 / 4, (int)x->type, x->key.v); // FindItem
+            void* it = i >= 0 ? vcall<void*>(inv, 0x60 / 4, i) : nullptr;
+            if (x->type == 2) {
+                if (!it && a_AddItemByKey) {
+                    thiscall<void>(a_AddItemByKey, inv, x->key.v);
+                    i = vcall<int>(inv, 0x64 / 4, 2, x->key.v);
+                    it = i >= 0 ? vcall<void*>(inv, 0x60 / 4, i) : nullptr;
+                }
+                void* t = as_tool(it);
+                if (!t) {
+                    again.push_back(x);
+                    continue;
+                }
+                if (x->ammo >= 0 && (F<uint32_t>(t, kFlags) & 0x20))
+                    set_charges(t, x->ammo);
+                continue;
+            }
+            int have = it ? F<int>(it, 0x10) : 0;
+            if (have >= x->count)
+                continue;
+            if (it && x->type != 4) {
+                F<int>(it, 0x10) = x->count; // a stack of mine: its count (no new slot needed)
+                continue;
+            }
+            if (x->type == 4 && add_spice(x->key, x->count - have))
+                continue;
+            if (x->type != 4 && g_keep_cargo_fix && add_cargo(x->type, x->key, x->count - have)) // BUG-0679
+                continue;
+            again.push_back(x);
+        }
+        todo = std::move(again);
+    }
+    for (const InvItem* x : todo) {
+        failed++;
+        if (missed)
+            missed->push_back(*x);
+        H->log(M, SK_WARN, "trade: own hold: %08X (type %d x%d) could not come back", x->key.v[0], x->type, x->count);
+    }
+    refresh_palettes();
+    g_inv_removed += removed;
+    H->log(M, SK_INFO, "trade: own hold back: %u items, %d of the host's out, %d not restored (BUG-0678)",
+           (unsigned)want.items.size(), removed, failed);
+    return failed;
+}
+
+static uint32_t g_inv_holds, g_inv_sent_back, g_inv_done;
+static spacekept::KeptStore<Inv> g_store; // host: player key (spaceext::kept_key, BUG-1107) -> its own hold (C5)
+// guest: the Space world of its join, the fresh / restored / "nothing kept" worlds (C5: space_kept.h)
+static spacekept::RestoreWindow g_win;
+static uint32_t g_inv_sent;
+static std::vector<uint8_t> g_inv_last;
+static double g_inv_next;
+
+// ---- BUG-0679: the guest's own record of its hold, per host world, on its disk ----
+static std::string g_rec_key;        // the host world (host name + planet file) of the record below
+static uint32_t g_rec_epoch;         // the Space world whose hold is this player's own (written to the record)
+static std::vector<uint8_t> g_rec_last;
+static double g_rec_next, g_inv_epoch_t;
+static uint32_t g_inv_epoch_seen, g_rec_written, g_rec_used;
+
+static std::wstring rec_dir()
+{
+    wchar_t p[MAX_PATH];
+    if (FAILED(SHGetFolderPathW(nullptr, CSIDL_APPDATA, nullptr, 0, p))) // profile-aware (hooked)
+        return L"";
+    std::wstring d = std::wstring(p) + L"\\Spore\\SporeCoop";
+    CreateDirectoryW(d.c_str(), nullptr);
+    d += L"\\holds";
+    CreateDirectoryW(d.c_str(), nullptr);
+    return d;
+}
+
+// the host world this guest plays now: the host's name and the planet file (the same on every machine: the share
+// keeps the file name, slotfs.cpp's marker); "" when unknown
+static std::string rec_key_now()
+{
+    std::string host = spaceext::name_of(0), planet = modes::current_world_name();
+    if (host.empty() || host == "?" || planet.size() < 5 || planet.compare(planet.size() - 4, 4, ".spo") != 0)
+        return "";
+    for (auto& c : planet)
+        c = (char)tolower((unsigned char)c);
+    return host + "|" + planet;
+}
+
+static std::wstring rec_file(const std::string& key)
+{
+    std::wstring d = rec_dir();
+    if (d.empty() || key.empty())
+        return L"";
+    char n[16];
+    snprintf(n, sizeof n, "%08X", net::crc32_update(0, (const uint8_t*)key.data(), key.size()));
+    return d + L"\\" + std::wstring(n, n + strlen(n)) + L".txt";
+}
+
+static void rec_write(const std::string& key, const Inv& v)
+{
+    std::wstring f = rec_file(key);
+    FILE* fp = f.empty() ? nullptr : _wfopen(f.c_str(), L"w");
+    if (!fp)
+        return;
+    fprintf(fp, "world %s\nslots %d\n", key.c_str(), v.slots);
+    for (auto& x : v.items)
+        fprintf(fp, "item %d %08X %08X %08X %d %d\n", x.type, x.key.v[0], x.key.v[1], x.key.v[2], x.count, x.ammo);
+    fclose(fp);
+    g_rec_written++;
+}
+
+static bool rec_read(const std::string& key, Inv& v)
+{
+    std::wstring f = rec_file(key);
+    FILE* fp = f.empty() ? nullptr : _wfopen(f.c_str(), L"r");
+    if (!fp)
+        return false;
+    v = Inv{};
+    v.slots = -1;
+    bool same = false;
+    char line[512];
+    while (fgets(line, sizeof line, fp)) {
+        std::string l(line);
+        while (!l.empty() && (l.back() == '\n' || l.back() == '\r'))
+            l.pop_back();
+        InvItem x;
+        int type = 0;
+        if (l.rfind("world ", 0) == 0)
+            same = l.substr(6) == key; // (a crc collision of two worlds is no record)
+        else if (sscanf(l.c_str(), "slots %d", &v.slots) == 1) {
+        } else if (sscanf(l.c_str(), "item %d %x %x %x %d %d", &type, &x.key.v[0], &x.key.v[1], &x.key.v[2], &x.count,
+                          &x.ammo) == 6 && type >= 0 && type < 16 && x.count >= 0 && x.count <= 100000 && v.items.size() < 250) {
+            x.type = (uint8_t)type;
+            v.items.push_back(x);
+        }
+    }
+    fclose(fp);
+    return same && v.slots >= 0;
+}
+
+static void merge_missed(Inv& v); // BUG-0826
+// the hold of a world whose hold is this player's own goes to the record when it changes (at most once a second;
+// also while not connected, as long as that world is open: a refund paid at the session end, items picked up after)
+static void rec_tick(double now)
+{
+    if (!g_keep_local_fix || !g_keep_items_fix || g_rec_key.empty() || !spaceext::in_space() ||
+        spaceext::world_epoch() != g_rec_epoch || now < g_rec_next)
+        return;
+    g_rec_next = now + 1.0;
+    Inv v;
+    if (!read_inv(v))
+        return;
+    merge_missed(v); // BUG-0826
+    std::vector<uint8_t> b = inv_bytes(v);
+    if (b == g_rec_last)
+        return;
+    g_rec_last = std::move(b);
+    rec_write(g_rec_key, v);
+}
+
+// BUG-0826: a restore of world `e` that left items out: they stay in what this game records and sends as its hold
+static void note_missed(uint32_t e, std::vector<InvItem>&& missed)
+{
+    if (!g_keep_missed_fix)
+        return;
+    g_inv_missed = std::move(missed);
+    g_inv_missed_epoch = e;
+    if (!g_inv_missed.empty())
+        H->log(M, SK_INFO, "trade: %u items of the own hold could not come back: kept in the record for the next try (BUG-0826)",
+               (unsigned)g_inv_missed.size());
+}
+
+static void merge_missed(Inv& v)
+{
+    if (!g_keep_missed_fix || g_inv_missed.empty() || g_inv_missed_epoch != spaceext::world_epoch())
+        return;
+    for (auto& x : g_inv_missed) {
+        bool found = false;
+        for (auto& y : v.items)
+            if (y.type == x.type && y.key == x.key) {
+                found = true;
+                if (y.count < x.count)
+                    y.count = x.count;
+                if (y.ammo < x.ammo)
+                    y.ammo = x.ammo;
+            }
+        if (!found && v.items.size() < 250)
+            v.items.push_back(x);
+    }
+    g_inv_missed_kept++;
+}
+
+// this world's hold is mine from now on (restored, or nothing was kept: the save's)
+static void rec_own(uint32_t e)
+{
+    std::string k = rec_key_now();
+    if (k.empty())
+        return;
+    g_rec_key = k;
+    g_rec_epoch = e;
+    g_rec_last.clear();
+    g_rec_next = 0;
+}
+
+// guest: a world loaded from the host whose hold may still be replaced by the kept one (no answer yet to its
+// fresh hold); at most 20 s after it went (a host without the fix never answers)
+static bool inv_restore_pending()
+{
+    if (!g_keep_items_fix || !spaceext::connected() || spaceext::is_host() || !spaceext::in_space())
+        return false;
+    uint32_t e = spaceext::world_epoch();
+    if (!g_win.open(e))
+        return false;
+    if (g_restore_hold)
+        return true; // tests (BUG-1034): a slow restore
+    return g_win.pending(e, H->time_seconds(), 20.0);
+}
+
+// the host's side: space_kept.h (C5)
+static void send_kept_inv(spacekept::Entry<Inv>& k)
+{
+    tw::InvKept m;
+    m.to = k.id;
+    m.id = g_store.begin(k, H->time_seconds());
+    m.have = true;
+    m.inv = k.value;
+    net::Writer w;
+    m.write(w);
+    spaceext::send(K_INV_KEPT, w);
+    g_inv_sent_back++;
+    H->log(M, SK_INFO, "trade: the own hold of %s (%u items) sent back to it (BUG-0678)", spaceext::name_of(k.id).c_str(),
+           (unsigned)k.value.items.size());
+}
+
+static void inv_tick(double now)
+{
+    if (!spaceext::connected()) {
+        rec_tick(now); // BUG-0679: the own hold while away
+        return;
+    }
+    if (spaceext::is_host()) {
+        g_store.world(spaceext::world_epoch()); // another Space world: the holds kept were of the old one
+        g_store.tick(now, partner_here, [](spacekept::Entry<Inv>& k) { send_kept_inv(k); }); // left; no answer: again
+        return;
+    }
+    g_win.joined(spaceext::in_space(), spaceext::world_epoch());
+    if (inv_own_save()) { // BUG-0816: a Space save of the guest's own: its hold is nobody else's business
+        g_inv_own_held++;
+        return;
+    }
+    if (g_inv_own_save_fix && spaceext::in_space() && !modes::current_world())
+        return; // BUG-0816: which save this is is not known yet (its hold goes once it is)
+    // only the hold of a world loaded from the host since the join (the first one may be the guest's own world)
+    uint32_t e = spaceext::world_epoch();
+    if (!spaceext::in_space() || !e || e == g_win.join || now < g_inv_next)
+        return;
+    g_inv_next = now + 1.0;
+    Inv v;
+    if (!read_inv(v))
+        return;
+    bool fresh = g_win.is_fresh(e);
+    if (e != g_inv_epoch_seen)
+        g_inv_epoch_seen = e, g_inv_epoch_t = now;
+    if (fresh && g_keep_local_fix && g_keep_items_fix && e != g_win.applied && !g_restore_hold) {
+        // BUG-0679: this player's own record of the host world: its hold at once (after 2 s of the world, so the
+        // game's load has settled), the host's kept one is not needed; the hold goes to the host as not fresh
+        std::string key = rec_key_now();
+        Inv own;
+        if (!key.empty() && rec_read(key, own)) {
+            if (now - g_inv_epoch_t < 2.0)
+                return;
+            std::vector<InvItem> missed;
+            int failed = apply_inv(own, &missed);
+            if (failed >= 0) {
+                note_missed(e, std::move(missed)); // BUG-0826
+                g_win.applied = e;
+                g_inv_restored++;
+                g_rec_used++;
+                g_inv_failed += (uint32_t)failed;
+                g_win.fresh = e;
+                rec_own(e);
+                spaceext::notice(spaceext::tr("Your cargo hold is back.", "Ваш трюм восстановлен."));
+                H->log(M, SK_INFO, "trade: own hold from this game's record of %s (BUG-0679)", key.c_str());
+                if (!read_inv(v))
+                    return;
+                fresh = false;
+            }
+        }
+    }
+    rec_tick(now);
+    if (!fresh)
+        merge_missed(v); // BUG-0826 (a fresh hold is the host's copy: as it is)
+    std::vector<uint8_t> b = inv_bytes(v);
+    if (!fresh && b == g_inv_last)
+        return;
+    g_inv_last = std::move(b);
+    g_win.sent(e, fresh, now);
+    tw::InvMsg m;
+    m.to = 0;
+    m.id = ++g_inv_sent;
+    m.fresh = fresh;
+    m.inv = std::move(v);
+    net::Writer w;
+    m.write(w);
+    spaceext::send(K_INV, w);
+}
+
+// the host's side of K_INV / K_INV_DONE
+static void inv_host(uint8_t kind, uint8_t origin, net::Reader& r)
+{
+    std::string key = spaceext::kept_key(origin);
+    if (key.empty() || key == "?")
+        return;
+    if (kind == K_INV_DONE) {
+        tw::InvDone d;
+        if (d.read(r) && g_store.done(origin, d.id, true))
+            g_inv_done++;
+        return;
+    }
+    tw::InvMsg m;
+    if (!m.read(r))
+        return;
+    auto& k = g_store.bind(key, origin, spaceext::name_of(origin), false); // its first hold since it joined: bound
+    if (m.fresh && k.have && g_keep_items_fix) { // the host's copy: its own goes back
+        send_kept_inv(k);
+        return;
+    }
+    if (m.fresh) { // nothing kept (a first join): the guest keeps the save's hold, no restore to wait for
+        tw::InvKept none;
+        none.to = origin;
+        none.id = 0;
+        none.have = false;
+        net::Writer w;
+        none.write(w);
+        spaceext::send(K_INV_KEPT, w);
+    }
+    if (g_store.keep(k, std::move(m.inv))) // not while restoring: the old copy, sent before it got its own back
+        g_inv_holds++;
+}
+
+static void inv_message(uint8_t kind, uint8_t origin, net::Reader& r)
+{
+    if (kind == K_INV || kind == K_INV_DONE) {
+        if (spaceext::is_host())
+            inv_host(kind, origin, r);
+        return;
+    }
+    // K_INV_KEPT, for me
+    tw::InvKept m;
+    if (spaceext::is_host() || !m.read(r))
+        return;
+    uint32_t id = m.id;
+    uint32_t e = spaceext::world_epoch();
+    if (!m.have) { // nothing kept for me: the hold of this world is mine
+        if (e == g_win.fresh) {
+            g_win.none = e;
+            if (e != g_win.applied)
+                rec_own(e); // BUG-0679
+        }
+        return;
+    }
+    if (g_restore_hold)
+        return; // tests (BUG-1034): not taken now, the host sends it again after 10 s
+    const Inv& v = m.inv;
+    int failed = 0;
+    if (inv_own_save()) // BUG-0816: not applied to a Space save of our own (answered as done: the host stops resending)
+        g_inv_own_held++;
+    else if (g_keep_items_fix && spaceext::in_space() && inventory() && g_win.may_apply(e)) {
+        std::vector<InvItem> missed;
+        failed = apply_inv(v, &missed);
+        if (failed < 0)
+            return; // no hold now: the host sends it again
+        note_missed(e, std::move(missed)); // BUG-0826
+        g_win.applied = e;
+        g_inv_restored++;
+        g_inv_failed += (uint32_t)failed;
+        rec_own(e); // BUG-0679
+        g_inv_last.clear(); // the hold now, at once
+        g_inv_next = 0;
+        spaceext::notice(spaceext::tr("Your cargo hold is back.", "Ваш трюм восстановлен."));
+    } else if (e != g_win.applied && g_keep_items_fix)
+        return; // not in this world yet: the host sends it again
+    tw::InvDone d;
+    d.to = 0;
+    d.id = id;
+    d.restored = 0;
+    d.failed = (uint16_t)failed;
+    net::Writer w;
+    d.write(w);
+    spaceext::send(K_INV_DONE, w);
+    (void)origin;
+}
+
+static void inv_session_end()
+{
+    g_win.session_end();
+    g_inv_last.clear();
+    g_inv_next = 0;
+    g_store.session_end();
+}
+
+static std::string inv_text(const Inv& v)
+{
+    std::string s;
+    char b[160];
+    snprintf(b, sizeof b, "slots %d items %u\n", v.slots, (unsigned)v.items.size());
+    s += b;
+    for (auto& x : v.items) {
+        snprintf(b, sizeof b, "item type=%d key=%08X %08X %08X count=%d ammo=%d\n", x.type, x.key.v[0], x.key.v[1],
+                 x.key.v[2], x.count, x.ammo);
+        s += b;
+    }
+    return s;
+}
+
+static std::string inv_status()
+{
+    std::string s;
+    char b[480];
+    snprintf(b, sizeof b,
+             "keep_items: fix=%d kept=%u holds=%u sent_back=%u done=%u restored=%u failed=%u removed=%u join_epoch=%u "
+             "applied_epoch=%u world=%u slots_removed=%u cargo_made=%u record_written=%u record_used=%u record_world=%u own_save_held=%u\n",
+             (int)g_keep_items_fix, (unsigned)g_store.size(), g_inv_holds, g_inv_sent_back, g_inv_done, g_inv_restored,
+             g_inv_failed, g_inv_removed, g_win.join, g_win.applied, spaceext::world_epoch(), g_inv_slots_removed,
+             g_inv_cargo_made, g_rec_written, g_rec_used, g_rec_epoch, g_inv_own_held);
+    s += b;
+    for (auto& [n, k] : g_store.entries()) {
+        snprintf(b, sizeof b, "  kept '%s' id=%d have=%d restoring=%d items=%u slots=%d\n", k.name.c_str(),
+                 k.id == spacekept::kNoId ? -1 : k.id, (int)k.have, (int)k.restoring, (unsigned)k.value.items.size(), k.value.slots);
+        s += b;
+    }
+    return s;
+}
+
 // ---------------- frame ----------------
+// BUG-0832: owed sale payments, in the first Space frame of the game they were made in (also after the session ended)
+static void pay_owed_sales()
+{
+    if (g_owed_sales.empty() || !here() || inv_restore_pending())
+        return;
+    auto v = std::move(g_owed_sales);
+    g_owed_sales.clear();
+    for (auto& o : v) {
+        spacelogic::OwedAction a = spaceext::owed_id() ? spaceext::owed_action(o.tag)
+                                   : o.tag.epoch == spaceext::world_epoch() ? spacelogic::OwedAction::Pay
+                                                                             : spacelogic::OwedAction::Drop;
+        if (a == spacelogic::OwedAction::Keep) {
+            g_owed_sales.push_back(o); // another game: paid when that one is loaded again
+            continue;
+        }
+        if (a == spacelogic::OwedAction::Drop) {
+            g_sales_owed_dropped++;
+            H->log(M, SK_INFO, "trade: the payment for %d x %s owed from world %u dropped", o.n, o.name.c_str(), o.tag.epoch);
+            continue;
+        }
+        add_money(o.total);
+        g_sales++;
+        g_sold += o.n;
+        g_earned += o.total;
+        g_sales_owed_paid++;
+        spaceext::notice(spaceext::tr("Sold ", "Продано: ") + std::to_string(o.n) + " " + o.name + ": +$" + std::to_string(o.total));
+    }
+    while (g_owed_sales.size() > spacelogic::kOwedKeepMax) {
+        g_sales_owed_dropped++;
+        g_owed_sales.erase(g_owed_sales.begin());
+    }
+}
+
 static void tick(double now)
 {
+    inv_tick(now);
+    if (g_refund_fix)
+        pay_owed(); // also after the session ended
+    pay_owed_sales(); // BUG-0832
+    handle_waiting(); // BUG-1034 (also after the session ended: the sender counts them as delivered)
     if (!spaceext::connected())
         return;
+    for (auto& o : g_out) // BUG-0542: did the partner's side get it?
+        if (o.rel_marked && !o.delivered) {
+            net::Connection* c = conn_for(o.to);
+            o.delivered = c && c->rel_acked(o.rel_lo, o.rel_hi);
+        }
     // a partner who left before answering: what was on its way comes back
     for (size_t i = 0; i < g_out.size();) {
         if (partner_here(g_out[i].to)) {
@@ -826,16 +1732,37 @@ static void tick(double now)
     }
 }
 
+// lifecycle-exempt: a Space feature (space_ext.h), run by spaceext::session_end_all from the spacecoop.session hook
 static void on_session_end()
 {
     // nobody can answer any more: what was on its way comes back (it may have arrived: we can't know)
     auto out = g_out;
     g_out.clear();
-    if (spaceext::in_space())
-        for (auto& o : out)
-            refund(o, o.n, "");
+    for (auto& o : out) {
+        // BUG-0542: the partner's side had it: a gift or a sale was kept there at once (what did not
+        // fit would have come back with the answer that is now lost); only an offer waits for a click
+        if (g_delivered_fix && o.delivered && o.kind != K_OFFER) {
+            g_kept_at_end++;
+            H->log(M, SK_INFO, "trade: %d x %s reached %s before the session ended: not given back", o.n, o.name.c_str(),
+                   spaceext::name_of(o.to).c_str());
+            if (o.kind == K_SELL && here()) { // the sale went through: the export bonus as with the answer
+                int total = o.n * o.price;
+                add_money(total);
+                g_sales++;
+                g_sold += o.n;
+                g_earned += total;
+            } else if (o.kind == K_SELL && g_sale_owed_fix) { // BUG-0832: paid back in Space
+                g_owed_sales.push_back({o.n * o.price, o.n, o.name, o.tag});
+                g_sales_owed++;
+            }
+            continue;
+        }
+        if (g_refund_fix || spaceext::in_space())
+            refund(o, o.n, ""); // outside Space: owed until we are back
+    }
     g_offers.clear();
     g_sel_to = 0xFF;
+    inv_session_end();
 }
 
 // ---------------- the Space page ----------------
@@ -882,9 +1809,11 @@ static std::vector<spaceext::Row> rows()
                     for (auto& x : g_out)
                         if (x.id == id)
                             x.cancel_sent = true;
+                    tw::OfferCancel m;
+                    m.to = to;
+                    m.id = id;
                     net::Writer w;
-                    w.u8(to);
-                    w.u32(id);
+                    m.write(w);
                     spaceext::send(K_OFFER_CANCEL, w);
                 };
             }
@@ -966,13 +1895,18 @@ static std::vector<spaceext::Row> rows()
 
 static std::string status()
 {
-    char b[400];
+    char b[720];
     snprintf(b, sizeof b,
              "trade: gifts_sent=%u gifts_got=%u charges_sent=%u charges_got=%u charges_back=%u sales=%u sold=%u "
-             "bought=%u earned=%lld paid=%lld offers_sent=%u offers_got=%u refunds=%u pending=%u offers=%u\n",
+             "bought=%u earned=%lld paid=%lld offers_sent=%u offers_got=%u refunds=%u pending=%u offers=%u owed=%u "
+             "owed_paid=%u owed_dropped=%u owed_kept=%u world=%u delivered=%u kept_at_end=%u sales_owed=%u/%u/%u/%u "
+             "waiting=%u waited=%u offer_waits=%u restore_pending=%d\n",
              g_gifts_sent, g_gifts_got, g_charges_sent, g_charges_got, g_charges_back, g_sales, g_sold, g_bought,
              (long long)g_earned, (long long)g_paid, g_offers_sent, g_offers_got, g_refunds, (unsigned)g_out.size(),
-             (unsigned)g_offers.size());
+             (unsigned)g_offers.size(), (unsigned)g_owed.size(), g_owed_paid, g_owed_dropped, g_owed_kept, spaceext::world_epoch(),
+             (unsigned)std::count_if(g_out.begin(), g_out.end(), [](const Out& o) { return o.delivered; }), g_kept_at_end,
+             (unsigned)g_owed_sales.size(), g_sales_owed, g_sales_owed_paid, g_sales_owed_dropped, (unsigned)g_waiting.size(),
+             g_waiting.held(), g_offer_waits, (int)inv_restore_pending());
     return b;
 }
 
@@ -1070,12 +2004,72 @@ static std::string debug(const std::vector<std::string>& a)
         answer_offer((uint32_t)strtoul(a[1].c_str(), nullptr, 16), a[0] == "accept");
         return "answered\n";
     }
+    if ((a[0] == "refundfix" || a[0] == "away" || a[0] == "hold") && a.size() > 1) {
+        // refundfix 0: refunds at once, wherever we are (before BUG-0058); away 1: act as outside
+        // Space (no inventory); hold 1: leave gifts unanswered (tests)
+        bool on = a[1] != "0";
+        if (a[0] == "hold") { // 2: add, but do not answer (BUG-0542)
+            g_hold = std::clamp(atoi(a[1].c_str()), 0, 2);
+            return "hold " + std::to_string(g_hold) + "\n";
+        }
+        (a[0] == "refundfix" ? g_refund_fix : g_away) = on;
+        return a[0] + (on ? " 1\n" : " 0\n");
+    }
+    if (a[0] == "restorehold" && a.size() > 1) { // tests (BUG-1034): 1 the guest's restore waits until 0
+        g_restore_hold = a[1] != "0";
+        return std::string("restorehold ") + (g_restore_hold ? "1" : "0") + "\n";
+    }
+    if (a[0] == "inv") { // BUG-0678: the game's hold as the game holds it
+        Inv v;
+        return read_inv(v) ? inv_text(v) : "no inventory\n";
+    }
+    if (a[0] == "kept") { // BUG-0678: the host's kept holds, the guest's restore
+        snprintf(b, sizeof b, "missed: fix=%d items=%u world=%u merged=%u\n", (int)g_keep_missed_fix,
+                 (unsigned)g_inv_missed.size(), g_inv_missed_epoch, g_inv_missed_kept); // BUG-0826
+        return inv_status() + b;
+    }
+    if (a[0] == "cargo" && a.size() >= 3) { // tests (BUG-0679): cargo <type 0|1|5|6> <hex instance>[:type:group] [n]: the game's factory
+        Key k;
+        k.v[0] = (uint32_t)strtoul(a[2].c_str(), nullptr, 16);
+        sscanf(a[2].c_str(), "%x:%x:%x", &k.v[0], &k.v[1], &k.v[2]); // BUG-1148: a species key as a planet record holds it
+        int n = a.size() > 3 ? atoi(a[3].c_str()) : 1;
+        bool ok = add_cargo((uint8_t)atoi(a[1].c_str()), k, n);
+        snprintf(b, sizeof b, "cargo %s %08X x%d: %s\n", a[1].c_str(), k.v[0], n, ok ? "added" : "not made");
+        return b;
+    }
+    if (a[0] == "forget") { // tests (BUG-0679): this game's hold records go (memory and disk)
+        g_rec_key.clear();
+        g_rec_epoch = 0;
+        g_rec_last.clear();
+        std::wstring d = rec_dir();
+        WIN32_FIND_DATAW fd;
+        int n = 0;
+        HANDLE h = d.empty() ? INVALID_HANDLE_VALUE : FindFirstFileW((d + L"\\*.txt").c_str(), &fd);
+        if (h != INVALID_HANDLE_VALUE) {
+            do
+                n += DeleteFileW((d + L"\\" + fd.cFileName).c_str()) ? 1 : 0;
+            while (FindNextFileW(h, &fd));
+            FindClose(h);
+        }
+        snprintf(b, sizeof b, "forgot %d hold records\n", n);
+        return b;
+    }
+    if (a[0] == "slots" && a.size() >= 2) { // tests (BUG-0679): slots <n>: AddCargoSlots(n)
+        void* inv = inventory();
+        int n = atoi(a[1].c_str());
+        if (!inv || n <= 0 || n > 64)
+            return "no inventory or bad n\n";
+        vcall<void>(inv, 0x94 / 4, n);
+        snprintf(b, sizeof b, "slots %d\n", vcall<int>(inv, 0x88 / 4));
+        return b;
+    }
     if (a[0] == "money") {
         snprintf(b, sizeof b, "money %d\n", money());
         return b;
     }
     return "usage: coop.space trade [tools | all | give <inst> <n> [to] | ammo <inst> <n> | spices | spice <i> <n> | "
-           "take <inst> <n> | deal | sell [n] | offers | accept <id> | decline <id> | money]\n";
+           "take <inst> <n> | deal | sell [n] | offers | accept <id> | decline <id> | money | refundfix 0|1 | "
+           "away 0|1 | hold 0|1|2 | restorehold 0|1 | kept | cargo <type> <inst> [n] | slots <n>]\n";
 }
 
 static bool init(const SkHost* h, SkMod* m)
@@ -1095,6 +2089,11 @@ static bool init(const SkHost* h, SkMod* m)
     a_GetFloat = S("App::Property::GetFloat");
     a_Tune = S("SporeCoop::DifficultyTuning_GetFloat");
     a_MessageMgr = S("App::IMessageManager::Get");
+    a_AnimalCargo = S("SporeCoop::AnimalCargo_Create");     // BUG-0679
+    a_AnimalMgr = S("SporeCoop::AnimalCargo_Manager");
+    a_PlantMgr = S("SporeCoop::PlantCargo_Manager");
+    a_PlantFind = S("SporeCoop::PlantCargo_Template");
+    a_ArtifactCargo = S("SporeCoop::ArtifactCargo_Create");
     bool ok = a_SpaceGame && a_AddItemByKey && a_AddAmmo && a_ConsumeAmmo && a_Trading && a_CreateTrading && a_AddMoney &&
               a_PlayerEmpire;
     H->log(M, ok ? SK_INFO : SK_WARN, "space trade: gifts %s, spice prices %s", ok ? "on" : "off",

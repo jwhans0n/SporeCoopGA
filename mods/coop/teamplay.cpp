@@ -4,54 +4,67 @@
 #include <cstdio>
 #include <map>
 
+#include "fixes.h"
 #include "game.h"
+#include "hunt_hits.h"
 #include "net/interp.h"
+#include "settings.h"
+#include "trace.h"
 
 namespace teamplay {
 
 static const SkHost* H;
-static SkMod* M;
 static Ctx C;
 static bool g_on = true;
 static double g_last_rescue = -1000, g_last_regen = 0;
 static uint32_t g_joint_hits = 0, g_rescues = 0;
+static uint32_t g_hits_host = 0, g_hits_partners = 0; // diagnostics: hits counted by on_player_hit (play_creature)
 
-struct Hit {
-    uint8_t player;
-    double t;
-};
-static std::map<void*, std::vector<Hit>> g_hits; // target -> recent hits by players
+static HitTable g_hits(kHuntWindow); // target -> recent hits by players (BUG-0099)
+COOP_FIX("team.hunt_hits", "BUG-0099", g_hits.fix, "creature: the joint-hunt hit table forgets old hits of every target");
 
 void init(const SkHost* host, SkMod* mod, Ctx ctx)
 {
     H = host;
-    M = mod;
     C = std::move(ctx);
-    g_on = H->config_int(M, "coop", "teamplay", 1) != 0;
+    // the session settings creature.pack_rescue / pack_heal / joint_hunt decide each bonus (coop.ini teamplay is
+    // their default); g_on is the console's switch for all of them (`coop.team off`)
 }
 
 bool enabled() { return g_on; }
+
+void forget_target(void* target)
+{
+    if (g_hits.fix)
+        g_hits.forget(target);
+}
+
+// BUG-0330: the rescue cooldown (kRescueCooldown) outlived the session and the world: a player that
+// left and joined again (or loaded another world) within a minute of a rescue had none in the new
+// session (the warm `team` runs failed "rescue counted (1 -> 1)", the guest died of the lethal hit).
+// `coop.fix team.rescue_reset off`: the cooldown runs on (0.7.3.x).
+static bool g_rescue_reset = true;
+COOP_FIX("team.rescue_reset", "BUG-0330", g_rescue_reset, "creature: a new session or world starts with the pack's rescue ready");
+void reset()
+{
+    if (g_hits.fix)
+        g_hits.clear();
+    if (g_rescue_reset)
+        g_last_rescue = -1000;
+}
+
+size_t hit_targets() { return g_hits.size(); }
 void set_enabled(bool on) { g_on = on; }
 
 float on_player_hit(void* target, uint8_t player, float damage)
 {
-    if (!g_on || !target)
+    if (!g_on || !target || !settings::on(settings::kJointHunt))
         return damage;
-    double now = H->time_seconds();
-    auto& v = g_hits[target];
-    bool joint = false;
-    for (size_t i = 0; i < v.size();) {
-        if (now - v[i].t > kHuntWindow) {
-            v.erase(v.begin() + i);
-            continue;
-        }
-        joint |= v[i].player != player;
-        i++;
-    }
-    v.push_back({player, now});
-    if (g_hits.size() > 256) // forget old targets
-        for (auto it = g_hits.begin(); it != g_hits.end();)
-            it = it->second.empty() ? g_hits.erase(it) : std::next(it);
+    bool joint = g_hits.hit(target, player, H->time_seconds());
+    (player ? g_hits_partners : g_hits_host)++;
+    // BUG-0618: every hit the joint table counted (support logs: "why no pack bonus"; the play bots' hunt timeline)
+    trace::line("team", "hit %p by player %u dmg %.1f hp %.1f%s", target, (unsigned)player, damage, game::health(target),
+                joint ? " joint" : "");
     if (!joint)
         return damage;
     g_joint_hits++;
@@ -79,7 +92,7 @@ static std::string nearest_partner(void* avatar, float max_dist, float* out_dist
 
 float on_own_damage(void* avatar, float damage)
 {
-    if (!g_on || !avatar || damage <= 0)
+    if (!g_on || !avatar || damage <= 0 || !settings::on(settings::kPackRescue))
         return damage;
     float hp = game::health(avatar);
     if (hp <= 0 || hp - damage > 0)
@@ -103,7 +116,7 @@ float on_own_damage(void* avatar, float damage)
 
 void tick(void* avatar, double now)
 {
-    if (!g_on || !avatar || now - g_last_regen < 1.0)
+    if (!g_on || !avatar || now - g_last_regen < 1.0 || !settings::on(settings::kPackHeal))
         return;
     g_last_regen = now;
     float hp = game::health(avatar), mx = game::max_health(avatar);
@@ -122,9 +135,9 @@ std::string status()
     double now = H->time_seconds();
     char b[200];
     int cd = (int)(kRescueCooldown - (now - g_last_rescue));
-    snprintf(b, sizeof b, "Pack: %s  |  rescue %s  |  joint hits %u, rescues %u",
+    snprintf(b, sizeof b, "Pack: %s  |  rescue %s  |  joint hits %u, rescues %u  |  hits host %u, partners %u",
              p.empty() ? "alone" : (p + (d <= kRegenDist ? " close (regen)" : " near")).c_str(),
-             cd > 0 ? (std::to_string(cd) + "s").c_str() : "ready", g_joint_hits, g_rescues);
+             cd > 0 ? (std::to_string(cd) + "s").c_str() : "ready", g_joint_hits, g_rescues, g_hits_host, g_hits_partners);
     return b;
 }
 

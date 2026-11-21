@@ -43,6 +43,9 @@ void register_commands();
 
 // ---- reading ----
 Win main_window();
+// UILayout* is not IWindow*. Resolve its current container before window traversal.
+// Returns nullptr if the layout/backing header or current window is unavailable.
+Win layout_container(void* layout);
 std::vector<Win> children(Win w);
 Win parent(Win w);
 const char* type_name(Win w); // GetComponentName
@@ -53,6 +56,7 @@ std::string caption(Win w); // UTF-8
 Rect area(Win w);           // relative to the parent
 Rect real_area(Win w);
 Rect screen_rect(Win w);    // in screen pixels (sum of the parents' offsets)
+bool cursor_position(float& x,float& y); // current cursor in game client pixels
 void* drawable(Win w);
 bool visible(Win w);
 Win find(Win root, uint32_t control_id);
@@ -62,6 +66,8 @@ std::string dump(Win root, int max_depth, bool only_visible);
 // ---- changing ----
 void add_ref(Win w);
 void release(Win w);
+int refs(void* object);   // the game's reference count of a live window / image / drawable (BUG-1025)
+extern bool g_release_fix; // core.ui_release (BUG-1025): what the mod drops is given back
 void set_caption(Win w, const std::string& utf8);
 void set_area(Win w, const Rect& r);
 void set_visible(Win w, bool on);
@@ -99,11 +105,19 @@ Win image_window(Win parent, uint32_t instance, uint32_t group, float x, float y
 // a new SporeStdDrawable copying `src` (a SporeStdDrawable) with another icon image
 void* std_drawable_with_icon(void* src, void* icon);
 void set_drawable(Win w, void* drawable);
+void set_fill_color(Win w, uint32_t argb);
+void set_shade_color(Win w, uint32_t argb);
 
 // ---- events ----
 // fn(window, message) -> handled. The handler object lives in sporekit (safe on hot reload).
 void* add_handler(Win w, std::function<bool(Win, const Msg&)> fn);
+void* add_handler(Win w, std::function<bool(Win, const Msg&)> fn, int event_flags);
 void remove_handler(Win w, void* handler);
+// Native tooltip procedure; caller owns one reference until remove_tooltip.
+void* tooltip(Win, const std::string& text);
+std::string tooltip_caption(Win);
+void tooltip_text(void*, const std::string& text);
+void remove_tooltip(Win, void*);
 
 uint32_t fnv(const char* s); // Spore id()
 

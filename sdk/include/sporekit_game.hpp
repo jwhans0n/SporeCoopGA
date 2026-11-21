@@ -8,6 +8,8 @@
 // right after `this`: declare them explicitly as thiscall<T*>(addr, obj, &ret, ...).
 #pragma once
 
+#include "sporekit_build.hpp"
+
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -23,6 +25,12 @@
 #define SK_CDECL __attribute__((cdecl))
 
 namespace skg {
+
+// A14 (CORE-6): a mod may install a probe that sees every game call made through the helpers below with the game
+// function's address (coop's game.cpp counts the calls made off the game's main thread, mods/coop/off_main.h). One
+// copy per module (an inline variable of this header); null, the default, costs a load and a branch per call.
+using CallProbe = void (*)(uintptr_t fn);
+inline CallProbe call_probe = nullptr;
 
 template <typename T>
 inline T& field(void* obj, uintptr_t off)
@@ -40,6 +48,8 @@ template <typename R, typename... A>
 inline R thiscall(uintptr_t addr, void* self, A... a)
 {
     using F = R(SK_THISCALL*)(void*, A...);
+    if (call_probe)
+        call_probe(addr);
     return reinterpret_cast<F>(addr)(self, a...);
 }
 
@@ -47,6 +57,8 @@ template <typename R, typename... A>
 inline R cdecl_call(uintptr_t addr, A... a)
 {
     using F = R(SK_CDECL*)(A...);
+    if (call_probe)
+        call_probe(addr);
     return reinterpret_cast<F>(addr)(a...);
 }
 
@@ -54,6 +66,8 @@ template <typename R, typename... A>
 inline R stdcall_call(uintptr_t addr, A... a)
 {
     using F = R(SK_STDCALL*)(A...);
+    if (call_probe)
+        call_probe(addr);
     return reinterpret_cast<F>(addr)(a...);
 }
 
@@ -63,6 +77,8 @@ template <typename R, typename... A>
 inline R vcall(void* self, int index, A... a)
 {
     using F = R(SK_THISCALL*)(void*, A...);
+    if (call_probe)
+        call_probe(reinterpret_cast<uintptr_t>(vtable(self)[index]));
     return reinterpret_cast<F>(vtable(self)[index])(self, a...);
 }
 
@@ -110,6 +126,10 @@ public:
     ReadOnlyMemoryScope(const ReadOnlyMemoryScope&) = delete;
     ReadOnlyMemoryScope& operator=(const ReadOnlyMemoryScope&) = delete;
 };
+// BUG-0791 (measurement): readable() calls of this module (one VirtualQuery each, a syscall), and for a cost check
+// readable_extra more VirtualQuery per call (tests compare the frame time with 1 and with 1 + extra queries).
+inline volatile LONG readable_calls = 0;
+inline int readable_extra = 0;
 
 // Basic memory sanity check before dereferencing game pointers from tools.
 inline bool readable(const void* p, size_t n)
@@ -117,6 +137,9 @@ inline bool readable(const void* p, size_t n)
     uintptr_t a = reinterpret_cast<uintptr_t>(p);
     if (n > std::numeric_limits<uintptr_t>::max() - a) return false;
     uintptr_t end = a + n;
+    InterlockedIncrement(&readable_calls);
+    MEMORY_BASIC_INFORMATION extra_query{};
+    for (int i = 0; i < readable_extra; ++i) VirtualQuery(p, &extra_query, sizeof extra_query);
     while (a < end) {
         ReadOnlyMemoryScope::Region region;
         if (ReadOnlyMemoryScope::current_) {

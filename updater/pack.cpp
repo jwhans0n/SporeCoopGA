@@ -3,11 +3,73 @@
 #include <cctype>
 #include <cstring>
 
+#include "../mods/coop/fix_switch.h"
 #include "sha256.h"
 
 namespace upd {
 
+FIX_SWITCH(g_path_fix); // update.paths, BUG-0242: one canonical path for the path and duplicate checks
+
+static std::string lower(const std::string& s)
+{
+    std::string o = s;
+    for (auto& c : o)
+        c = c >= 'A' && c <= 'Z' ? (char)(c - 'A' + 'a') : c;
+    return o;
+}
+
+static bool ends_with(const std::string& s, const char* t)
+{
+    size_t k = strlen(t);
+    return s.size() >= k && s.compare(s.size() - k, k, t) == 0;
+}
+
+// a DOS device name ("con", "nul.txt", "com1", ...): opens a device, not a file
+static bool device_name(const std::string& part_lower)
+{
+    std::string b = part_lower.substr(0, part_lower.find('.'));
+    static const char* const dev[] = {"con", "prn", "aux", "nul", "conin$", "conout$"};
+    for (auto* d : dev)
+        if (b == d)
+            return true;
+    if (b.size() == 4 && (b.rfind("com", 0) == 0 || b.rfind("lpt", 0) == 0) && b[3] >= '0' && b[3] <= '9')
+        return true;
+    return false;
+}
+
+static bool allowed_path_old(const std::string& path);
+
+std::string canonical_path(const std::string& path)
+{
+    if (!allowed_path_old(path))
+        return {};
+    std::string l = lower(path);
+    // BUG-0242: Windows strips a trailing dot of a name ("coop.dll." is coop.dll): refused, no real
+    // pack has one. Device names and the updater's own working names are refused too.
+    size_t start = 0;
+    while (start <= l.size()) {
+        size_t end = l.find('/', start);
+        if (end == std::string::npos)
+            end = l.size();
+        std::string part = l.substr(start, end - start);
+        if (part.back() == '.' || device_name(part))
+            return {};
+        start = end + 1;
+    }
+    if (ends_with(l, ".new") || ends_with(l, ".sporecoop-old") || ends_with(l, ".old") ||
+        l.find(".sporecoop-tmp") != std::string::npos || l == "sporebinep1/mods/sporecoop.pending")
+        return {};
+    return l;
+}
+
 bool allowed_path(const std::string& path)
+{
+    if (g_path_fix)
+        return !canonical_path(path).empty();
+    return allowed_path_old(path);
+}
+
+static bool allowed_path_old(const std::string& path)
 {
     if (path.empty() || path.size() > 200 || path.find('\\') != std::string::npos ||
         path.find(':') != std::string::npos || path[0] == '/')
@@ -27,6 +89,27 @@ bool allowed_path(const std::string& path)
     }
     return path == "SporebinEP1/steam_api.dll" || path == "SporebinEP1/sporekit.dll" ||
            path == "Data/SporeCoop.package" || path.rfind("SporebinEP1/mods/", 0) == 0;
+}
+
+FIX_SWITCH(g_dup_fix); // update.dup, BUG-0089: a pack with the same path twice is refused
+
+static std::string fold(const std::string& s)
+{
+    std::string o = s;
+    for (auto& c : o)
+        c = c >= 'A' && c <= 'Z' ? (char)(c - 'A' + 'a') : c == '\\' ? '/' : c;
+    return o;
+}
+
+std::string duplicate_path(const std::vector<PackFile>& files)
+{
+    for (size_t i = 0; i < files.size(); i++)
+        for (size_t k = 0; k < i; k++)
+            if (g_path_fix ? canonical_path(files[i].path) == canonical_path(files[k].path) &&
+                                 !canonical_path(files[i].path).empty()
+                           : fold(files[i].path) == fold(files[k].path))
+                return files[i].path;
+    return {};
 }
 
 namespace {
@@ -146,6 +229,11 @@ bool parse_pack(const std::vector<uint8_t>& bytes, Pack& out, std::string& err)
         }
         out.files.push_back(std::move(f));
     }
+    if (std::string d = g_dup_fix ? duplicate_path(out.files) : std::string(); !d.empty()) {
+        err = "the pack lists a file twice: " + d;
+        out = Pack{};
+        return false;
+    }
     return true;
 }
 
@@ -166,6 +254,43 @@ std::vector<uint8_t> write_pack(const Pack& p)
     for (auto& f : p.files)
         o.insert(o.end(), f.data.begin(), f.data.end());
     return o;
+}
+
+bool g_pick_fix = true;         // not a lab switch: setup only (BUG-0093, net_tests --old)
+bool g_release_lock_fix = true; // not a lab switch: setup only (BUG-0077, release_tsan --old)
+bool g_release_merge_fix = true; // not a lab switch: setup only (BUG-0244, release_tsan --old-merge)
+
+std::string pack_version_of(const std::string& path)
+{
+    size_t slash = path.find_last_of("\\/");
+    std::string n = slash == std::string::npos ? path : path.substr(slash + 1);
+    for (auto& c : n)
+        c = (char)tolower((unsigned char)c);
+    const std::string pre = "sporecoop-", suf = ".pack";
+    if (n.size() <= pre.size() + suf.size() || n.compare(0, pre.size(), pre) != 0 ||
+        n.compare(n.size() - suf.size(), suf.size(), suf) != 0)
+        return {};
+    std::string v = n.substr(pre.size(), n.size() - pre.size() - suf.size());
+    if (v.empty() || !isdigit((unsigned char)(v[0] == 'v' ? (v.size() > 1 ? v[1] : 'x') : v[0])))
+        return {};
+    return v;
+}
+
+std::string pick_pack(const std::vector<std::string>& names)
+{
+    std::string best, best_v;
+    for (auto& n : names) {
+        std::string v = pack_version_of(n);
+        if (v.empty())
+            continue;
+        if (!g_pick_fix) // the old choice: the first one listed
+            return n;
+        if (best.empty() || compare_versions(v, best_v) > 0) {
+            best = n;
+            best_v = v;
+        }
+    }
+    return best;
 }
 
 int compare_versions(const std::string& a, const std::string& b)
@@ -258,6 +383,76 @@ bool parse_release(const std::string& json, Release& out)
             out.setup_url = url;
     }
     return !out.version.empty();
+}
+
+std::string web_latest_url(const std::string& api_url)
+{
+    // the API host's web twin; the local test server (win_tests, update_check.py) answers both
+    std::string origin;
+    if (api_url.rfind("https://api.github.com/", 0) == 0)
+        origin = "https://api.github.com";
+    else if (api_url.rfind("http://127.0.0.1:", 0) == 0) {
+        size_t i = 17; // after "http://127.0.0.1:"
+        while (i < api_url.size() && isdigit((unsigned char)api_url[i]))
+            i++;
+        if (i == 17)
+            return {};
+        origin = api_url.substr(0, i);
+    } else
+        return {};
+    // "/repos/O/R/releases/latest" -> "/O/R/releases/latest"
+    if (api_url.compare(origin.size(), 7, "/repos/") != 0)
+        return {};
+    std::string rest = api_url.substr(origin.size() + 6);
+    const std::string tail = "/releases/latest";
+    if (rest.size() <= tail.size() + 1 || rest.compare(rest.size() - tail.size(), tail.size(), tail) != 0)
+        return {};
+    std::string repo = rest.substr(1, rest.size() - tail.size() - 1); // "O/R"
+    size_t slash = repo.find('/');
+    if (slash == std::string::npos || slash == 0 || slash + 1 >= repo.size() || repo.find('/', slash + 1) != std::string::npos)
+        return {};
+    for (char c : repo)
+        if (!isalnum((unsigned char)c) && c != '-' && c != '_' && c != '.' && c != '/')
+            return {};
+    if (origin == "https://api.github.com")
+        origin = "https://github.com";
+    return origin + rest;
+}
+
+bool release_from_redirect(const std::string& web_latest, const std::string& location, Release& out)
+{
+    out = Release{};
+    const std::string latest = "/latest";
+    if (web_latest.size() <= latest.size() ||
+        web_latest.compare(web_latest.size() - latest.size(), latest.size(), latest) != 0)
+        return false;
+    std::string base = web_latest.substr(0, web_latest.size() - latest.size()); // ".../O/R/releases"
+    const std::string mark = "/releases/tag/";
+    size_t k = location.find(mark);
+    if (k == std::string::npos)
+        return false;
+    std::string tag = location.substr(k + mark.size());
+    size_t end = tag.find_first_of("?#");
+    if (end != std::string::npos)
+        tag.resize(end);
+    // a plain tag only: it becomes part of the download addresses
+    if (tag.empty() || tag.size() > 64)
+        return false;
+    for (char c : tag)
+        if (!isalnum((unsigned char)c) && c != '.' && c != '-' && c != '_')
+            return false;
+    std::string version = tag[0] == 'v' || tag[0] == 'V' ? tag.substr(1) : tag;
+    if (version.empty() || !isdigit((unsigned char)version[0]) || version.find("..") != std::string::npos)
+        return false;
+    std::string dl = base + "/download/" + tag + "/";
+    out.tag = tag;
+    out.version = version;
+    out.page_url = base + "/tag/" + tag;
+    out.pack_url = dl + "SporeCoop-" + version + ".pack";
+    out.sums_url = dl + "SHA256SUMS.txt";
+    out.setup_url = dl + "SporeCoopSetup.exe";
+    out.from_web = true;
+    return true;
 }
 
 std::string sums_lookup(const std::string& sums, const std::string& file)

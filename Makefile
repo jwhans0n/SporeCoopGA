@@ -1,11 +1,17 @@
 # SporeCoop build (Linux host, llvm-mingw cross toolchain, 32-bit Windows targets)
-LLVM_MINGW ?= $(HOME)/.local/opt/llvm-mingw-20261006-ucrt-ubuntu-22.04-x86_64
+# the pinned toolchain version (and its tarball's SHA-256 for CI): tools/toolchain.env (A3, BUG-1121)
+include tools/toolchain.env
+LLVM_MINGW ?= $(HOME)/.local/opt/llvm-mingw-$(LLVM_MINGW_VERSION)-ucrt-ubuntu-22.04-x86_64
 CC  := $(LLVM_MINGW)/bin/i686-w64-mingw32-clang
 CXX := $(LLVM_MINGW)/bin/i686-w64-mingw32-clang++
 HOSTCXX ?= clang++
 
 B := build
-COMMON  := -O2 -g -Wall -Wno-unused-function -Wno-missing-braces -D_WIN32_WINNT=0x0601 -DUNICODE -D_UNICODE
+comma := ,
+# A4 (BUG-1122): the code reads and writes game objects through casts at fixed offsets and SporeKit lets code go on
+# after a repaired fault: no type-based aliasing assumptions, no null checks dropped after a dereference. Warnings
+# are errors (the toolchain is pinned, tools/toolchain.env); printf-style functions carry format attributes (SK_PRINTF).
+COMMON  := -O2 -g -fno-strict-aliasing -fno-delete-null-pointer-checks -Wall -Wimplicit-fallthrough -Werror -Wno-unused-function -Wno-missing-braces -D_WIN32_WINNT=0x0601 -DUNICODE -D_UNICODE
 CFLAGS  := $(COMMON)
 CXXFLAGS:= $(COMMON) -std=c++20
 LDDLL   := -shared -static -Wl,--kill-at -Wl,--enable-stdcall-fixup
@@ -21,7 +27,8 @@ COOP_SRC := $(wildcard mods/coop/*.cpp) $(wildcard mods/coop/net/*.cpp) $(wildca
 COOP_OBJ := $(patsubst %.cpp,$(B)/obj/%.o,$(COOP_SRC))
 
 .PHONY: all loader sporekit coop res setup clean test test-captains-windows test-lifecycle-windows test-actions-windows test-vehicles-windows test-mirror-windows test-progress-windows test-relationships-windows test-targeting-windows test-social-windows test-blocked-update-windows test-debug-capabilities-windows
-all: loader sporekit coop res setup
+.PHONY: test-win test-asan test-tsan all loader sporekit coop res setup clean test sanitizer-probe
+all: loader sporekit coop res setup $(B)/test/rtsshooks.dll
 
 # game resources (icons, ...) for SporeCoop: Data/SporeCoop.package
 UI_PNG := $(wildcard data/ui/*.png)
@@ -30,13 +37,31 @@ $(B)/SporeCoop.package: tools/mkpackage.py $(UI_PNG)
 	@mkdir -p $(B)
 	python3 tools/mkpackage.py $@ $(foreach f,$(UI_PNG),sporecoop!$(basename $(notdir $(f))).png=$(f))
 
+# tests: a do-nothing DLL under another program's name (BUG-0782, coop_rtss_note.py)
+$(B)/test/rtsshooks.dll: tests/dll/stand_in.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -shared -o $@ $<
+
 loader: $(B)/steam_api.dll
 sporekit: $(B)/sporekit.dll
 coop: $(B)/coop.dll
 
-$(B)/steam_api.dll: loader/loader.c loader/steam_api.def
+$(B)/steam_api.dll: loader/loader.c loader/steam_api.def updater/pending.h $(B)/obj/loader/loader_rc.o
 	@mkdir -p $(B)
-	$(CC) $(CFLAGS) -shared -o $@ loader/loader.c loader/steam_api.def -Wl,--kill-at
+	$(CC) $(CFLAGS) -shared -o $@ loader/loader.c loader/steam_api.def $(B)/obj/loader/loader_rc.o -Wl,--kill-at
+
+# BUG-0784: a VERSIONINFO resource in every binary (installer/version.rc), its version from
+# COOP_VERSION: build/version.h is rewritten only when the version changes
+WINDRES := $(LLVM_MINGW)/bin/i686-w64-mingw32-windres
+COOP_VERSION = $(shell sed -n 's/^\#define COOP_VERSION "\(.*\)"/\1/p' mods/coop/coop.cpp)
+VER_NUM = $(shell echo "$(COOP_VERSION)" | awk -F. '{printf "%d,%d,%d,%d", $$1, $$2, $$3, $$4}')
+$(B)/version.h: mods/coop/coop.cpp
+	@mkdir -p $(B)
+	@printf '#define SC_VER_NUM %s\n#define SC_VER_STR "%s"\n' "$(VER_NUM)" "$(COOP_VERSION)" > $@.tmp
+	@if cmp -s $@.tmp $@; then rm $@.tmp; touch $@; else mv $@.tmp $@; echo "version.h: $(COOP_VERSION) ($(VER_NUM))"; fi
+$(B)/obj/%_rc.o: %.rc installer/version.rc $(B)/version.h
+	@mkdir -p $(dir $@)
+	$(WINDRES) -i $< -o $@ -I$(B) -Iinstaller
 
 $(B)/obj/%.o: %.c
 	@mkdir -p $(dir $@)
@@ -46,33 +71,374 @@ $(B)/obj/%.o: %.cpp
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -I$(MINHOOK)/include -Isdk/include -c $< -o $@ -MMD -MP
 
-$(B)/sporekit.dll: $(KIT_OBJ) $(MH_OBJ)
+$(B)/sporekit.dll: $(KIT_OBJ) $(MH_OBJ) $(B)/obj/sporekit/sporekit_rc.o
 	$(CXX) $(LDDLL) -o $@ $^ -lws2_32 -luser32 -lshell32 -ld3d9 -Wl,--out-implib,$(B)/libsporekit.a
 
-$(B)/coop.dll: $(COOP_OBJ)
-	$(CXX) $(LDDLL) -o $@ $^ -lws2_32 -luser32 -liphlpapi -lwinhttp -lshell32
+# session_glue.cpp takes COOP_VERSION from build/version.h (it is defined in coop.cpp, where the tools read it)
+$(B)/obj/mods/coop/session_glue.o: $(B)/version.h
+$(B)/obj/mods/coop/session_glue.o: CXXFLAGS += -I$(B)
+
+$(B)/coop.dll: $(COOP_OBJ) $(B)/obj/mods/coop/coop_rc.o
+	$(CXX) $(LDDLL) -o $@ $^ -lws2_32 -luser32 -liphlpapi -lwinhttp -lshell32 -lole32
 
 # SporeCoopSetup.exe: install / update / uninstall (installer/, updater/)
-WINDRES := $(LLVM_MINGW)/bin/i686-w64-mingw32-windres
-COOP_VERSION = $(shell sed -n 's/^#define COOP_VERSION "\(.*\)"/\1/p' mods/coop/coop.cpp)
 setup: $(B)/SporeCoopSetup.exe
 $(B)/setup.ico: data/ui/coop_icon.png tools/make_ico.py
 	@mkdir -p $(B)
 	python3 tools/make_ico.py $< $@
-$(B)/obj/installer/setup_rc.o: installer/setup.rc installer/setup.manifest $(B)/setup.ico
+# the manifest's assemblyIdentity version is COOP_VERSION too (BUG-0784; it was 1.0.0.0)
+$(B)/setup.manifest: installer/setup.manifest $(B)/version.h
+	sed 's/name="SporeCoop.Setup" version="[0-9.]*"/name="SporeCoop.Setup" version="$(subst $(comma),.,$(VER_NUM))"/' $< > $@
+	grep -q 'version="$(subst $(comma),.,$(VER_NUM))"' $@
+$(B)/obj/installer/setup_rc.o: installer/setup.rc installer/version.rc $(B)/setup.manifest $(B)/setup.ico $(B)/version.h
 	@mkdir -p $(dir $@)
-	$(WINDRES) -i installer/setup.rc -o $@ --include-dir installer
-$(B)/SporeCoopSetup.exe: installer/setup.cpp updater/winupdate.cpp updater/pack.cpp updater/sha256.cpp $(B)/obj/installer/setup_rc.o mods/coop/coop.cpp
-	$(CXX) $(CXXFLAGS) -DSETUP_VERSION='"$(COOP_VERSION)"' -municode -mwindows -static -o $@ $(filter-out mods/coop/coop.cpp,$^) \
+	cp installer/setup.rc $(B)/setup.rc
+	$(WINDRES) -i $(B)/setup.rc -o $@ -I$(B) -Iinstaller
+$(B)/SporeCoopSetup.exe: installer/setup.cpp installer/install.cpp installer/install.h updater/winupdate.h updater/pending.h updater/pack.h updater/sha256.h sdk/include/sporekit_build.hpp updater/winupdate.cpp updater/pack.cpp updater/sha256.cpp $(B)/obj/installer/setup_rc.o mods/coop/coop.cpp
+	$(CXX) $(CXXFLAGS) -DSETUP_VERSION='"$(COOP_VERSION)"' -municode -mwindows -static -o $@ $(filter-out %.h %.hpp mods/coop/coop.cpp,$^) \
 		-lwinhttp -lcomctl32 -lshell32 -lole32 -ladvapi32 -luser32 -lgdi32
 
-# native Linux unit tests for portable netcode
-test:
+
+# Portable editor transaction, durability, transport and owned-resource tests.
+EDITOR_CORE_SRC := mods/coop/net/editor_document.cpp
+SESSION_TRANSPORT_SRC := mods/coop/net/session.cpp mods/coop/net/connection.cpp mods/coop/net/udp.cpp mods/coop/net/crc32.cpp
+EDITOR_WIRE_SRC := mods/coop/net/editor_protocol.cpp $(EDITOR_CORE_SRC) updater/sha256.cpp
+EDITOR_DELTA_SRC := mods/coop/net/editor_binary_delta.cpp updater/sha256.cpp
+EDITOR_PROJECT_SRC := mods/coop/editor_project.cpp mods/coop/net/editor_binary_delta.cpp mods/coop/net/adventure_assets.cpp mods/coop/net/dbpf.cpp $(EDITOR_WIRE_SRC)
+EDITOR_SESSION_SRC := mods/coop/editor_session.cpp mods/coop/net/session.cpp mods/coop/net/connection.cpp mods/coop/net/udp.cpp mods/coop/net/crc32.cpp $(EDITOR_WIRE_SRC)
+EDITOR_RUNTIME_FIXTURE_SRC := tests/editor_runtime_windows_tests.cpp mods/coop/editor_store.cpp mods/coop/editor_project.cpp mods/coop/net/editor_binary_delta.cpp mods/coop/net/adventure_assets.cpp mods/coop/net/dbpf.cpp $(EDITOR_SESSION_SRC)
+PACKAGE_ADMISSION_SRC := mods/coop/package_admission.cpp
+PACKAGE_ADMISSION_WINDOWS_SRC := $(PACKAGE_ADMISSION_SRC) mods/coop/package_admission_windows.cpp
+ADVENTURE_ASSETS_NATIVE_FIXTURE_SRC := $(PACKAGE_ADMISSION_WINDOWS_SRC) tests/adventure_assets_native_windows_tests.cpp mods/coop/net/adventure_assets.cpp mods/coop/net/dbpf.cpp mods/coop/net/session.cpp mods/coop/net/connection.cpp mods/coop/net/udp.cpp mods/coop/net/crc32.cpp updater/sha256.cpp
+ADVENTURE_ABI_HEADERS := sdk/include/sporekit.h sdk/include/sporekit_game.hpp sdk/include/sporekit_build.hpp mods/coop/game.h mods/coop/net/protocol.h
+.PHONY: test-editor test-editor-windows editor-portable-deps-missing
+# The former inline portable builds are independent binaries. Capture all
+# translation units in one stdout dependency pass; multi-input -MMD/-MF would
+# overwrite earlier units' headers. Publish .d only after compilation succeeds.
+define editor_portable_compile
+@mkdir -p $(dir $@)
+@set -eu; dep="$@.d.tmp"; \
+trap 'rm -f "$$dep" "$@"' 0 1 2 3 15; \
+$(HOSTCXX) $(1) -MM -MP -MT "$@" $(2) > "$$dep"; \
+$(HOSTCXX) $(1) $(2) -o "$@"; \
+mv -f "$$dep" "$@.d"; \
+trap - 0 1 2 3 15
+endef
+define editor_portable_binary
+$(B)/host/$(1): $(3) Makefile
+	$$(call editor_portable_compile,$(2),$(3))
+endef
+EDITOR_INLINE_TEST_NAMES := editor_cast_tests editor_metrics_tests editor_stage_metrics_tests editor_authoring_extensions_tests editor_creation_png_carrier_tests editor_creation_zlib_tests editor_native_bindings_tests editor_native_pose_tests editor_native_terrain_tests editor_native_scale_tests editor_reopen_identity_tests editor_binary_delta_tests editor_document_tests editor_store_tests editor_protocol_tests editor_project_tests editor_session_tests editor_accounting_tests session_transport_tests
+EDITOR_INLINE_TEST_BINS := $(addprefix $(B)/host/,$(EDITOR_INLINE_TEST_NAMES))
+$(eval $(call editor_portable_binary,editor_cast_tests,-std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop -Isdk/include,$(EDITOR_WIRE_SRC) tests/editor_cast_tests.cpp))
+$(eval $(call editor_portable_binary,editor_metrics_tests,-std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop,tests/editor_metrics_tests.cpp))
+$(eval $(call editor_portable_binary,editor_stage_metrics_tests,-std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop,tests/editor_stage_metrics_tests.cpp))
+$(eval $(call editor_portable_binary,editor_authoring_extensions_tests,-std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop -Isdk/include,$(EDITOR_WIRE_SRC) tests/editor_authoring_extensions_tests.cpp))
+$(eval $(call editor_portable_binary,editor_creation_png_carrier_tests,-std=c++20 -O1 -g -Wall -Wextra -Werror,tests/editor_creation_png_carrier_tests.cpp))
+$(eval $(call editor_portable_binary,editor_creation_zlib_tests,-std=c++20 -O1 -g -Wall -Wextra -Werror,tests/editor_creation_zlib_tests.cpp))
+$(eval $(call editor_portable_binary,editor_native_bindings_tests,-std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop -Isdk/include,tests/editor_native_bindings_tests.cpp))
+$(eval $(call editor_portable_binary,editor_native_pose_tests,-std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop,$(EDITOR_CORE_SRC) tests/editor_native_pose_tests.cpp))
+$(eval $(call editor_portable_binary,editor_native_terrain_tests,-std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop,$(EDITOR_CORE_SRC) tests/editor_native_terrain_tests.cpp))
+$(eval $(call editor_portable_binary,editor_native_scale_tests,-std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop -Isdk/include,$(EDITOR_WIRE_SRC) tests/editor_native_scale_tests.cpp))
+$(eval $(call editor_portable_binary,editor_reopen_identity_tests,-std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop -Isdk/include,tests/editor_reopen_identity_tests.cpp))
+$(eval $(call editor_portable_binary,editor_binary_delta_tests,-std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop,$(EDITOR_DELTA_SRC) tests/editor_binary_delta_tests.cpp))
+$(eval $(call editor_portable_binary,editor_document_tests,-std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop -Isdk/include,$(EDITOR_CORE_SRC) tests/editor_document_tests.cpp))
+$(eval $(call editor_portable_binary,editor_store_tests,-std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop,mods/coop/editor_store.cpp $(EDITOR_DELTA_SRC) tests/editor_store_tests.cpp))
+$(eval $(call editor_portable_binary,editor_protocol_tests,-std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop,$(EDITOR_WIRE_SRC) tests/editor_protocol_tests.cpp))
+$(eval $(call editor_portable_binary,editor_project_tests,-std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop -Isdk/include,$(EDITOR_PROJECT_SRC) tests/editor_project_tests.cpp))
+$(eval $(call editor_portable_binary,editor_session_tests,-std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop,$(EDITOR_SESSION_SRC) tests/editor_session_tests.cpp))
+$(eval $(call editor_portable_binary,editor_accounting_tests,-std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop,$(EDITOR_SESSION_SRC) tests/editor_accounting_tests.cpp))
+$(eval $(call editor_portable_binary,session_transport_tests,-std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop,$(SESSION_TRANSPORT_SRC) tests/session_transport_tests.cpp))
+# Existing binaries from the old recipe need a first dependency-producing
+# rebuild too. This phony prerequisite disappears once the .d is present.
+editor-portable-deps-missing:
+$(foreach binary,$(EDITOR_INLINE_TEST_BINS),$(eval $(binary): $(if $(wildcard $(binary).d),,editor-portable-deps-missing)))
+-include $(wildcard $(EDITOR_INLINE_TEST_BINS:=.d))
+test-editor: $(B)/host/editor_native_terrain_rotations_tests $(B)/host/editor_native_complexity_ratio_tests $(EDITOR_INLINE_TEST_BINS) test-editor-pulse
+	$(B)/host/editor_native_terrain_rotations_tests
+	$(B)/host/editor_native_complexity_ratio_tests
+	$(B)/host/editor_cast_tests
+	$(B)/host/editor_metrics_tests
+	$(B)/host/editor_stage_metrics_tests
+	$(B)/host/editor_authoring_extensions_tests
+	$(B)/host/editor_creation_png_carrier_tests
+	$(B)/host/editor_creation_zlib_tests
+	$(B)/host/editor_native_bindings_tests
+	$(B)/host/editor_native_pose_tests
+	$(B)/host/editor_native_terrain_tests
+	$(B)/host/editor_native_scale_tests
+	$(B)/host/editor_reopen_identity_tests
+	$(B)/host/editor_binary_delta_tests
+	$(B)/host/editor_document_tests
+	$(B)/host/editor_store_tests
+	$(B)/host/editor_protocol_tests
+	$(B)/host/editor_project_tests
+	$(B)/host/editor_session_tests
+	$(B)/host/editor_accounting_tests
+	$(B)/host/session_transport_tests
+
+test-editor-windows: $(B)/host/package_admission_tests.exe $(B)/host/package_admission_windows_tests.exe $(B)/host/frame_metrics_tests.exe $(B)/host/editor_metrics_tests.exe $(B)/host/editor_native_bindings_tests.exe $(B)/host/editor_native_scale_tests.exe $(B)/host/editor_reopen_identity_tests.exe $(B)/host/editor_binary_delta_tests.exe $(B)/host/editor_document_tests.exe $(B)/host/editor_store_tests.exe $(B)/host/editor_protocol_tests.exe $(B)/host/editor_project_tests.exe $(B)/host/editor_session_tests.exe $(B)/host/session_transport_tests.exe $(B)/host/editor_native_save_tests.exe $(B)/host/adventure_editor_preview_tests.exe $(B)/host/editor_runtime_windows_tests.exe $(B)/host/adventure_assets_native_tests.exe
+
+test-editor-windows: $(B)/host/editor_native_cancellation_tests.exe
+test-editor-windows: $(B)/host/editor_cast_tests.exe
+$(B)/host/editor_cast_tests.exe: tests/editor_cast_tests.cpp mods/coop/editor_native_cast.h mods/coop/editor_native_scale.h mods/coop/editor_native_authoring.h $(EDITOR_WIRE_SRC) mods/coop/net/editor_document.h mods/coop/net/editor_protocol.h
 	@mkdir -p $(B)/host
-	$(HOSTCXX) -std=c++20 -O1 -g -Wall -Imods/coop -o $(B)/host/net_tests mods/coop/net/*.cpp updater/pack.cpp updater/sha256.cpp tests/net_tests.cpp
-	$(B)/host/net_tests
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop -Isdk/include $(EDITOR_WIRE_SRC) tests/editor_cast_tests.cpp -o $@
+
+test-editor-windows: $(B)/host/editor_stage_metrics_tests.exe
+test-editor-windows: $(B)/host/editor_authoring_extensions_tests.exe $(B)/host/editor_creation_tests.exe $(B)/host/editor_creation_ui_tests.exe
+$(B)/host/editor_authoring_extensions_tests $(B)/host/editor_authoring_extensions_tests.exe $(B)/host/editor_runtime_windows_tests.exe: mods/coop/editor_terrain_edit.h
+test-editor-windows: $(B)/host/editor_creation_png_carrier_tests.exe $(B)/host/editor_creation_png_tests.exe $(B)/host/editor_creation_zlib_tests.exe
+
+$(B)/host/editor_creation_zlib_tests.exe: tests/editor_creation_zlib_tests.cpp mods/coop/editor_creation_zlib.h
+	@mkdir -p $(B)/host
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -static tests/editor_creation_zlib_tests.cpp -o $@
+
+$(B)/host/editor_creation_png_carrier_tests.exe: tests/editor_creation_png_carrier_tests.cpp mods/coop/editor_creation_png_carrier.h
+	@mkdir -p $(B)/host
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -static tests/editor_creation_png_carrier_tests.cpp -o $@
+
+$(B)/host/editor_creation_png_tests.exe: tests/editor_creation_png_windows_tests.cpp mods/coop/editor_creation_png.cpp mods/coop/editor_creation_png.h mods/coop/editor_creation_png_carrier.h mods/coop/editor_creation_zlib.h
+	@mkdir -p $(B)/host
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop tests/editor_creation_png_windows_tests.cpp mods/coop/editor_creation_png.cpp -lole32 -o $@
+
+$(B)/host/editor_creation_ui_tests.exe: tests/editor_creation_ui_windows_tests.cpp mods/coop/editor_creation_ui.cpp mods/coop/editor_creation_ui.h mods/coop/editor_creation.h mods/coop/editor_runtime.h mods/coop/coop_ui.h mods/coop/sui.h mods/coop/fixes.cpp mods/coop/fixes.h $(ADVENTURE_ABI_HEADERS)
+	@mkdir -p $(B)/host
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -Wno-unused-function -static -Imods/coop -Isdk/include tests/editor_creation_ui_windows_tests.cpp mods/coop/fixes.cpp -o $@
+test-editor-windows: $(B)/host/editor_native_pose_tests.exe
+test-editor-windows: $(B)/host/editor_native_terrain_tests.exe $(B)/host/editor_native_complexity_tests.exe
+test-editor-windows: $(B)/host/adventure_collect_tests.exe
+
+$(B)/host/adventure_collect_tests.exe: tests/adventure_collect_windows_tests.cpp mods/coop/adventure_collect.cpp mods/coop/adventure_collect.h mods/coop/editor_saved_dependencies.h mods/coop/adventure_music.cpp mods/coop/adventure_music.h mods/coop/net/dbpf.cpp updater/sha256.cpp $(ADVENTURE_ABI_HEADERS)
+	@mkdir -p $(B)/host
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -Wno-unused-function -static -Imods/coop -Isdk/include tests/adventure_collect_windows_tests.cpp mods/coop/adventure_music.cpp mods/coop/net/dbpf.cpp updater/sha256.cpp -o $@
+
+$(B)/host/editor_native_cancellation_tests.exe: $(wildcard mods/coop/editor_native*.h) mods/coop/net/editor_terrain.h tests/editor_native_pose_prepare_fixture.h tests/editor_native_pose_prepare_staged_fixture.h mods/coop/editor_native_pose_prepare_staged_impl.h mods/coop/editor_native_pose_prepare_impl.h
+$(B)/host/editor_native_cancellation_tests.exe: tests/editor_native_entry_fixture.h mods/coop/world.h mods/coop/world_editor_entry.h
+$(B)/host/editor_native_cancellation_tests.exe: tests/editor_native_planet_preset_fixture.h
+$(B)/host/editor_native_cancellation_tests.exe: tests/editor_native_marker_capacity_fixture.h
+
+.PHONY: test-world-editor-entry test-world-editor-entry-windows
+test-world-editor-entry: $(B)/host/world_editor_entry_tests
+	$<
+test-world-editor-entry-windows: $(B)/host/world_editor_entry_tests.exe
+$(B)/host/world_editor_entry_tests: tests/world_editor_entry_tests.cpp mods/coop/world_editor_entry.h
+	@mkdir -p $(dir $@)
+	$(HOSTCXX) -std=c++20 -O2 -Wall -Wextra -Werror $< -o $@
+$(B)/host/world_editor_entry_tests.exe: tests/world_editor_entry_tests.cpp mods/coop/world_editor_entry.h
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -static $< -o $@
+
+# CPU-only Snapshot construction and all sidecar copy domains; no Native calls.
+.PHONY: test-editor-snapshot-values-windows
+test-editor-snapshot-values-windows: $(B)/host/editor_native_snapshot_values_tests.exe
+test-editor-windows: $(B)/host/editor_native_snapshot_values_tests.exe
+$(B)/host/editor_native_snapshot_values_tests.exe: tests/editor_native_snapshot_values_tests.cpp mods/coop/editor_native_snapshot_values.h mods/coop/editor_native.h mods/coop/net/editor_document.h mods/coop/net/editor_complexity.h mods/coop/editor_native_scale.h mods/coop/editor_native_cast.h mods/coop/editor_native_authoring.h mods/coop/editor_native_terrain.h mods/coop/net/editor_terrain.h sdk/include/sporekit.h
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop -Isdk/include $< -o $@
+
+$(B)/host/editor_native_terrain_tests.exe: $(EDITOR_CORE_SRC) tests/editor_native_terrain_tests.cpp mods/coop/editor_native_terrain.h mods/coop/editor_native_terrain_materialization.h mods/coop/net/editor_terrain.h
+	@mkdir -p $(B)/host
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop $(EDITOR_CORE_SRC) tests/editor_native_terrain_tests.cpp -o $@
+
+$(B)/host/editor_native_complexity_tests.exe: tests/editor_native_complexity_windows_tests.cpp mods/coop/editor_native_complexity.h
+	@mkdir -p $(B)/host
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop -Isdk/include tests/editor_native_complexity_windows_tests.cpp -o $@
+
+test-editor-windows: $(B)/host/editor_native_terrain_rotations_tests.exe $(B)/host/editor_native_complexity_ratio_tests.exe
+$(B)/host/editor_native_terrain_rotations_tests: tests/editor_native_terrain_rotations_tests.cpp mods/coop/editor_native_terrain_rotations.h
+	@mkdir -p $(B)/host
+	$(HOSTCXX) -std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop tests/editor_native_terrain_rotations_tests.cpp -o $@
+$(B)/host/editor_native_complexity_ratio_tests: tests/editor_native_complexity_ratio_tests.cpp mods/coop/editor_native_complexity_ratio.h
+	@mkdir -p $(B)/host
+	$(HOSTCXX) -std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop tests/editor_native_complexity_ratio_tests.cpp -o $@
+$(B)/host/editor_native_terrain_rotations_tests.exe: tests/editor_native_terrain_rotations_tests.cpp mods/coop/editor_native_terrain_rotations.h
+	@mkdir -p $(B)/host
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop tests/editor_native_terrain_rotations_tests.cpp -o $@
+$(B)/host/editor_native_complexity_ratio_tests.exe: tests/editor_native_complexity_ratio_tests.cpp mods/coop/editor_native_complexity_ratio.h
+	@mkdir -p $(B)/host
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop tests/editor_native_complexity_ratio_tests.cpp -o $@
+
+# Inactive portable Native format/codec helpers, no game or Native API linkage.
+EDITOR_REFPACK_SRC := mods/coop/editor_native_refpack.cpp mods/coop/net/dbpf.cpp updater/sha256.cpp
+EDITOR_POSE_FORMAT_SRC := mods/coop/editor_native_pose_format.cpp $(EDITOR_REFPACK_SRC)
+EDITOR_POSE_FORMAT_DATA := $(wildcard tests/fixtures/editor_native_pose/*)
+.PHONY: test-editor-pose-format
+test-editor-pose-format: $(B)/host/editor_native_refpack_tests $(B)/host/editor_native_pose_format_tests
+	$(B)/host/editor_native_refpack_tests
+	$(B)/host/editor_native_pose_format_tests
+test-editor: test-editor-pose-format
+test-editor-windows: $(B)/host/editor_native_refpack_tests.exe $(B)/host/editor_native_pose_format_tests.exe
+$(B)/host/editor_native_refpack_tests: tests/editor_native_refpack_tests.cpp mods/coop/editor_native_refpack.h $(EDITOR_REFPACK_SRC) $(EDITOR_POSE_FORMAT_DATA)
+	@mkdir -p $(B)/host
+	$(HOSTCXX) -std=c++20 -O2 -g -Wall -Wextra -Werror -Imods/coop tests/editor_native_refpack_tests.cpp $(EDITOR_REFPACK_SRC) -o $@
+$(B)/host/editor_native_pose_format_tests: tests/editor_native_pose_format_tests.cpp mods/coop/editor_native_pose_format.h mods/coop/editor_native_refpack.h mods/coop/net/editor_document.h $(EDITOR_POSE_FORMAT_SRC) $(EDITOR_POSE_FORMAT_DATA)
+	@mkdir -p $(B)/host
+	$(HOSTCXX) -std=c++20 -O2 -g -Wall -Wextra -Werror -Imods/coop tests/editor_native_pose_format_tests.cpp $(EDITOR_POSE_FORMAT_SRC) -o $@
+$(B)/host/editor_native_refpack_tests.exe: tests/editor_native_refpack_tests.cpp mods/coop/editor_native_refpack.h $(EDITOR_REFPACK_SRC) $(EDITOR_POSE_FORMAT_DATA)
+	@mkdir -p $(B)/host
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop tests/editor_native_refpack_tests.cpp $(EDITOR_REFPACK_SRC) -o $@
+$(B)/host/editor_native_pose_format_tests.exe: tests/editor_native_pose_format_tests.cpp mods/coop/editor_native_pose_format.h mods/coop/editor_native_refpack.h mods/coop/net/editor_document.h $(EDITOR_POSE_FORMAT_SRC) $(EDITOR_POSE_FORMAT_DATA)
+	@mkdir -p $(B)/host
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop tests/editor_native_pose_format_tests.cpp $(EDITOR_POSE_FORMAT_SRC) -o $@
+
+# Saved dependency values and immutable cache IO; no Native/Runtime linkage.
+EDITOR_SAVED_DEPENDENCIES_SRC := mods/coop/editor_saved_dependencies.cpp mods/coop/net/dbpf.cpp updater/sha256.cpp
+EDITOR_SAVED_DEPENDENCIES_DATA := $(wildcard tests/fixtures/editor_saved_dependencies/*)
+EDITOR_SAVED_DEPENDENCIES_HEADERS := mods/coop/editor_saved_dependencies.h tests/editor_saved_dependencies_fixture.h $(EDITOR_SAVED_DEPENDENCIES_DATA)
+.PHONY: test-editor-saved-dependencies
+test-editor-saved-dependencies: $(B)/host/editor_saved_dependencies_tests $(B)/host/editor_saved_dependencies_store_tests
+	$(B)/host/editor_saved_dependencies_tests
+	$(B)/host/editor_saved_dependencies_store_tests $(B)/saved-dependencies-tests
+test-editor: test-editor-saved-dependencies
+test-editor-windows: $(B)/host/editor_saved_dependencies_tests.exe $(B)/host/editor_saved_dependencies_store_tests.exe
+$(B)/host/editor_saved_dependencies_tests: tests/editor_saved_dependencies_tests.cpp $(EDITOR_SAVED_DEPENDENCIES_SRC) $(EDITOR_SAVED_DEPENDENCIES_HEADERS)
+	@mkdir -p $(dir $@)
+	$(HOSTCXX) -std=c++20 -O2 -g -Wall -Wextra -Werror -Imods/coop tests/editor_saved_dependencies_tests.cpp $(EDITOR_SAVED_DEPENDENCIES_SRC) -o $@
+$(B)/host/editor_saved_dependencies_store_tests: tests/editor_saved_dependencies_store_tests.cpp mods/coop/editor_saved_dependencies_store.cpp mods/coop/editor_saved_dependencies_store.h $(EDITOR_SAVED_DEPENDENCIES_SRC) $(EDITOR_SAVED_DEPENDENCIES_HEADERS)
+	@mkdir -p $(dir $@)
+	$(HOSTCXX) -std=c++20 -O2 -g -Wall -Wextra -Werror -pthread -Imods/coop tests/editor_saved_dependencies_store_tests.cpp $(EDITOR_SAVED_DEPENDENCIES_SRC) -o $@
+$(B)/host/editor_saved_dependencies_tests.exe: tests/editor_saved_dependencies_tests.cpp $(EDITOR_SAVED_DEPENDENCIES_SRC) $(EDITOR_SAVED_DEPENDENCIES_HEADERS)
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop tests/editor_saved_dependencies_tests.cpp $(EDITOR_SAVED_DEPENDENCIES_SRC) -o $@
+$(B)/host/editor_saved_dependencies_store_tests.exe: tests/editor_saved_dependencies_store_tests.cpp mods/coop/editor_saved_dependencies_store.cpp mods/coop/editor_saved_dependencies_store.h $(EDITOR_SAVED_DEPENDENCIES_SRC) $(EDITOR_SAVED_DEPENDENCIES_HEADERS)
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop tests/editor_saved_dependencies_store_tests.cpp $(EDITOR_SAVED_DEPENDENCIES_SRC) -o $@
+
+# Real selected-Saved gate and codec, with controlled Native and filesystem endpoints.
+.PHONY: test-editor-saved-native-windows
+test-editor-saved-native-windows: $(B)/host/editor_saved_native_tests.exe
+$(B)/host/editor_saved_native_tests.exe: tests/editor_saved_native_windows_tests.cpp mods/coop/editor_saved_native.cpp mods/coop/editor_saved_native.h mods/coop/editor_saved_dependencies_store.h mods/coop/editor_native_save.h mods/coop/editor_native.h mods/coop/adventure_collect.h mods/coop/adventure_assets.h $(EDITOR_SAVED_DEPENDENCIES_SRC) $(EDITOR_SAVED_DEPENDENCIES_HEADERS) $(ADVENTURE_ABI_HEADERS)
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -Wno-missing-field-initializers -static -Imods/coop -Isdk/include tests/editor_saved_native_windows_tests.cpp $(EDITOR_SAVED_DEPENDENCIES_SRC) -o $@
+
+$(B)/host/editor_native_pose_tests.exe: $(EDITOR_CORE_SRC) tests/editor_native_pose_tests.cpp mods/coop/editor_native_pose.h
+	@mkdir -p $(B)/host
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop $(EDITOR_CORE_SRC) tests/editor_native_pose_tests.cpp -o $@
+
+$(B)/host/editor_authoring_extensions_tests.exe: $(EDITOR_WIRE_SRC) tests/editor_authoring_extensions_tests.cpp mods/coop/net/editor_document.h mods/coop/net/editor_protocol.h mods/coop/net/editor_terrain.h
+	@mkdir -p $(B)/host
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop -Isdk/include $(EDITOR_WIRE_SRC) tests/editor_authoring_extensions_tests.cpp -o $@
+
+$(B)/host/editor_creation_tests.exe: tests/editor_creation_windows_tests.cpp mods/coop/editor_creation.cpp mods/coop/editor_creation.h mods/coop/editor_creation_ui.h mods/coop/editor_creation_native.cpp mods/coop/editor_creation_native.h mods/coop/editor_creation_png.cpp mods/coop/editor_creation_png.h mods/coop/editor_creation_png_carrier.h mods/coop/editor_creation_zlib.h mods/coop/net/adventure_assets.cpp mods/coop/net/dbpf.cpp mods/coop/fixes.cpp mods/coop/fixes.h updater/sha256.cpp
+	@mkdir -p $(B)/host
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -Wno-missing-field-initializers -static -Imods/coop -Isdk/include tests/editor_creation_windows_tests.cpp mods/coop/net/adventure_assets.cpp mods/coop/net/dbpf.cpp mods/coop/fixes.cpp updater/sha256.cpp -luser32 -lole32 -o $@
+
+test-editor-windows: $(B)/host/editor_accounting_tests.exe
+
+$(B)/host/editor_accounting_tests.exe: $(EDITOR_SESSION_SRC) tests/editor_accounting_tests.cpp mods/coop/editor_session.h mods/coop/net/session.h mods/coop/net/connection.h mods/coop/net/editor_protocol.h
+	@mkdir -p $(B)/host
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop $(EDITOR_SESSION_SRC) tests/editor_accounting_tests.cpp -o $@ -lws2_32
+
+$(B)/host/editor_stage_metrics_tests.exe: tests/editor_stage_metrics_tests.cpp mods/coop/editor_stage_metrics.h mods/coop/net/editor_document.h
+	@mkdir -p $(B)/host
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop tests/editor_stage_metrics_tests.cpp -o $@
+
+$(B)/host/editor_native_cancellation_tests.exe: tests/editor_native_cancellation_windows_tests.cpp tests/editor_native_service_pulse_fixture.h tests/editor_native_act_cache_fixture.h tests/editor_native_crew_assets_fixture.h tests/editor_native_recent_fixture.h tests/editor_native_pose_capture_fixture.h tests/editor_native_staged_capture_fixture.h tests/editor_native_terrain_materialization_fixture.h tests/editor_native_creation_grounding_fixture.h tests/editor_native_terrain_transition_fixture.h tests/editor_native_history_toolbar_fixture.h tests/editor_native_diagnostic_fixture.h tests/editor_native_view_fence_fixture.h tests/editor_native_water_fixture.h tests/editor_native_environment_fixture.h tests/editor_native_complexity_fixture.h mods/coop/editor_native_terrain_transition_impl.h mods/coop/editor_native.cpp mods/coop/editor_native.h mods/coop/editor_native_authoring.h mods/coop/editor_native_act_cache.h mods/coop/editor_native_scale.h mods/coop/editor_native_bindings.h mods/coop/editor_native_tools.h mods/coop/net/dbpf.cpp mods/coop/net/editor_document.cpp $(ADVENTURE_ABI_HEADERS)
+	@mkdir -p $(B)/host
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop -Isdk/include tests/editor_native_cancellation_windows_tests.cpp mods/coop/net/dbpf.cpp mods/coop/net/editor_document.cpp -o $@
+
+$(B)/host/editor_native_cancellation_tests.exe: tests/editor_native_clone_input_fixture.h mods/coop/editor_native_clone_input_impl.h
+$(B)/host/editor_native_cancellation_tests.exe: tests/editor_native_terrain_first_use_fixture.h mods/coop/editor_native_terrain_input_impl.h
+
+$(B)/host/editor_metrics_tests.exe: tests/editor_metrics_tests.cpp mods/coop/editor_metrics.h mods/coop/net/editor_document.h
+	@mkdir -p $(B)/host
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop tests/editor_metrics_tests.cpp -o $@
+$(B)/host/frame_metrics_tests.exe: tests/frame_metrics_tests.cpp mods/coop/frame_metrics.h
+	@mkdir -p $(B)/host
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop tests/frame_metrics_tests.cpp -o $@
+$(B)/host/editor_native_bindings_tests.exe: tests/editor_native_bindings_tests.cpp mods/coop/editor_native_bindings.h mods/coop/editor_native_tools.h mods/coop/editor_native.h mods/coop/editor_native_scale.h mods/coop/net/editor_document.h
+	@mkdir -p $(B)/host
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop -Isdk/include tests/editor_native_bindings_tests.cpp -o $@
+$(B)/host/editor_native_scale_tests.exe: tests/editor_native_scale_tests.cpp mods/coop/editor_native_scale.h $(EDITOR_WIRE_SRC) mods/coop/net/editor_document.h mods/coop/net/editor_protocol.h
+	@mkdir -p $(B)/host
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop -Isdk/include $(EDITOR_WIRE_SRC) tests/editor_native_scale_tests.cpp -o $@
+$(B)/host/editor_reopen_identity_tests.exe: tests/editor_reopen_identity_tests.cpp mods/coop/editor_reopen_identity.h mods/coop/editor_native_bindings.h mods/coop/editor_native.h mods/coop/editor_native_scale.h mods/coop/net/editor_document.h
+	@mkdir -p $(B)/host
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop -Isdk/include tests/editor_reopen_identity_tests.cpp -o $@
+$(B)/host/editor_binary_delta_tests.exe: $(EDITOR_DELTA_SRC) tests/editor_binary_delta_tests.cpp
+	@mkdir -p $(B)/host
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop $^ -o $@
+$(B)/host/editor_document_tests.exe: $(EDITOR_CORE_SRC) tests/editor_document_tests.cpp mods/coop/net/editor_document.h
+	@mkdir -p $(B)/host
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop -Isdk/include $(filter %.cpp,$^) -o $@
+$(B)/host/editor_store_tests.exe: mods/coop/editor_store.cpp $(EDITOR_DELTA_SRC) tests/editor_store_tests.cpp
+	@mkdir -p $(B)/host
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop $^ -o $@
+$(B)/host/editor_protocol_tests.exe: $(EDITOR_WIRE_SRC) tests/editor_protocol_tests.cpp mods/coop/net/editor_document.h mods/coop/net/editor_protocol.h mods/coop/net/editor_complexity.h
+	@mkdir -p $(B)/host
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop $(filter %.cpp,$^) -o $@
+$(B)/host/editor_project_tests.exe: $(EDITOR_PROJECT_SRC) tests/editor_project_tests.cpp
+	@mkdir -p $(B)/host
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop -Isdk/include $^ -o $@
+$(B)/host/editor_session_tests.exe: $(EDITOR_SESSION_SRC) tests/editor_session_tests.cpp tests/editor_complexity_session_fixture.h mods/coop/net/editor_document.h mods/coop/net/editor_protocol.h mods/coop/net/editor_complexity.h mods/coop/editor_session.h
+	@mkdir -p $(B)/host
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop $(filter %.cpp,$^) -o $@ -lws2_32
+$(B)/host/session_transport_tests.exe: $(SESSION_TRANSPORT_SRC) tests/session_transport_tests.cpp mods/coop/net/session.h
+	@mkdir -p $(B)/host
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop $(SESSION_TRANSPORT_SRC) tests/session_transport_tests.cpp -o $@ -lws2_32
+$(B)/host/editor_native_save_tests.exe: tests/editor_native_save_windows_tests.cpp mods/coop/editor_native_save.cpp mods/coop/editor_native_save.h mods/coop/editor_native.h mods/coop/editor_native_scale.h $(ADVENTURE_ABI_HEADERS)
+	@mkdir -p $(B)/host
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop -Isdk/include tests/editor_native_save_windows_tests.cpp -o $@
+$(B)/host/adventure_editor_preview_tests.exe: tests/adventure_editor_preview_windows_tests.cpp mods/coop/adventure_native.cpp mods/coop/adventure_native.h mods/coop/editor_native.h mods/coop/editor_native_scale.h $(ADVENTURE_ABI_HEADERS) mods/coop/net/session.cpp mods/coop/net/connection.cpp mods/coop/net/udp.cpp mods/coop/net/crc32.cpp mods/coop/adventure_world.h mods/coop/player_rules.h
+	@mkdir -p $(B)/host
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop -Isdk/include tests/adventure_editor_preview_windows_tests.cpp mods/coop/net/session.cpp mods/coop/net/connection.cpp mods/coop/net/udp.cpp mods/coop/net/crc32.cpp -o $@ -lws2_32
+$(B)/host/editor_runtime_windows_tests.exe: $(EDITOR_RUNTIME_FIXTURE_SRC) tests/editor_runtime_service_pulse_fixture.h tests/editor_runtime_pose_commit_fixture.h tests/editor_runtime_native_dirty_fixture.h mods/coop/editor_service_pulse.h mods/coop/editor_asset_diagnostic.h tests/editor_runtime_model_admission_fixture.h tests/editor_runtime_projection_scope_fixture.h tests/editor_runtime_terrain_transition_fixture.h tests/editor_runtime_capture_identity_fixture.h tests/editor_runtime_rejection_restore_fixture.h tests/editor_runtime_persistence_fixture.h tests/editor_runtime_complexity_fixture.h tests/editor_runtime_inverse_settlement_fixture.h tests/editor_runtime_staged_capture_fixture.h tests/editor_runtime_scene_alias_fixture.h tests/editor_runtime_completion_wake_fixture.h mods/coop/editor_runtime.cpp mods/coop/editor_runtime.h mods/coop/editor_metrics.h mods/coop/editor_stage_metrics.h mods/coop/editor_native.h mods/coop/editor_native_authoring.h mods/coop/editor_native_scale.h mods/coop/editor_reopen_identity.h mods/coop/editor_native_bindings.h mods/coop/editor_native_save.h mods/coop/adventure_native.h mods/coop/editor_store.h mods/coop/editor_project.h mods/coop/editor_placement_diagnostic.h mods/coop/editor_session.h $(wildcard mods/coop/net/editor_*.h) $(ADVENTURE_ABI_HEADERS)
+	@mkdir -p $(B)/host
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop -Isdk/include $(EDITOR_RUNTIME_FIXTURE_SRC) -o $@ -lws2_32
+$(B)/host/package_admission_tests.exe: $(PACKAGE_ADMISSION_SRC) tests/package_admission_tests.cpp mods/coop/package_admission.h
+	@mkdir -p $(B)/host
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop $(PACKAGE_ADMISSION_SRC) tests/package_admission_tests.cpp -o $@
+
+$(B)/host/package_admission_windows_tests.exe: $(PACKAGE_ADMISSION_WINDOWS_SRC) tests/package_admission_windows_tests.cpp mods/coop/package_admission.h mods/coop/package_admission_windows.h updater/sha256.cpp
+	@mkdir -p $(B)/host
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop -Isdk/include $(PACKAGE_ADMISSION_WINDOWS_SRC) updater/sha256.cpp tests/package_admission_windows_tests.cpp -o $@
+
+$(B)/host/adventure_assets_native_tests.exe: $(ADVENTURE_ASSETS_NATIVE_FIXTURE_SRC) mods/coop/adventure_assets.cpp mods/coop/adventure_assets.h mods/coop/package_admission.h mods/coop/package_admission_windows.h $(ADVENTURE_ABI_HEADERS)
+	@mkdir -p $(B)/host
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop -Isdk/include $(ADVENTURE_ASSETS_NATIVE_FIXTURE_SRC) -o $@ -lws2_32
+# The sanitizer builds need the compiler's runtimes: one probe (a stamp per HOSTCXX) says what is
+# missing before any test runs (BUG-0252). SKIP_SANITIZERS=1: a local machine skips them on purpose,
+# loudly; refused in CI (GitHub sets CI=true).
+SAN_STAMP := $(B)/host/sanitizer-probe.$(subst /,_,$(HOSTCXX)).ok
+ifeq ($(SKIP_SANITIZERS),1)
+ifneq ($(CI),)
+$(error SKIP_SANITIZERS=1 is not allowed in CI: the sanitizer tests must run there)
+endif
+SAN :=
+TSAN_RUN :=
+else
+SAN := -fsanitize=address,undefined
+TSAN_RUN = $(if $(shell grep -s setarch $(SAN_STAMP)),setarch $(shell uname -m) -R )
+endif
+
+sanitizer-probe:
+ifneq ($(SKIP_SANITIZERS),1)
+	@test -f $(SAN_STAMP) || tools/sanitizer_probe.sh "$(HOSTCXX)" $(B)/host $(SAN_STAMP)
+endif
+
+# native Linux unit tests for portable netcode. The parts below are independent and mostly wait (sessions over
+# localhost UDP, the lab self-test's fake runs): `make test` runs them at once (TEST_JOBS, output per part as it ends;
+# docs/06-testing.md#testing-lab-speed). `make test TEST_JOBS=1` runs them one after the other.
+TEST_JOBS ?= 8
+NET_SHARDS ?= 8
+UNIT_PARTS := unit-net unit-lab unit-cpp unit-lint unit-tools unit-symbols unit-verdict
+ifneq ($(SKIP_SANITIZERS),1)
+UNIT_PARTS += test-asan test-tsan unit-fuzz
+endif
+.PHONY: $(UNIT_PARTS) unit-parts
+test: sanitizer-probe
+	@mkdir -p $(B)/host
+	$(HOSTCXX) -std=c++20 -O1 -g -Wall -Wextra -Werror -Isdk/include tests/native_build_tests.cpp -o $(B)/host/native_build_tests
+	$(B)/host/native_build_tests
+	python3 tests/large_address_aware_tests.py
+	$(HOSTCXX) -std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop $(PACKAGE_ADMISSION_SRC) tests/package_admission_tests.cpp -o $(B)/host/package_admission_tests
+	$(B)/host/package_admission_tests
 	$(HOSTCXX) -std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop -o $(B)/host/ui_pages_tests tests/ui_pages_tests.cpp
 	$(B)/host/ui_pages_tests
+	$(HOSTCXX) -std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop -o $(B)/host/frame_metrics_tests tests/frame_metrics_tests.cpp
+	$(B)/host/frame_metrics_tests
+	$(MAKE) test-editor
 	$(HOSTCXX) -std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop -o $(B)/host/adventure_hud_tests tests/adventure_hud_tests.cpp
 	$(B)/host/adventure_hud_tests
 	$(HOSTCXX) -std=c++20 -O1 -g -Wall -Imods/coop -o $(B)/host/adventure_tests mods/coop/net/adventure.cpp tests/adventure_tests.cpp
@@ -94,7 +460,150 @@ test:
 	$(HOSTCXX) -std=c++20 -O1 -g -Wall -Wextra -Werror -Imods/coop -o $(B)/host/adventure_pause_tests mods/coop/adventure_pause.cpp mods/coop/net/session.cpp mods/coop/net/connection.cpp mods/coop/net/udp.cpp mods/coop/net/crc32.cpp tests/adventure_pause_tests.cpp
 	$(B)/host/adventure_pause_tests
 	python3 tests/test_uifind.py
+	python3 tests/editor_performance_tool_tests.py
+	python3 tests/editor_commit_performance_tool_tests.py
+	python3 tests/editor_memory_accounting_tests.py
+	python3 tests/editor_network_proxy_tests.py
+	python3 tools/tests/coop_editor_lifecycle.py --self-test
+	python3 tools/tests/coop_editor_save.py --self-test
+	python3 tools/tests/coop_editor_creations.py --self-test
+	python3 tools/tests/coop_editor_creation_save.py --self-test
+	python3 tests/editor_creation_contract_output_tests.py
+	python3 tests/windows_native_lane_tests.py
+	python3 tools/tests/coop_editor_outfitter.py --self-test
+	python3 tools/tests/coop_editor_browser_fps.py --self-test
+	python3 tools/tests/coop_editor_terrain_stamp_checks.py --self-test
+	python3 tests/editor_preview_package_tests.py
+	python3 tools/tests/editor_native_audit.py --self-test
+ifeq ($(SKIP_SANITIZERS),1)
+	@echo "WARNING: SKIP_SANITIZERS=1: the ASan/UBSan/TSan tests are NOT RUN"
+endif
+	@$(MAKE) --no-print-directory -j$(TEST_JOBS) -Otarget unit-parts
+ifeq ($(SKIP_SANITIZERS),1)
+	@echo "WARNING: SANITIZER TESTS NOT RUN (SKIP_SANITIZERS=1)"
+endif
+	@echo "make test: all parts passed ($(UNIT_PARTS))"
+
+unit-parts: $(UNIT_PARTS)
+
+unit-net:
+	@mkdir -p $(B)/host
+	$(HOSTCXX) -std=c++20 -O1 -g -Wall -Imods/coop -o $(B)/host/net_tests mods/coop/net/*.cpp updater/pack.cpp updater/sha256.cpp tests/net_tests.cpp
+	python3 tools/tests/shards.py $(NET_SHARDS) $(B)/host/net_tests
+	python3 tools/tests/fakepeer_check.py $(B)/host/net_tests
+
+unit-lab:
+	python3 tools/tests/lab_selftest.py
+	python3 tools/tests/gates_selftest.py
+	python3 tools/tests/walk_selftest.py
+	python3 tools/tests/dash_selftest.py
+	python3 tools/tests/labstart_selftest.py
+
+# the lab's verdicts, reasons, flaky ledger, repeat rule and impact selection (0.7.15 A6-A8, A15, D5): its own part (its
+# fake lab runs wait ~40 s, beside unit-lab's)
+unit-verdict:
+	python3 tools/tests/labverdict_selftest.py
+
+unit-fuzz: sanitizer-probe
+	@mkdir -p $(B)/host
+	$(HOSTCXX) -std=c++20 -O1 -g -Wall -fsanitize=address,undefined -fno-omit-frame-pointer -Imods/coop -o $(B)/host/fuzz_decoders mods/coop/net/*.cpp updater/pack.cpp updater/sha256.cpp tests/fuzz_decoders.cpp
+	ASAN_OPTIONS=detect_leaks=0 UBSAN_OPTIONS=halt_on_error=1 $(B)/host/fuzz_decoders
+
+unit-cpp: sanitizer-probe
+	@mkdir -p $(B)/host/jpeg
+	$(HOSTCXX) -std=c++20 -O1 -g -Wall $(SAN) -Imods/coop -o $(B)/host/validate_tests tests/validate_tests.cpp
+	$(B)/host/validate_tests
+	$(HOSTCXX) -std=c++20 -O1 -g -Wall $(SAN) -Imods/coop -o $(B)/host/cell_tests tests/cell_tests.cpp
+	$(B)/host/cell_tests
+	$(HOSTCXX) -std=c++20 -O1 -g -Wall $(SAN) -Imods/coop -o $(B)/host/npc_tests tests/npc_tests.cpp
+	$(B)/host/npc_tests
+	$(HOSTCXX) -std=c++20 -O1 -g -Wall $(SAN) -Imods/coop -o $(B)/host/space_tests tests/space_tests.cpp
+	$(B)/host/space_tests
+	@# D3 of 0.7.15: the Civ rules (civ_logic.h, BUG-1163)
+	$(HOSTCXX) -std=c++20 -O1 -g -Wall $(SAN) -Imods/coop -o $(B)/host/civ_tests tests/civ_tests.cpp
+	$(B)/host/civ_tests
+	@# E1 of 0.7.15: the per-player store on the host's disk (BUG-1149)
+	$(HOSTCXX) -std=c++20 -O1 -g -Wall $(SAN) -Imods/coop -o $(B)/host/store_tests tests/store_tests.cpp
+	$(B)/host/store_tests
+	@# wave C of 0.7.15: mirror registry, snapshot receiver, world id and lifecycle observers, host-busy model
+	$(HOSTCXX) -std=c++20 -O1 -g -Wall $(SAN) -Imods/coop -o $(B)/host/core_tests tests/core_tests.cpp
+	$(B)/host/core_tests
+	@# D3 of 0.7.15: the Tribe rules (tribe_logic.h, BUG-1161) and the member animations' message type (C7, BUG-1160)
+	$(HOSTCXX) -std=c++20 -O1 -g -Wall $(SAN) -Imods/coop -o $(B)/host/tribe_tests tests/tribe_tests.cpp
+	$(B)/host/tribe_tests
+	$(HOSTCXX) -std=c++20 -O1 -g -Wall $(SAN) -Imods/coop -o $(B)/host/wire_tests tests/wire_tests.cpp
+	$(B)/host/wire_tests
+	$(HOSTCXX) -std=c++20 -O1 -g -Wall $(SAN) -Imods/coop -o $(B)/host/text_tests tests/text_tests.cpp
+	$(B)/host/text_tests
+	$(HOSTCXX) -std=c++20 -O1 -g -Wall $(SAN) -o $(B)/host/path_mask_tests tests/path_mask_tests.cpp
+	$(B)/host/path_mask_tests
+	@! $(B)/host/path_mask_tests --old > $(B)/host/path_mask_tests_old.txt || { echo "path_mask_tests --old must fail (BUG-1124)"; exit 1; }
+	$(HOSTCXX) -std=c++20 -O1 -g -Wall $(SAN) -o $(B)/host/jpeg_tests tests/jpeg_tests.cpp sporekit/jpeg.cpp
+	$(B)/host/jpeg_tests $(B)/host/jpeg
+	python3 tools/tests/jpeg_check.py $(B)/host/jpeg
+	$(HOSTCXX) -std=c++20 -O1 -g -Wall $(SAN) -Imods/coop -o $(B)/host/fixes_tests tests/fixes_tests.cpp mods/coop/fixes.cpp
+	$(B)/host/fixes_tests $(wildcard mods/coop/*.cpp mods/coop/*.h mods/coop/net/*.cpp mods/coop/net/*.h updater/*.cpp updater/*.h)
+
+unit-lint:
 	python3 tools/re_lint.py
+	python3 tools/docs_lint.py
+	python3 tools/glyph_lint.py
+	python3 tools/tickets.py check
+	python3 tools/ci_lint.py
+	python3 tools/ratchet_lint.py
+	python3 tools/ratchet_lint.py --self-test
+	python3 tools/fix_retire.py check
+	python3 tools/fix_retire.py check --self-test
+	python3 tools/msg_manifest.py check
+	python3 tools/msg_manifest.py --self-test > $(B)/host/msg_manifest_selftest.txt || { cat $(B)/host/msg_manifest_selftest.txt; exit 1; }
+
+unit-tools:
+	python3 tools/tests/tools_selftest.py
+	python3 tools/tests/tickets_git_check.py
+	python3 tools/tests/prerelease_identity_check.py
+	python3 tools/tests/visual_selftest.py
+	python3 tools/tests/state_fields_check.py
+	python3 tools/tests/test_lint.py
+	python3 tools/tests/harness_selftest.py
+
+# B5 (BUG-1123): crash_triage.py symbolises coop.dll / sporekit.dll frames with the debug symbols of the
+# report's version (symbols_pack.sh of the local build, a fake gh for the download; no network)
+unit-symbols: $(B)/coop.dll $(B)/sporekit.dll $(B)/steam_api.dll
+	python3 tools/tests/triage_symbols_check.py $(B) $(LLVM_MINGW)
+
+# the same unit tests under AddressSanitizer: a freed object used later fails here (BUG-0029)
+test-asan: sanitizer-probe
+	@mkdir -p $(B)/host
+	$(HOSTCXX) -std=c++20 -O1 -g -Wall -fsanitize=address,undefined -fno-omit-frame-pointer -Imods/coop -o $(B)/host/net_tests_asan mods/coop/net/*.cpp updater/pack.cpp updater/sha256.cpp tests/net_tests.cpp
+	ASAN_OPTIONS=detect_leaks=0 UBSAN_OPTIONS=halt_on_error=1 python3 tools/tests/shards.py $(NET_SHARDS) $(B)/host/net_tests_asan
+	@# --nofix: every fix test runs to the end and fails (BUG-0214: it used to abort at test_dbbf_wrap); every shard
+	@# must reach its end, the FAILs counted over all of them
+	@ASAN_OPTIONS=detect_leaks=0 UBSAN_OPTIONS=halt_on_error=1 python3 tools/tests/shards.py $(NET_SHARDS) \
+	  $(B)/host/net_tests_asan --nofix --expect-fail --out $(B)/host/net_tests_nofix.txt \
+	  || { echo "net_tests_asan --nofix: expected FAILs to the end"; exit 1; }
+	@# the decoder bounds fixes' off side reads out of bounds: ASan must stop it (BUG-0208, BUG-0047)
+	@! ASAN_OPTIONS=detect_leaks=0 $(B)/host/net_tests_asan --old-dbbf > $(B)/host/net_tests_old_dbbf.txt 2>&1 \
+	  && grep -q 'AddressSanitizer' $(B)/host/net_tests_old_dbbf.txt || { echo "net_tests_asan --old-dbbf: ASan did not report"; exit 1; }
+	@! ASAN_OPTIONS=detect_leaks=0 $(B)/host/net_tests_asan --old-refpack > $(B)/host/net_tests_old_refpack.txt 2>&1 \
+	  && grep -q 'AddressSanitizer' $(B)/host/net_tests_old_refpack.txt || { echo "net_tests_asan --old-refpack: ASan did not report"; exit 1; }
+	@echo "net_tests_asan: --nofix ran to the end, --old-dbbf and --old-refpack died under ASan"
+
+# the setup's shared release state under ThreadSanitizer (BUG-0077; `release_tsan --old` must fail)
+test-tsan: sanitizer-probe
+	@mkdir -p $(B)/host
+	$(HOSTCXX) -std=c++20 -O1 -g -Wall -fsanitize=thread -o $(B)/host/release_tsan tests/release_tsan.cpp updater/pack.cpp updater/sha256.cpp
+	TSAN_OPTIONS=halt_on_error=1 $(TSAN_RUN)$(B)/host/release_tsan
+	$(HOSTCXX) -std=c++20 -O1 -g -Wall -fsanitize=thread -Imods/coop -o $(B)/host/core_tests_tsan tests/core_tests.cpp
+	TSAN_OPTIONS=halt_on_error=1 $(TSAN_RUN)$(B)/host/core_tests_tsan
+	@! TSAN_OPTIONS=halt_on_error=1 $(TSAN_RUN)$(B)/host/release_tsan --old-merge > $(B)/host/release_tsan_old_merge.txt 2>&1 \
+	  || { cat $(B)/host/release_tsan_old_merge.txt; echo "release_tsan --old-merge must fail (BUG-0244)"; exit 1; }
+
+# Windows-side unit tests (file handling of the updater and of received worlds), run under Wine in
+# a lane's bottle by tools/tests/win_unit.py (lab test win_unit)
+test-win: $(B)/win_tests.exe $(B)/SporeCoopSetup.exe
+$(B)/win_tests.exe: tests/win_tests.cpp updater/winupdate.h updater/pack.h updater/sha256.h installer/install.cpp installer/install.h mods/coop/slotfs.cpp mods/coop/slotfs.h updater/winupdate.cpp updater/pending.h updater/pack.cpp updater/sha256.cpp sporekit/inifile.cpp sporekit/inifile.h
+	@mkdir -p $(B)
+	$(CXX) $(CXXFLAGS) -static -o $@ tests/win_tests.cpp installer/install.cpp mods/coop/slotfs.cpp updater/winupdate.cpp updater/pack.cpp updater/sha256.cpp sporekit/inifile.cpp -lwinhttp -lws2_32
 
 # Optional Win32 ABI test with a fake native adapter. Run the .exe on Windows (no game).
 test-captains-windows: $(B)/host/adventure_captains_tests.exe
@@ -107,8 +616,6 @@ $(B)/host/adventure_lifecycle_tests.exe: mods/coop/adventure_world_lifecycle.cpp
 	@mkdir -p $(B)/host
 	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop -Isdk/include $^ -o $@
 
-ADVENTURE_ABI_HEADERS := sdk/include/sporekit.h sdk/include/sporekit_game.hpp mods/coop/game.h mods/coop/net/protocol.h
-
 .PHONY: test-pause-windows
 test-pause-windows: $(B)/host/adventure_pause_native_tests.exe
 $(B)/host/adventure_pause_native_tests.exe: tests/adventure_pause_native_tests.cpp mods/coop/adventure_pause_native.cpp mods/coop/adventure_pause_native.h $(ADVENTURE_ABI_HEADERS) $(B)/obj/tests/native_fixture_rc.o
@@ -117,12 +624,12 @@ $(B)/host/adventure_pause_native_tests.exe: tests/adventure_pause_native_tests.c
 
 .PHONY: test-memory-windows
 test-memory-windows: $(B)/host/readable_memory_tests.exe
-$(B)/host/readable_memory_tests.exe: tests/readable_memory_tests.cpp sdk/include/sporekit_game.hpp
+$(B)/host/readable_memory_tests.exe: tests/readable_memory_tests.cpp sdk/include/sporekit_game.hpp sdk/include/sporekit_build.hpp
 	@mkdir -p $(B)/host
-	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Isdk/include tests/readable_memory_tests.cpp -o $@
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Wl,--large-address-aware -Isdk/include tests/readable_memory_tests.cpp -o $@
 
 ACTIONS_TEST_SRC := mods/coop/adventure_world_actions.cpp tests/adventure_actions_tests.cpp
-VEHICLES_TEST_SRC := mods/coop/adventure_world_vehicles.cpp tests/adventure_vehicle_tests.cpp
+VEHICLES_TEST_SRC := mods/coop/adventure_world_vehicles.cpp mods/coop/native_behavior_tree.cpp tests/adventure_vehicle_tests.cpp
 RELATIONSHIPS_TEST_SRC := mods/coop/adventure_relationships.cpp tests/adventure_relationship_tests.cpp
 SOCIAL_TEST_SRC := mods/coop/adventure_social.cpp tests/adventure_social_tests.cpp
 MIRROR_TEST_SRC := tests/adventure_mirror_tests.cpp mods/coop/adventure_flow.cpp mods/coop/adventure_targeting.cpp mods/coop/net/adventure.cpp mods/coop/net/session.cpp mods/coop/net/connection.cpp mods/coop/net/udp.cpp mods/coop/net/crc32.cpp
@@ -133,7 +640,7 @@ $(B)/host/adventure_actions_tests.exe: $(ACTIONS_TEST_SRC) mods/coop/adventure_w
 	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop -Isdk/include $(ACTIONS_TEST_SRC) -o $@
 
 test-vehicles-windows: $(B)/host/adventure_vehicle_tests.exe
-$(B)/host/adventure_vehicle_tests.exe: $(VEHICLES_TEST_SRC) mods/coop/adventure_world_vehicles.h $(ADVENTURE_ABI_HEADERS)
+$(B)/host/adventure_vehicle_tests.exe: $(VEHICLES_TEST_SRC) mods/coop/adventure_world_vehicles.h mods/coop/native_behavior_tree.h $(ADVENTURE_ABI_HEADERS)
 	@mkdir -p $(B)/host
 	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop -Isdk/include $(VEHICLES_TEST_SRC) -o $@
 
@@ -163,9 +670,9 @@ $(B)/host/adventure_control_tests.exe: tests/adventure_control_tests.cpp mods/co
 $(B)/obj/tests/native_fixture_rc.o: tests/native_fixture.rc tests/native_fixture.manifest
 	@mkdir -p $(dir $@)
 	$(WINDRES) -i tests/native_fixture.rc -o $@ --include-dir tests
-$(B)/host/adventure_tick_dispatch_tests.exe: tests/adventure_blocked_update_tests.cpp mods/coop/game.cpp $(ADVENTURE_ABI_HEADERS) $(B)/obj/tests/native_fixture_rc.o
+$(B)/host/adventure_tick_dispatch_tests.exe: tests/adventure_blocked_update_tests.cpp mods/coop/game.cpp mods/coop/fixes.cpp mods/coop/fixes.h $(ADVENTURE_ABI_HEADERS) $(B)/obj/tests/native_fixture_rc.o
 	@mkdir -p $(B)/host
-	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop -Isdk/include tests/adventure_blocked_update_tests.cpp $(B)/obj/tests/native_fixture_rc.o -o $@
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop -Isdk/include tests/adventure_blocked_update_tests.cpp mods/coop/fixes.cpp $(B)/obj/tests/native_fixture_rc.o -o $@
 
 # Includes actual debug.cpp; discard unrelated command implementations at link time.
 test-debug-capabilities-windows: $(B)/host/adventure_debug_capability_tests.exe
@@ -175,12 +682,12 @@ $(B)/host/adventure_debug_capability_tests.exe: tests/adventure_debug_capability
 
 # The mirror fixture includes world.cpp directly; list it as a dependency only.
 test-mirror-windows: $(B)/host/adventure_mirror_tests.exe
-$(B)/host/adventure_mirror_tests.exe: $(MIRROR_TEST_SRC) mods/coop/adventure_world.cpp mods/coop/adventure_world.h mods/coop/adventure_world_actions.h mods/coop/adventure_world_lifecycle.h mods/coop/adventure_world_vehicles.h mods/coop/adventure_relationships.h mods/coop/adventure_targeting.h mods/coop/net/adventure.h mods/coop/net/adventure_health.h mods/coop/net/adventure_actor_motion.h mods/coop/net/session.h mods/coop/net/buffer.h $(ADVENTURE_ABI_HEADERS)
+$(B)/host/adventure_mirror_tests.exe: $(MIRROR_TEST_SRC) mods/coop/adventure_world.cpp mods/coop/adventure_world.h mods/coop/adventure_world_actions.h mods/coop/adventure_world_lifecycle.h mods/coop/adventure_world_vehicles.h mods/coop/adventure_relationships.h mods/coop/adventure_targeting.h mods/coop/net/adventure.h mods/coop/net/adventure_health.h mods/coop/net/adventure_actor_motion.h mods/coop/net/session.h mods/coop/net/buffer.h $(ADVENTURE_ABI_HEADERS) mods/coop/player_rules.h
 	@mkdir -p $(B)/host
 	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop -Isdk/include $(MIRROR_TEST_SRC) -o $@ -lws2_32
 
 test-progress-windows: $(B)/host/adventure_progress_tests.exe
-$(B)/host/adventure_progress_tests.exe: mods/coop/adventure_progress.cpp tests/adventure_progress_tests.cpp mods/coop/adventure_progress.h mods/coop/net/dbpf.h sdk/include/sporekit.h sdk/include/sporekit_game.hpp
+$(B)/host/adventure_progress_tests.exe: mods/coop/adventure_progress.cpp tests/adventure_progress_tests.cpp mods/coop/adventure_progress.h mods/coop/net/dbpf.h sdk/include/sporekit.h sdk/include/sporekit_game.hpp sdk/include/sporekit_build.hpp
 	@mkdir -p $(B)/host
 	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop -Isdk/include mods/coop/adventure_progress.cpp tests/adventure_progress_tests.cpp -o $@
 
@@ -193,7 +700,83 @@ $(B)/host/adventure_results_tests.exe: mods/coop/adventure_results.cpp mods/coop
 clean:
 	rm -rf $(B)
 
+# A2 (BUG-1120): the release build of HEAD as CI makes it (a git archive copy, CI's Python and toolchain,
+# every step of the tag workflow that runs locally); before every tag: docs/10-dev-pipeline.md#pipeline-release-dry
+.PHONY: release-dry
+release-dry:
+	tools/release_dry.sh
+
+# C6 (NET-10, BUG-1133): tests/fuzz_decoders.cpp as a libFuzzer target (clang): coverage-guided, every decoder of the
+# protocol and of mods/coop/wire, under ASan + UBSan. Not part of `make test` (that runs the fixed-seed build); CI runs it
+# on every push for FUZZ_SECONDS and weekly for longer (.github/workflows/fuzz.yml). Corpus: $(B)/host/fuzz-corpus (kept
+# between local runs; CI starts empty). A finding is a crash-* file in $(B)/host: `$(B)/host/fuzz_lib <file>` replays it.
+FUZZ_CXX ?= clang++
+FUZZ_SECONDS ?= 60
+.PHONY: fuzz
+fuzz:
+	@mkdir -p $(B)/host/fuzz-corpus
+	$(FUZZ_CXX) -std=c++20 -O1 -g -Wall -Wno-unused-function -DFUZZ_LIBFUZZER -fsanitize=fuzzer,address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer -Imods/coop -o $(B)/host/fuzz_lib mods/coop/net/*.cpp updater/pack.cpp updater/sha256.cpp tests/fuzz_decoders.cpp
+	cd $(B)/host && ASAN_OPTIONS=detect_leaks=0 ./fuzz_lib -max_total_time=$(FUZZ_SECONDS) -max_len=4096 -timeout=10 -rss_limit_mb=2048 -print_final_stats=1 fuzz-corpus
+
+# the toolchain folder this Makefile uses (tools/package.sh, tools/tests/update_check.py ask here)
+.PHONY: toolchain-path
+toolchain-path:
+	@echo $(LLVM_MINGW)
+
 -include $(KIT_OBJ:.o=.d) $(COOP_OBJ:.o=.d)
+
+# Startup policy and controlled polling detours; never launches a game/window.
+.PHONY: test-input test-input-windows
+test-input: $(B)/host/sporekit_input_policy_tests
+	$(B)/host/sporekit_input_policy_tests
+test-input-windows: $(B)/host/sporekit_input_policy_tests.exe $(B)/host/sporekit_input_tests.exe
+$(B)/host/sporekit_input_policy_tests: tests/sporekit_input_policy_tests.cpp sporekit/input_policy.h
+	@mkdir -p $(B)/host
+	$(HOSTCXX) -std=c++20 -O2 -Wall -Wextra -Werror $< -o $@
+$(B)/host/sporekit_input_policy_tests.exe: tests/sporekit_input_policy_tests.cpp sporekit/input_policy.h
+	@mkdir -p $(B)/host
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -static $< -o $@
+$(B)/host/sporekit_input_tests.exe: tests/sporekit_input_windows_tests.cpp sporekit/input.cpp sporekit/input_policy.h sporekit/core.h sdk/include/sporekit.h
+	@mkdir -p $(B)/host
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -static $< -o $@ -luser32
+
+# Actual mod manager with controlled Win32 loader/queue endpoints; no game calls.
+.PHONY: test-mod-lifecycle-windows
+test-mod-lifecycle-windows: $(B)/host/sporekit_mod_lifecycle_tests.exe
+$(B)/host/sporekit_mod_lifecycle_tests.exe: tests/sporekit_mod_lifecycle_windows_tests.cpp sporekit/mods.cpp sporekit/core.h sdk/include/sporekit.h
+	@mkdir -p $(B)/host
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -static $< -o $@
+
+.PHONY: test-refpack-memo-windows
+test-refpack-memo-windows: $(B)/host/sporekit_refpack_memo_tests.exe
+$(B)/host/sporekit_refpack_memo_tests.exe: tests/sporekit_refpack_memo_windows_tests.cpp sporekit/refpack_memo.cpp sporekit/refpack_memo.h sporekit/refpack_memo_profile.h sporekit/core.h sdk/include/sporekit.h sdk/include/sporekit_game.hpp sdk/include/sporekit_build.hpp mods/coop/net/dbpf.cpp mods/coop/net/dbpf.h updater/sha256.cpp updater/sha256.h tests/fixtures/editor_native_pose/manifest.h tests/fixtures/editor_native_pose/r48.native.bin
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Isdk/include tests/sporekit_refpack_memo_windows_tests.cpp mods/coop/net/dbpf.cpp updater/sha256.cpp -o $@
+
+.PHONY: test-task-pump-metrics test-task-pump-metrics-windows
+test-task-pump-metrics: $(B)/host/task_pump_metrics_tests
+	$<
+test-task-pump-metrics-windows: $(B)/host/task_pump_metrics_tests.exe
+$(B)/host/task_pump_metrics_tests: tests/task_pump_metrics_tests.cpp sporekit/task_pump_metrics.h mods/coop/editor_service_pulse.h
+	@mkdir -p $(dir $@)
+	$(HOSTCXX) -std=c++20 -O2 -Wall -Wextra -Werror -pthread $< -o $@
+$(B)/host/task_pump_metrics_tests.exe: tests/task_pump_metrics_tests.cpp sporekit/task_pump_metrics.h mods/coop/editor_service_pulse.h
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -static $< -o $@
+
+.PHONY: test-outside-tasks test-outside-tasks-windows
+test-outside-tasks: $(B)/host/outside_tasks_tests
+	$<
+test-outside-tasks-windows: $(B)/host/outside_tasks_tests.exe $(B)/host/outside_tasks_windows_tests.exe
+$(B)/host/outside_tasks_tests: tests/outside_tasks_tests.cpp sporekit/outside_tasks.h
+	@mkdir -p $(dir $@)
+	$(HOSTCXX) -std=c++20 -O2 -Wall -Wextra -Werror -pthread $< -o $@
+$(B)/host/outside_tasks_tests.exe: tests/outside_tasks_tests.cpp sporekit/outside_tasks.h
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -static $< -o $@
+$(B)/host/outside_tasks_windows_tests.exe: tests/outside_tasks_windows_tests.cpp sporekit/console.cpp sporekit/outside_tasks.h sporekit/task_pump_metrics.h sporekit/core.h sdk/include/sporekit.h
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -Wno-missing-field-initializers -static -ffunction-sections -fdata-sections $< -Wl,--gc-sections -lws2_32 -luser32 -o $@
 
 # Preview 6 verified interaction adapters (the tests include their implementation).
 INTERACTION_TEST_NET := mods/coop/net/session.cpp mods/coop/net/connection.cpp mods/coop/net/udp.cpp mods/coop/net/crc32.cpp
@@ -206,3 +789,73 @@ test-pickups-windows: $(B)/host/adventure_pickups_tests.exe
 $(B)/host/adventure_pickups_tests.exe: tests/adventure_pickups_tests.cpp mods/coop/adventure_pickups.cpp mods/coop/adventure_pickups.h $(INTERACTION_TEST_NET) $(ADVENTURE_ABI_HEADERS)
 	@mkdir -p $(B)/host
 	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop -Isdk/include tests/adventure_pickups_tests.cpp $(INTERACTION_TEST_NET) -o $@ -lws2_32
+
+# Passive shared-editor service cadence; deterministic controlled clocks/threads.
+.PHONY: test-editor-pulse test-editor-pulse-windows
+test-editor-pulse: $(B)/host/editor_service_pulse_tests
+	$<
+test-editor-pulse-windows: $(B)/host/editor_service_pulse_tests.exe
+$(B)/host/editor_service_pulse_tests: tests/editor_service_pulse_tests.cpp mods/coop/editor_service_pulse.h
+	@mkdir -p $(dir $@)
+	$(HOSTCXX) -std=c++20 -O2 -Wall -Wextra -Werror -pthread -Imods/coop $< -o $@
+$(B)/host/editor_service_pulse_tests.exe: tests/editor_service_pulse_tests.cpp mods/coop/editor_service_pulse.h
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop $< -o $@
+
+# Read-only canonical asset pages fit the Kit console's fixed 8 KiB response.
+EDITOR_ASSET_DIAGNOSTIC_SRC := tests/editor_asset_diagnostic_tests.cpp $(EDITOR_CORE_SRC) updater/sha256.cpp
+EDITOR_ASSET_DIAGNOSTIC_HEADERS := mods/coop/editor_asset_diagnostic.h mods/coop/editor_native_cast.h mods/coop/net/editor_document.h mods/coop/net/protocol.h updater/sha256.h
+.PHONY: test-editor-assets test-editor-assets-windows
+test-editor: test-editor-assets
+test-editor-assets: $(B)/host/editor_asset_diagnostic_tests
+	$<
+test-editor-assets-windows: $(B)/host/editor_asset_diagnostic_tests.exe
+$(B)/host/editor_asset_diagnostic_tests: $(EDITOR_ASSET_DIAGNOSTIC_SRC) $(EDITOR_ASSET_DIAGNOSTIC_HEADERS) Makefile
+	@mkdir -p $(dir $@)
+	$(HOSTCXX) -std=c++20 -O2 -Wall -Wextra -Werror -Imods/coop $(EDITOR_ASSET_DIAGNOSTIC_SRC) -o $@
+$(B)/host/editor_asset_diagnostic_tests.exe: $(EDITOR_ASSET_DIAGNOSTIC_SRC) $(EDITOR_ASSET_DIAGNOSTIC_HEADERS) Makefile
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop $(EDITOR_ASSET_DIAGNOSTIC_SRC) -o $@
+
+# Explicit diagnostic tree roots must belong to the current native window tree.
+.PHONY: test-sui-tree-root test-sui-tree-root-windows
+test-editor: test-sui-tree-root
+test-sui-tree-root: $(B)/host/sui_tree_root_tests
+	$<
+test-sui-tree-root-windows: $(B)/host/sui_tree_root_tests.exe
+test-editor-windows: $(B)/host/sui_tree_root_tests.exe
+$(B)/host/sui_tree_root_tests: tests/sui_tree_root_tests.cpp mods/coop/sui_tree_root.h Makefile
+	@mkdir -p $(dir $@)
+	$(HOSTCXX) -std=c++20 -O2 -g -Wall -Wextra -Werror $< -o $@
+$(B)/host/sui_tree_root_tests.exe: tests/sui_tree_root_tests.cpp mods/coop/sui_tree_root.h Makefile
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -static $< -o $@
+
+# Actual upstream campaign services under shared authoring/creation/GA holds.
+.PHONY: test-campaign-services-windows
+test-campaign-services-windows: $(B)/host/campaign_services_tests.exe
+$(B)/host/campaign_services_tests.exe: tests/campaign_services_windows_tests.cpp mods/coop/autosave.cpp mods/coop/autosave_glue.h mods/coop/store.cpp mods/coop/store.h mods/coop/host_busy.cpp mods/coop/host_busy.h $(INTERACTION_TEST_NET) $(ADVENTURE_ABI_HEADERS) mods/coop/adventure_world.h mods/coop/player_rules.h mods/coop/civ.h
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -Wno-missing-field-initializers -ffunction-sections -fdata-sections -Wl,--gc-sections -static -Isdk/include -Imods/coop tests/campaign_services_windows_tests.cpp $(INTERACTION_TEST_NET) -o $@ -lws2_32 -luser32 -lshell32
+
+# The production adventure adapter uses the canonical preview place independently of native keys.
+.PHONY: test-adventure-place-windows
+test-adventure-place-windows: $(B)/host/adventure_place_tests.exe
+test-editor-windows: $(B)/host/adventure_place_tests.exe
+$(B)/host/adventure_place_tests.exe: tests/adventure_place_tests.cpp mods/coop/modes.cpp mods/coop/modes.h mods/coop/driver.h mods/coop/drive_plan.h mods/coop/mouse.h mods/coop/cell_logic.h mods/coop/creations.h mods/coop/creature_hp.h mods/coop/adventure_native.h mods/coop/adventure.h mods/coop/world_name.h mods/coop/net/interp.h mods/coop/fixes.cpp mods/coop/fixes.h $(ADVENTURE_ABI_HEADERS) Makefile
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -Wno-missing-field-initializers -ffunction-sections -fdata-sections -Wl,--gc-sections -static -Isdk/include -Imods/coop tests/adventure_place_tests.cpp mods/coop/fixes.cpp -o $@
+
+# One native hold detour dispatches campaign carrying and co-op adventure pickups.
+.PHONY: test-adventure-shared-hold-windows
+test-adventure-shared-hold-windows: $(B)/host/adventure_shared_hold_tests.exe
+$(B)/host/adventure_shared_hold_tests.exe: tests/adventure_shared_hold_tests.cpp mods/coop/player_rules.cpp mods/coop/player_rules.h mods/coop/adventure_world.cpp mods/coop/adventure_world.h mods/coop/fixes.cpp $(SESSION_TRANSPORT_SRC) $(ADVENTURE_ABI_HEADERS)
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -ffunction-sections -fdata-sections -Wl,--gc-sections -static -Isdk/include -Imods/coop tests/adventure_shared_hold_tests.cpp mods/coop/fixes.cpp $(SESSION_TRANSPORT_SRC) -o $@ -lws2_32
+
+# The verified generic native behavior tree has one owner across GA vehicles and Civ.
+.PHONY: test-shared-behavior-tree-windows
+test-shared-behavior-tree-windows: $(B)/host/shared_behavior_tree_tests.exe
+$(B)/host/shared_behavior_tree_tests.exe: tests/shared_behavior_tree_tests.cpp mods/coop/native_behavior_tree.cpp mods/coop/native_behavior_tree.h mods/coop/adventure_world_vehicles.cpp mods/coop/adventure_world_vehicles.h mods/coop/fixes.cpp $(SESSION_TRANSPORT_SRC) $(ADVENTURE_ABI_HEADERS)
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -ffunction-sections -fdata-sections -Wl,--gc-sections -static -Isdk/include -Imods/coop tests/shared_behavior_tree_tests.cpp mods/coop/native_behavior_tree.cpp mods/coop/adventure_world_vehicles.cpp mods/coop/fixes.cpp $(SESSION_TRANSPORT_SRC) -o $@ -lws2_32

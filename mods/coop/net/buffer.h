@@ -6,6 +6,8 @@
 #include <string>
 #include <vector>
 
+#include "utf8.h"
+
 namespace net {
 
 class Writer {
@@ -22,15 +24,16 @@ public:
         const uint8_t* b = static_cast<const uint8_t*>(p);
         data.insert(data.end(), b, b + n);
     }
+    // a longer text is cut between two characters, never inside one (BUG-0164)
     void str8(const std::string& s)
     {
-        size_t n = s.size() > 255 ? 255 : s.size();
+        size_t n = utf8::g_cut_fix ? utf8::cut_bytes(s, 255) : (s.size() > 255 ? 255 : s.size());
         u8((uint8_t)n);
         raw(s.data(), n);
     }
     void str16(const std::string& s)
     {
-        size_t n = s.size() > 4000 ? 4000 : s.size();
+        size_t n = utf8::g_cut_fix ? utf8::cut_bytes(s, 4000) : (s.size() > 4000 ? 4000 : s.size());
         u16((uint16_t)n);
         raw(s.data(), n);
     }
@@ -80,7 +83,8 @@ public:
             ok_ = false;
             return false;
         }
-        memcpy(out, p_ + pos_, n);
+        if (n) // an empty read may pass nullptr (an empty vector's data()): memcpy must not see it
+            memcpy(out, p_ + pos_, n);
         pos_ += n;
         return true;
     }

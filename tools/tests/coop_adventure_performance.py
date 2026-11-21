@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# suite: none (opt-in native Windows fixture requiring an already-owned hidden lab and explicit private inputs; automatic launcher qualification is tracked by BUG-1259)
 """Check a running, isolated two-player adventure for the 438-actor FPS regression.
 
 Start Adventure Town with coop_adventure.py pair first. This check does not drive

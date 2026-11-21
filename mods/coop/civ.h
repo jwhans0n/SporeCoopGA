@@ -24,11 +24,13 @@ struct Ctx {
     net::Session* sess = nullptr;
     std::function<void(const std::string&)> feed;
     std::function<void(const std::string&)> notice; // shown to every player
+    std::function<bool()> host_away; // guest: the host left the world (main menu): we play on locally
     std::function<uint8_t(uint8_t player)> role_of;  // 0 none, 1 military, 2 economic, 3 religious
     // host: a vote of all players; `action` runs when it passes (false: another vote is running)
     std::function<bool(const std::string& text, const std::string& done, std::function<void()> action)> vote;
     // a world beacon (label + edge arrow) on this machine
     std::function<void(const net::Vec3& pos, const std::string& text, double seconds, uint32_t argb)> beacon;
+    std::function<uint32_t()> space_place; // BUG-0751: in Space the place (PlanetID | 0x40000000 on a planet), else 0
 };
 // own vehicles selected now, else 1 if an own city's menu was opened last (the "give" button)
 int own_selected(bool* city = nullptr);
@@ -36,11 +38,23 @@ int own_selected(bool* city = nullptr);
 int give_selected(uint8_t to);
 
 bool init(const SkHost* host, SkMod* mod, Ctx ctx);
+void shutdown(); // remove the shared native tree policy before module teardown
+// BUG-1157: guest: the player civilization's vehicles re-keyed to the host's own designs (designs.cpp); the ones
+// still waiting for the host's answer
+unsigned redesign_vehicles();
 void tick(double now);
 void on_message(uint8_t type, uint8_t from, net::Reader& r);
 void on_session_end();
+void on_world_change(); // a load: the tables of game pointers are cleared (BUG-0059)
+// BUG-0223: once per frame at the top of on_frame (after game::stage_epoch_tick, before messages):
+// C2 (BUG-1141): the stage's root object for world_id.h (null outside the stage)
+const void* world_anchor();
 std::string status();
 std::vector<syncdbg::Entry> sync_entries(); // coop.sync (tests)
+// diagnostics (coop.bodyrec start diag, K3): per vehicle mirror of a guest rows `w<id>` (where it is put: the estimate
+// moved on) and `e<id>` (x: the age of its last state on the sender's clock mapped, s; y: the estimate's speed, m/s;
+// z: the error before the glide, m)
+void for_each_diag(void (*fn)(const char* key, const net::Vec3& p, void* user), void* user);
 std::string list();
 std::string debug(const std::vector<std::string>& args);
 bool active();
@@ -49,5 +63,20 @@ void for_each_owned(void (*fn)(void* obj, const net::Vec3& pos, uint8_t owner, b
 // test bots (coop.targets): every city ("city", host index, owner: player id, 253 shared, -1 other nation)
 // and every player vehicle ("vehicle", net id, owner)
 void for_each_target(void (*fn)(const char* kind, int id, int owner, const net::Vec3& pos, void* user), void* user);
+// the local player's own vehicles (positions), for the effect relay
+std::vector<net::Vec3> local_positions();
+// allocation-free test for the effect relay: is p on one of the local player's vehicles?
+bool near_vehicle(const net::Vec3& p, float radius);
+// BUG-0476: the host's capital (the player civilization's first city), the centre of what a guest without a
+// pointer is sent; false outside Civ
+bool center(net::Vec3& p);
+// BUG-0477: the FireTool hook (squadron.cpp) tells the host who fires where; a guest drops the hits of the
+// host's shots it shows (attacker: the combatant of a mirror, or of a turret it fired from)
+void fire_observed(void* tool, void* owner, const float* aim, void* target, bool fired);
+bool hit_is_cosmetic(void* attacker);
+void fire_local(void* owner, uintptr_t ret, bool fired); // BUG-0530 diagnostics (guest)
+// BUG-0493: the open city planner of this game holds this city (the mod changes none of its buildings then)
+bool planner_holds_city(void* city);
+void planner_probe_tick(); // BUG-0682 tests: `coop.civ planner_probe on`
 
 } // namespace civ

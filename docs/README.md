@@ -1,8 +1,15 @@
 # SporeCoopGA Documentation
 
-SporeCoopGA focuses on playing Galactic Adventures together. Shared live
-Adventure Editor support, followed by other Spore editors, is planned in the
-[roadmap](../README.md#roadmap).
+SporeCoopGA focuses on playing Galactic Adventures together. Shared Adventure
+Editor authoring support is under validation. Preview 9's crew, terrain and
+independent asset-editor additions have pending native acceptance; other
+milestones follow in the [roadmap](../README.md#roadmap).
+
+The source candidate is `0.7.15.0-ga-editor-preview.16`, protocol 30. It
+retains preview 14 editing fixes while integrating pinned upstream 0.7.15.
+This source synchronization leaves the installed preview unchanged;
+see [protocol scope](04-netcode.md#netcode-protocol-scope). Published GA gameplay
+and inherited upstream test results keep their original version labels.
 
 ## Galactic Adventures
 
@@ -16,7 +23,13 @@ Adventure Editor support, followed by other Spore editors, is planned in the
 - [Preview 8 validation report](validation-ga-preview.8.md): recorded music, item, confirmation, lighting and downed checks.
 - [Preview 7 integration report](integration-ga-upstream-0.7.2.1.md): completed historical upstream merge validation.
 - [Known issues](known-issues.md): recorded limitations and open problems.
-- [Multiplayer Adventure Editor implementation plan](MULTIPLAYER-ADVENTURE-EDITOR-PLAN.md): initial preview, Undo rules and native research gates; later shared history, independent acts and playtesting while editing. Planned, not implemented.
+- [Shared Adventure Editor development guide](MULTIPLAYER-ADVENTURE-EDITOR.md): placement collaboration under validation, native controls, saving and recovery. Separate from the published gameplay release.
+- [Shared editor validation report](reports/EDITOR-IMPLEMENTATION-VALIDATION.md): automated evidence, isolated native runs and outstanding acceptance gates.
+- [Editor preview 9 validation](reports/EDITOR-PREVIEW9-VALIDATION.md): protocol 23 authoring additions, completed portable checks and pending native/lab acceptance.
+- [Shared editor testing playbook](EDITOR-TESTING-PLAYBOOK.md): focused development checks, integration checkpoints and opt-in overnight release acceptance.
+- [Automatic editor sharing validation](reports/EDITOR-NATIVE-FLOW-VALIDATION.md): native editing, cast settings/imports, solo and group testing, with preview 3 evidence retained alongside preview 4 results.
+- [Shared authoring progress](EDITOR-SEMANTICS-PROGRESS.md): class properties, templates, shared acts, objectives and conversations; [first development checkpoint](reports/EDITOR-SEMANTICS-VALIDATION.md).
+- [Multiplayer Adventure Editor implementation plan](MULTIPLAYER-ADVENTURE-EDITOR-PLAN.md): acceptance stages and Undo rules; later shared history and playtesting while editing.
 
 The first published GA release **[`0.7.4.0`](https://github.com/jwhans0n/SporeCoopGA/releases/tag/v0.7.4.0)**
 uses protocol 15 and remains experimental. It retains preview 12 gameplay,
@@ -50,7 +63,16 @@ are historical; they do not expand the GA compatibility stated above.
 8. [Interface](08-ui.md): native menus, connection window, lobby and LAN discovery.
 9. [Playing together in all phases](09-coop-design.md): upstream design and engine findings in [re/](re/).
 10. [Development pipeline](10-dev-pipeline.md): test lanes, fixtures, network testing and knowledge rules.
+11. [Rivals: own bases in one world](11-rivals.md): the upstream design for independent nests, tribes, nations and empires, NPC influence, the draft and the Chronicle.
+
+- [Reporting a problem](REPORTING.md): upstream player report and diagnostic guidance.
+- [Contributing](../CONTRIBUTING.md): development and review practices.
 
 The [inherited installation guide](INSTALL.md) records base-stage setup and
-historical GOG 2016/GOG 2024 platform testing. Use the fork installation entry
+current GOG 2024/Steam compatibility and historical platform testing. Use the fork installation entry
 above for current GA download guidance.
+
+Target game version: GOG "SPORE Collection", `SporebinEP1/SporeApp.exe`, the 2024 build, SHA-256
+`dc04aee5…`, 24,895,536 bytes, which has ModAPI's March2017 layout (see section 5), and Steam (the same
+code). The old GOG 2016 build (`922af7c7…`, 24,888,320 bytes) is not supported; its addresses were
+removed in 0.7.15 and the mod tells such a game that it is not supported. Where each was tested: [INSTALL.md section 2](INSTALL.md#where-sporecoop-has-been-tested).

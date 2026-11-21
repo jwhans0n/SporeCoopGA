@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "profile": "building-house",
+  "viewport": [1024, 768],
+  "evidence": "Actual C46 host House stages out/preview9-c46-host-house-{enter,body-name,body-floor,door-tab,door,roof-tab,roof,save}/result.json. Body must drop on construction floor650,580; the earlier700,450 drop did not retain a part and is excluded. Body, Door and Roof clear all blockers; native finish0 before Done. Requires fresh viewport/palette checks.",
+  "steps": [
+    {"click": [500, 741]},
+    {"frames": 20},
+    {"text": "{name}"},
+    {"click": [850, 600]},
+    {"frames": 30},
+    {"slow_drag": [58, 114, 650, 580]},
+    {"frames": 30},
+    {"click": [198, 40]},
+    {"frames": 30},
+    {"slow_drag": [58, 114, 680, 555]},
+    {"frames": 30},
+    {"click": [102, 40]},
+    {"frames": 30},
+    {"slow_drag": [58, 114, 620, 493]},
+    {"frames": 30}
+  ]
+}

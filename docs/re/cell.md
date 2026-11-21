@@ -137,7 +137,7 @@ Moving a mirror: set velocity `+0x90` (dead reckoning happens in 0xE7C080), add 
 | **0xE7A4A0** | `bool KillCell(cell*, u32 killerIdx, ref* killerRes, bool byPlayer, int dmgType, float dt)` | ✔ 6 args. NPC: +0x113=1, death effect via InstanceEffectOnCell, alert same species 0xE71F00, if byPlayer telemetry + `S+0x6C` killCount++, loot (0xE52A30/0xE771D0) if level within ±1 of player, anims 10/7, event 6 (→ +0x112), locks 0xE59190. Avatar → PlayerDeath (unless `G+0x5169` or state `G+0x5158`∈{3,5}) |
 | 0xE72060 | `bool PlayerDeath(cell*, u32 killerIdx, ref*, float)` | ✔ +0x113, UI `cCellUI+0x936=1`, telemetry 0xE5C900, anims 10/7, event 0x1D in pool G+0x54 (index stored at `G+0x5194`), locks +0x16C/+0x178/+0x17C, state 7 |
 | 0xE7AEE0 | `void BreakOrSwallow(cell* victim, cell* attacker, float)` | ✔ effect "cell_death_break"; avatar victim: `S+0x70` deathCount++; event 5 → 0xE7ADD0 (loot; avatar → 0xE72200 respawn request; NPC → DestroyCell(idx,1,…)) |
-| 0xE7B0A0 | `bool Bite(u32 attackerIdx, float* dir, ?, float)` | ~ DamageCell type 4, or BreakOrSwallow when victim is ≥3 levels smaller and would die |
+| 0xE7B0A0 | Bite: see §10 (signature) and §11 | ✔ DamageCell type 4 while the damage is below the victim's hp; **the lethal bite goes to BreakOrSwallow** (not KillCell) |
 | 0xE7E7F0 | collision interaction executor (switch on kind) | ~ |
 | 0xE62350 | `void ShowHealthRollover(cell*, int oldHp)` | ✔ needs GFX (+0x248≠0) |
 | 0xE66850 | `IVisualEffect* InstanceEffectOnCell(cell*, u32 effectId)` | ✔ ids: `0x932E50(name, 0x811C9DC5, 1)` (FNV) e.g. "cell_death_oneshot(_small/_large)" |
@@ -196,8 +196,8 @@ thresholds every 50 points (0,50,100,…).
 - Population: `PopulateTiles` 0xE7D370 → `PopulateTile` 0xE7C6C0(tile*, …) → **`PopulateMarker`
   0xE7C500** ✔ cdecl `(float prob, int layer, int level, query*, bbox*, markerRef, int)` (recursive).
   Skipping it when `query == *(void**)(G+0x40FC)` suppresses all gameplay-layer spawns (creatures,
-  food, parts) while keeping the background. Other spawn sources: loot on death/break (0xE771D0 via
-  DestroyCell(…,1)/KillCell), NPC growth/spawnOutput (behaviours - off for passive cells).
+  food, parts) while keeping the background. Other spawn sources: loot on death/break
+  (**SpawnLoot 0xE771D0**, §11), NPC growth/spawnOutput (behaviours - off for passive cells).
 - Active area: tiles stream around the **local** player's view (`G+0x4128`, bbox 0x16B4C68..7C);
   cells outside it are destroyed unless `+0x354` (0xE7C080) or level −1. ⇒ on the host, NPCs near a
   guest far from the host do not exist.
@@ -371,14 +371,2037 @@ What DamageCell does around a bite besides the hp, and how the co-op path replay
 * The jump tables of 0xE57710 and 0xE57930 (bytes at 0xE577AC / 0xE579C8, index ai.type − 0x1003)
   are `00 00 00 01 00 00 00 02 00 00 00 00`: only ai.type 0x1006 reaches the call.
 
+## 10. Soft-body facing of mirrors; bites that do not go through DamageCell (2026-10-24, GOG 2024)
+
+Player report (0.7.x): "enemies spun uncontrollably for the guest, switching between facing the host
+and the guest, so they were almost impossible to kill even with both attacking".
+`tools/tests/coop_cell_spin.py` (both players swim at a creature, its rotation `+0x5C` sampled on
+both machines with `coop.sync`; then each player bites one to death through the game's Bite).
+Addresses of the GOG 2024 build (`dc04aee5`); the cell code around 0xE7xxxx is at the same address
+as in GOG 2016; 0xE5A430 is likely 0xE5A450 there (its neighbours moved by -0x20, not checked).
+
+**Facing comes from the particles** ✔ (disassembly + runtime). `SoftBodyStep` **0xE5A430**, cdecl
+`void(cell*, resData*, float dt)`, runs in UpdateCells after the AI dispatcher and the animation
+step (call at 0xE7CA72), for every foreground cell with GFX and more than one particle:
+
+* `FUN_00E85D70` fits the cell's rest shape (0x16AD6C0 + `+0x24C`·0x300, at most 64 Vec3) to the
+  current particle positions (`parts + 4 + 12k`) and returns a rotation (polar decomposition
+  0xE85170 of the covariance) and the goal positions `goal = rest·scale · M + centre` (row
+  vectors: the image of the x axis is row 0 of M, so the heading is `atan2(M[1], M[0])`);
+* writes M to `+0x5C` (flag 2, counter++) and to `+0x24` (the shape matrix, a blend of M and the
+  linear fit with weight 0 = M), the angular speed (0xE5A2A0) to `+0x1D0`, and the goal offsets
+  `goal - pos` per particle to **`parts + 0x11944 + 12k`** (a 5th particle array after positions
+  +4, velocities +0x4654 and two more);
+* with one particle it only copies a constant 3x3 to `+0x24`; `+0x5C` is then whatever was written.
+
+Part geometry for collisions (0xE6AD80, both cells) places every part at `+0x4C + scale·(part · M)`
+with M = `+0x5C` (only when flag 2 is set), so the facing decides which parts touch: a mouth, a
+spike, the body.
+
+A guest moves a mirror's particles (translation, velocities zeroed: `modes::cell_move`) and wrote
+the host's rotation to `+0x5C` once a frame, outside the cell step. The next SoftBodyStep replaced it
+with the fit of a particle cloud that nobody turned: it kept the orientation it had at its spawn plus
+whatever the guest's collisions and the shape matching did to it. Measured before the fix (two
+players chasing a creature for 25 s, 10 samples/s): facing difference host vs guest median 63-79°,
+p90 144-154°, the guest's copy turned 4900-5400° while the host's turned 560-1200°; `coop.sync`
+sometimes caught the host's value (read right after the write) and the next sample 150° off.
+Fix (cellsync.cpp `h_Soft`): after the original, for a mirror, turn the particle positions about
+their mean, their velocities and goal offsets by `heading(host) - heading(fit)` and write the host's
+matrix to `+0x5C` and `+0x24`: the next fit returns the host's facing, so drawing and the collision
+step both use it. After: p90 2-10°, turned within 2% of the host. Rotating the particles this way
+(a rigid turn about the centre, every frame) did not blow the body up (cf. §6 for the puppets).
+
+**Bites that bypass DamageCell** ✔ (disassembly; the Bite path also at runtime):
+
+| addr | what |
+|---|---|
+| 0xE7E7F0 | interaction executor, cdecl `void(interaction*, float dt)` (`add esp,8` at 0xE7F208). Interaction: `+0` cell A idx, `+4` cell B idx, `+8` kind, `+0xC/+0x10` part indices, `+0x14` depth, `+0x18` contact point, `+0x24` normal. HandleCollisionPair asks 0xE73DD0 both ways; 0xE59CC0 keeps the highest kind (ties: deeper). Kinds seen for a player's cell vs a creature in 20 s chases: 1 (push, ~hundreds), 3, 8 (weapon contact, ~1/s at most) |
+| 0xE6A3F0 | the kind of one part pair (attacker part type, victim cellType `+0xB4`, victim part type, GetScaleDifference(attacker, victim), victim res flags `+0xB0`). Part type 7 (a weapon) on a creature of the same level: kind 8 unless the victim's part is a weapon too (0xE) |
+| 0xE7B540 | timed callback of an interaction event: kind 10 → **Bite 0xE7B0A0** |
+| **0xE7B0A0** Bite | cdecl `bool(u32 attacker, u32 victim, void* ev+0x48, u32* dir ev+0x54, int ev+0x38, float dt)`. `+0x178 = 1` on both; GetScaleDifferenceWithPlayer(victim) < 3: **DamageCell(type 4) only when the damage is below the victim's hp, else BreakOrSwallow(victim, attacker)**; bigger victims: DamageCell and a push 0xE76AF0 |
+| **0xE7DD90 / 0xE7DBD0** EatChunkA/B | events 0x13 / 0x14 (dispatcher 0xE7E130), cdecl `void(u32 eater, u32 victim, u32 ev+0x30, u32 ev+0x3C, float dt)`: OnEat for the eater, victim hp -= GetDamageAmount directly (no DamageCell), attacker rest 0xE576F0, KillIfDead(type 6), pushes |
+
+So in co-op the guest's bites on a mirror went to the host only when they were non-lethal DamageCell
+calls: the lethal bite (BreakOrSwallow) broke the mirror on the guest only (and `h_Destroy` kept it,
+untouched), and chunk bites lowered the mirror's hp until the next state. With 6 hp and 3 per bite
+(a creature of the players' level) the guest could take a creature to 3 hp and never kill it
+(`coop_cell_spin.py --without-fix`: hp on the host `[6, 3, 3, 3, 3, 3]`). Fix: the guest's
+`h_Break` and `h_ChunkA/B` send `MSG_CELL_HIT` (type 4 with at least the mirror's hp / type 6) and
+keep the mirror (a chunk bite still shows: food, health ring, push; the mirror keeps 1 hp at least).
+The host's handler has no distance or facing test: it applies the hp, the species alert and the
+victim's reaction, and KillCell when hp reaches 0 (`hits_in`, `hits_aggro`).
+A mirror that bites a chunk off the guest now also sends `MSG_CELL_BITTEN` (the NPC's rest).
+
+Changed since by fix/cell-meat (§11): the lethal bite goes to the host as a break (`MSG_CELL_EAT`
+kind 2, the host runs BreakOrSwallow with its loot) rather than a hit (KillCell drops no loot at the
+players' level), and a creature the host killed dies on the guest too (KillCell replayed on the
+mirror). Not changed: how often a player's weapon gets to
+a creature in the bots' chase (`cell_contacts:` `creature_pairs`, `bite_events`): host 1-3 bites per
+20 s, guest 0-3, with or without the fix; the Karke fixture cell has no weapon (§8), premade cell
+`BAF1AD40` (`coop.creations choose cell BAF1AD40`) has one.
+
+## 11. Kills and their meat; eating once (2026-10-24, GOG 2024, branch fix/cell-meat)
+
+Player report (0.7.x): "when one of us killed an enemy, the other did not see the meat that should
+drop". `tools/tests/coop_cell_meat.py`.
+
+**Where the meat of a kill comes from** ✔ (Ghidra + runtime, `coop.pool loot`):
+
+| addr | what |
+|---|---|
+| **0xE771D0 SpawnLoot** | cdecl `void(ref* res, ResourceKey* model, query*, Vec3* pos, float size, int level, ref* lootTable, float dt, u32* outIdx, int* outCount)`, plain ret. Picks one entry of the loot table (`res+0xD4` passed by the callers) by weight: type 1 = RandomInt(`+0x14`) + `+0x10` cells of the entry's `.cell` (`+4`) via 0xE76480 with an outward velocity (`+0x18` added to the level), type 2 = repeat, 0 = nothing. Appends every new cell to `outIdx` when given (no bound check), so a hook can list them |
+| KillCell 0xE7A4A0 | loot only when the victim's level `+0x358` ≠ 0 and within (player level − 1, player level + 2) (0xE4EE40, the level of the food progress); loot level = victim level − 1 (0xE52A20) |
+| BreakOrSwallow 0xE7AEE0 | effect `cell_death_break`, anim 8, event 5 → **0xE7ADD0**: SpawnLoot (level − 1), then (NPC) DestroyCell(idx, 1) → **DestroyCell's own SpawnLoot** when the level is not the player's − 1. A lethal Bite of a creature of the players' level left 6 loot cells (3 meat chunks still there 3 s later) in every one of 24 kills in the test |
+| 0xE7D880 / 0xE791A0 | swallowing whole: DestroyCell(victim, 1) (loot as above) |
+| EatFood 0xE7DF40 | event 0x12: OnEat (avatar: AvatarEat, AddFoodPoints), then the food shrinks one level or DestroyCell(food, 1, 0, 0). A meat chunk gave 12 points |
+
+KillCell at the players' level dropped nothing in the test (4 of 4 kills through DamageCell); the
+dead creature stays (hp 0, `+0x113`, later `+0x112`) until something removes it.
+
+**What went wrong in co-op (0.7.x)**: the host's kills were fine (loot cells are ordinary pool
+cells, the state carries them; measured: every loot cell of a host kill was on the guest within
+0.1-0.3 s). The guest's lethal bite on a mirror ran BreakOrSwallow **on the guest**: effect, loot
+(local cells the host does not have, purged as strays by the next state 0.1 s later: `purged`),
+DestroyCell → `MSG_CELL_EAT` → the host removed its creature with `DestroyCell(idx, 0)`: no death,
+no meat on the host, and the guest's meat vanished at once (test before the fix: 4 of 4 guest kills
+not killed by the host's game, 24 loot cells spawned on the guest, none on the host for them).
+Eating: the guest sent its food gain (`MSG_CELL_FOOD`) and the eaten cell separately, so a chunk
+both players ate at the same moment counted twice. And a creature the host killed never died on the
+guest (the state's dying flag was not applied).
+
+**Fix** (cellsync.cpp): the guest's game spawns no gameplay loot (`h_SpawnLoot`: foreground query →
+skipped, `loot_skipped`); a mirror the guest's avatar breaks or kills is not broken / killed there:
+`MSG_CELL_EAT {u32 host index, u8 kind 0 gone / 1 kill / 2 break, u8 arg (loot flag / damage type),
+i32 food, u8 plant}` and the host runs BreakOrSwallow / KillCell / DestroyCell(idx, loot) on its cell
+(attacker: the guest's puppet), so death and loot happen once, on the host, and come back with the
+state; a dying/dead flag in the state replays KillCell on the mirror (`death_replays`, with
+SpawnLoot off); the guest's AddFoodPoints is held until the end of the frame and goes with the eaten
+cell: the host adds it only if the cell was still there, else (`eats_late`) it resends its total and
+the guest's AddFoodPoints(diff) takes the points back. Older guests (index only) still work.
+
+Debug (`coop.pool`): `kill [c<key>|-] [hit]` one bite of the own cell through Bite (or DamageCell
+only with `hit`), `meat` every meat cell, `loot` (host) the cells of the last loot drops, `eat <key>`
+the game's eat handler on a cell, `swimto <key> [tp]`.
+
+## 12. The mating call and the cell editor (2026-10-24, GOG 2024 addresses, Ghidra `out/ghidra-2024`)
+
+How a player gets into the cell editor (the real path, driven by `tools/tests/coop_editor_desync.py`;
+addresses of the **GOG 2024 build dc04aee5**, not the GOG 2016 ones above):
+
+1. **The button**: collecting a part token runs **0xE5D7B0** (thiscall, from the collision code
+   0xE7B630; also a debug key in 0xE81120): `S+0x34+4*part = 2` (unlocked), mission bookkeeping
+   (`S+0x90..+0x9C`), the first time the callout `Callout_CLG_Mate`, and **`S+0x68 = S+0x69 = 1`**.
+   `S+0x69` = the mating-call button is shown (a heart button at the bottom centre of the HUD,
+   1440x1080: 721, 1018). `coop.pool mate button` sets it for tests (✔ runtime: the button appears).
+2. **The call**: the button spawns the mate, **0xE760F0** ✔: if `G+0x51D4` (the mate's pool index)
+   holds no live cell, `CreateCellObject` at `mateSpawnDistance` (cell globals `+0x110`, from
+   GetGlobalsData; the mate came 12-16 m away at runtime) with resource 0xE4CC90(0x1A, ...), index into
+   `G+0x51D4`; the avatar plays animation 0x43. Effects `cell_call_avatar` / `cell_call_mate`
+   (0xE63BF0). Runtime: the mate swims towards the avatar; the HUD shows a ring with a heart towards it.
+3. **The meeting**: SimUpdate 0xE7F3A0 calls **0xE78D10** every step: avatar and mate alive and closer
+   than `mateTriggerDistance` (globals `+0x10C`, 4.0) → **0xE75EA0**: both not dying (`+0x112`,
+   `+0x113`), not locked (`+0x188`), **the same level** (0xE51670 on both; a co-op respawn as a small
+   cell, or food added by hand, can leave them at different levels and nothing happens) → mating
+   animations 0x41 / 0x42 and a timed event (pool object 0x2D) → ... → event **0x1E** in the event
+   dispatcher 0xE7E130 → **0xE72AC0** → **0xE59800(0)**.
+4. **The request**: 0xE59800(int debug) computes the editor id from the level table
+   (`DAT_01483b54 + 7*i`, by `S+0x1C`), the DNA to spend (0xE51410() - `S+0x2C`) and calls
+   **0xE84600**: `new EditorRequest` (0x9C bytes), `+0xC` editor id, `+0x10..+0x18` = `S+0x10` (the
+   player's cell model), `+0x90 = 0x1100000`, `+0x60` a float from 0xE51700, then
+   `Editors::EditorRequest::Submit` 0x5A92C0 and message 0x90A03FDF. With `G+0x410C` set and
+   debug = 0 nothing is submitted.
+5. **Asked twice**: while the mate is still within reach the game asks again: with the co-op vote
+   holding the first request, a second Submit came 13 ms after the vote ended (before the held
+   request reached the game) and started a second vote that ran on in the editor. The mod drops
+   requests while one is held or within 5 s of one reaching the game (`coop.vote` prints "repeated
+   requests dropped").
+6. **Back from the editor**: handler of message 0x30C11C7 (GOG 2016 0xE809A0, §4.2 of creations.md):
+   `S+0x10` = the new cell, RebuildLevel (the cell hatches again; a guest's mirrors are rebuilt by the
+   sync). The new cell is a new creation in My Creations (instance ids per profile: the host's and the
+   guest's first own cells were both 0x290742F6 in the test profiles).
+
+On a guest the mate is a local cell the host does not have: the sync's stray-cell purge removed it
+within a second, so a guest never reached its mate (report 2026-10-24: "the guest could not call a
+mate himself"). The purge now spares `G+0x51D4`. A guest's own cell editor opens without a vote
+(9.3: evolving inside a stage does not move the others) and its new cell goes to the others as its
+own creation.
+
+## 13. After the Cell stage: cCellGame stays, its pool does not (2026-10-25, GOG 2024)
+
+`*cCellGame::_ptr` (0x016B3C04 on dc04aee5) is **not cleared** when the Cell stage is left (the
+Creature stage after the evolution, ✔ runtime and in a player's minidump). The object stays
+readable, `+0x1C+0x14` still says 0x398 and `+0x1C+0x10` the old high-water mark, but the pool data
+`+0x1C` is gone: the player's dump had `0x0000BAAD` there, lane 5 faulted reading `0x0000F42D`. So
+`cell_game() != nullptr` does **not** mean "in the Cell stage": every reader must also check
+`game::mode_id() == kCell` (cellsync's `in_cell()`). What the mod did with that (player report
+2026-10-25, crash 2, `coop_cell_leave.py`):
+
+* cellsync kept the guest's mirrors (pool indices) after the stage and destroyed them on session
+  end: `modes::cell_at` <- `cell_destroy` <- `cellsync::destroy_local` <- `on_session_end` (the
+  disconnected callback, also the host's BYE) faulted. Now the mirrors, `g_host_of`, the touched and
+  loot lists and the puppets' indices (`modes::cell_forget`) are forgotten in the first tick outside
+  the stage (the cell editor too: RebuildLevel rebuilds the pool after it anyway, the sync recreates
+  the mirrors), and on_session_end destroys mirrors only inside the stage.
+* `coop.pool`, `coop.cell` and `cellsync::S()` (read by `coop.status`) read the pool or
+  `G+0x5190` without a mode check; they now answer only in the Cell stage.
+* A guest's own `coop.leave` does not run cellsync's on_session_end (only the disconnected
+  callback does), so its mirrors stay passive cells in its pool until it leaves the stage or rejoins
+  (not changed: a rejoin reuses them).
+  ~ superseded (2026-10-27): see the correction below.
+
+CORRECTION (2026-10-27, fix/cell-guest-leave): Voluntary leave now calls Cell
+cleanup while the pool is valid. A manual test used two Steam Galactic Adventures processes on
+Windows with SporeCoop 0.7.2.4: four retained baseline creatures had `+0x16C=0` and nonzero
+velocity several seconds after leave. Their indices included generations. Retained mirrors do not
+always stay passive; this observation does not establish who cleared the lock. See [BUG-0028](../tickets/BUG-0028-cell-guest-leave-keeps-passive-mirrors.md)
+for verification and its limits.
+
 ## Open questions
 - Who clears `+0x16C`/`+0x178…` locks (none found statically) - confirm at runtime that a live NPC
-  with `+0x16C=1` stays passive and nothing resets it.
+  with `+0x16C=1` stays passive and nothing resets it. The retained-cell observation in the
+  correction above shows unlocked, moving cells after leave, but does not identify the writer.
 - `DamageCell` arg3 (float*, negated "dir") and arg5 meaning; damage type numbers beyond 3 (periodic
   poison/electric), 4 (bite), 5 (0xE7B280), 6 (eat chunk).
+  CORRECTION (2026-11-08, fix/w46-k2b-content-a): the electric part does not go through DamageCell at all: its
+  chain attack 0xE71520 writes the hp itself and plays animation 0xE (DamageCell's for type 1); poison is a cloud
+  cell the poison step 0xE76880 makes (#cell-electric-attack). The "AoE damage 0xE71520 asks IsDamageable first"
+  of section 9 can only be its target search 0xE69000 (? not read), never DamageCell.
+- `+0x110` (2026-11-08): the game sets it on the poison clouds the avatar makes (0xE76660); DamageCell counts a
+  hit of an attacker with it as the player's (ring, byPlayer). Used by `cell.own_products` (#cell-electric-attack).
 - Effects of `+0x110` beyond kill credit; meaning of `G+0x5169`, state `G+0x5158`.
 - Whether RandomCreature models must be preloaded on the guest (cCellGFX::PreloadCreature 0xE64990)
   before CreateCellObject with a forced model key.
-- Camera behaviour after an avatar teleport; whether 0xE6ECB0/0xE6EB60 is the egg/hatch intro.
+- Camera behaviour after an avatar teleport (answered 2026-11-04: docs/re/cell.md#cell-camera); whether
+  0xE6ECB0/0xE6EB60 is the egg/hatch intro.
 - Existing `cell_despawn` in mods/coop/modes.cpp sets hp=0 and opacity 0: that only hides the puppet
   (cells are removed by DestroyCell or size→0), so puppets may leak - use DestroyCell 0xE780A0.
+
+## Sync robustness: state rounds, meal numbers, knockout lifetime (2026-10-28, fix/w2-cell)
+<a id="cell-sync-robustness"></a>
+
+* ✔ `MSG_CELL_STATE` rounds are unreliable chunks of 14 cells `{u16 cycle, u8 chunk, u8 chunks}`.
+  The guest removes the mirrors a round did not list only when every chunk of that round arrived
+  (`cell_logic::Rounds`); a chunk of an older round (within 64 rounds) is dropped. A mirror not
+  listed for 1 s goes anyway, so a cell the host lost is still removed on a lossy link
+  (BUG-0032). `coop.status` guest: `rounds_partial=`, `late_chunks=`.
+* ✔ A recreated mirror erases its old local index from `g_host_of` (`host_of=` equals `mirrors=`,
+  BUG-0088).
+* ✔ Food totals carry meal numbers: the guest appends `u32 meal` to `MSG_CELL_FOOD` and
+  `MSG_CELL_EAT`; the host sends each guest `MSG_CELL_FOOD {i32 food, i32 plant, u32 last meal
+  applied}` and the guest applies `host total + meals still on the way - own total`
+  (`cell_logic::Meals`, BUG-0051). Older peers ignore or lack the field: the old difference.
+  A refused meal (eaten first, `eats_late`) is acknowledged without points, so it is still taken back.
+* ✔ The host sends the food total to each guest again every 2 s and at once to a newcomer; the
+  DNA total (coop.cpp) also every 2 s (BUG-0128). A guest drops both without an avatar.
+* ✔ The avatar's `+0x358` is -1 (not its level); the level line is every 50 food points. A
+  meal over a line resizes the avatar inside AddFoodPoints (target `+0xB4` changes during the
+  call): after a small respawn that size is the full one, `g_body` becomes 1 (BUG-0041, measured:
+  target 0.55 -> 0.82 on host and guest alike over the line from 10 to 51 points).
+* ✔ Knockout lifetime: `MSG_CELL_KO` is stored and relayed outside the Cell stage; a remote
+  `KO_OUT` not refreshed for 2 s (its owner sends it every 0.25 s) ends; `cb.player_leave` calls
+  `cellsync::on_player_leave` (knockout, puppet and food bookkeeping of that id, BUG-0061). The
+  local knockout (`+0x111` invulnerability, `+0xA4` opacity, hp) ends with the session and with
+  the stage (`reset_knockout`, BUG-0070).
+* ✔ `modes::cell_at` accepts slots in `[0, highWater)` within `[0, capacity)` only (BUG-0083).
+* Old behaviour of each: `coop.pool fix <purge|hostof|foodseq|resend|kostale|koreset|bodylevel|cellat|all> 0|1`.
+  Test helpers: `coop.pool zap <n>` (the game removes n mirror cells), `mirrormap`, `small`,
+  `foodlocal <n>` (our total only), `invuln 0|1`; `coop.pool` lists `puppet <id> op=`.
+
+## DamageCell's gate and a guest's bite (2026-10-28, fix/w3-cell)
+<a id="cell-damage-gate"></a>
+
+* ✔ (GOG 2024 decompile of 0xE7A7C0) `DamageCell(victim, attacker, ...)` does nothing and returns
+  false when IsDamageable 0xE52940 (ESI = victim: AI type or the avatar, hp != 0, +0x112 != 1, the
+  resource's cell type +0xB4 == 2) fails, when `ShouldNotAttack(victim, attacker)` 0xE57460 is true,
+  or when the victim's +0x17C or +0x111 is set: no hp, no alert, no reaction. ShouldNotAttack(a, b):
+  same resource (+0x108) -> true; either dead (+0x112) -> false; the flags `+0x301`
+  (wontAttackPlayerWhenSmall, scale difference 1) and `+0x300` (wontAttackPlayer) of a's resource
+  data count only when b is the avatar (`G+0x411C`); same friend group (+0x2FC) -> true. So a
+  species with "won't attack the player" cannot be hurt by the player's bites either.
+* The host applies a guest's bite (MSG_CELL_HIT) with the same gate since BUG-0078: the victim's
+  hp / dead flag, +0x17C, +0x111 and `ShouldNotAttack(victim, the guest's puppet)` through the
+  hook that lends the avatar index to the puppet; a mouth's chunk (type 6, EatChunk) skips the gate
+  as the game's does. Before, the arguments were swapped and nothing was checked. `coop.pool fix
+  guestbite 0|1`; test helper `coop.pool npcflag c<key> spare|invuln 0|1 | hp <n>` (host).
+* Knockout helpers (BUG-0131): `nearest_partner` skips partners whose knockout state is KO_OUT
+  (switch pool.rescue, retired in 0.7.15); `coop.pool selfhit <dmg>` bites our own cell (tests).
+
+## Knockout grace, meals while the host is away, IsDamageable's resource part (2026-10-28, fix/w5-cell)
+<a id="cell-ko-grace"></a>
+
+* ✔ (BUG-0238) A remote knockout (`g_ko`, MSG_CELL_KO every 0.25 s from its owner) is stale only
+  after `max(2 s, left + 2 s)` since its last refresh (`cell_logic::ko_stale`, `left` = the
+  owner's seconds still to run, a byte of tenths, at most 25.5 s). The 2 s of BUG-0061 ended it at
+  one late refresh. A refresh after an expiry (`Ko::expired`) restores the translucency without
+  `cell_death_oneshot`. `reset_knockout` sends KO_UP when it ends a running knockout of ours while
+  the session is open (a stage leave). `coop.pool kodrop <s>` (tests, host) ignores MSG_CELL_KO for
+  s seconds; `ko[N]=` lines of `coop.pool` end with `fx=<death effects played on that puppet>`.
+  Switch `pool.ko_grace`.
+* ✔ (BUG-0239) The host records the meal number of a guest's MSG_CELL_EAT / MSG_CELL_FOOD also
+  outside the Cell stage or without an avatar (no points, no game call): the ack means "counted or
+  never will be", as for a meal eaten first. `read_eat` / `read_food` are the only readers of the two
+  messages. `coop.pool away 1|0` (tests, host) handles the Cell messages as in an editor. Switch
+  `pool.food_ack_away`.
+* ✔ (BUG-0240) IsDamageable, GOG 2024 **0xE52940** (GOG 2016 0xE52950, the address in the table of
+  section 6), disassembled: `push ecx`; GetData(victim+0x108) into a holder; the AI block by the
+  difficulty `*(*(0x16B3C04)+0x5190)+0x7C` (0: +0x248, 2: +0x194, each only when its first int is
+  not -1; else +0xE0); returns true only when `(ai.type != 0 || victim.index == G+0x411C) && hp
+  (+0x244) != 0 && +0x112 != 1 && res+0xB4 == 2`. Seen in the game (lane 2): the host's own bite
+  (DamageCell) on a rock (cell type 1) and on meat (type 2, AI type 0), each given hp 60, takes
+  nothing. Rocks and plants have hp 6 in play, so before the fix a guest could bite them. The
+  host's guest-bite gate now copies this part (`res_types`, fail open when the resource cannot be
+  read). Switch `pool.guestbite_type`; `coop.pool kill <key|-> anyhit [kind]` bites any kind.
+* ? The hurt lock after a host bite (the tests wait 2 s between bites; Bite sets +0x178 on both
+  cells, DamageCell checks +0x17C): which byte, set by whom and for how long is not measured. A
+  guest's bite applied by the host sets none, so a guest may bite one NPC faster than the host
+  (docs/known-issues.md, BUG-0240).
+
+## Rebuilds in a session (2026-10-28, fix/w5-cell)
+<a id="cell-rebuilds-in-session"></a>
+
+Measured on GOG 2024 (lane 2) with `coop.cell pool` (tests: the pool header G+0x1C..+0x18 as
+`data free gen live high size cap`, the avatar index G+0x411C, `rebuild=` G+0x51D8, the avatar's
+pointer, +0x111 and +0xFC). Tests: `coop_cell_respawn.py [--swap]`, `coop_cell_editor_invuln.py`.
+
+* ✔ The game's own death in a session (BUG-0221: the only partner knocked out, then a lethal hit,
+  BUG-0131's rule) rebuilds the pool of the dying player's machine: the avatar gets a new index
+  (host: 7F010000 -> 80C501C2; guest with --swap: 7F010000 -> 80820180), the generation keeps
+  counting (32964 -> 33419, 32897 -> 33261): **generations do not restart**, so an old index never
+  matches a new cell (`cell_at` checks the full index).
+* ✔ The rebuild's own DestroyCell calls are not refused by `h_Destroy`: `puppet_saves=0`, `kept=0`
+  and `coop.pool why` empty after the host's and after the guest's rebuild. The guest recreates
+  every mirror from the next state rounds (created 420 -> 863), every mirror maps to a live host
+  cell afterwards, and each game shows the other player's cell where that player's game has it
+  (0.0 m off). The partner's puppet is recreated once (`puppet_new=1` on both).
+* ✔ The death UI and caption are gone within the 6 s the test waits (`cine=0`, hp > 0, not
+  dying), and the knocked-out partner respawns after its 10 s. No fault in either game.
+* ~ G+0x51D8 was never seen set by a console poll every 50 ms (6 s after the lethal hit): it is set
+  and cleared inside one frame (RequestRespawn during SimUpdate, RebuildLevel in the same
+  CellFrame), so a detector polling it from `tick` would miss it; the avatar index change is the
+  signal to use if one is ever needed. None is needed today.
+* ✔ The own cell editor (guest's mating call, cancel) also rebuilds the pool: the avatar comes back
+  as a new object with a new index (7F010000 -> 808C0126, pointer changed) and **+0x111 clear**,
+  also when it was set (with our timer running) as the editor opened. So BUG-0237's flag left set
+  after the editor does not happen; `coop.pool invulnfor <s>` (tests) sets the flag and the timer
+  as a respawn does. The pool after the editor return starts smaller (live 383 -> 215) and fills
+  up again.
+
+## The pool freed between our frames on the way Cell -> Creature (2026-10-29, fix/w6-cell)
+<a id="cell-pool-freed-between-frames"></a>
+
+BUG-0271. GOG 2024, lanes 4 and 5, `tools/tests/coop_cell_evolve_poll.py`.
+
+* ✔ After History's check the game changes the mode to Creature and frees the cell pool (its own
+  3.7 MB mapping, `0x398 * 4096`) inside one step of its loop: when the mod first saw the freed block,
+  `G+0x1C` already read `0x0000BAAD` and `mode_id()` already read Creature. Our frame probe (every
+  frame in Cell, VirtualQuery of the block) never saw a frame in Cell with the block gone (0 windows
+  in 6 two-player runs): the teardown and the planet load run between two of our frames.
+* ✔ In that gap the game's loading code pumps window messages; SporeKit runs queued main-thread
+  console commands from that pump (WM_SK_PUMP), and the keepalive's network update runs outside the
+  frame when frames stop for 0.5 s. Our state of the last frame (g_mode Cell, g_local = the local
+  cell, the partners' puppet cells) is stale there. The crash stacks show it: the game frames above
+  the fault are the creature planet's terrain (`cTerrainMapSet::GetHeight`, `cPlanetModel::ToSurface`).
+  Faults seen with the fix off: modes::cell_fill reading `+0x54` of a freed cell from `coop.status`
+  (a puppet) or `coop.avatar` / `coop.sync` (the local cell), on the host and on the guest (it
+  leaves its Cell stage the same way when it follows), and `game::species_profile` reading
+  `cell+0xB20` from `coop.avatar` (it asked the creature function on a cell).
+* `*cCellGame::_ptr` stays set and the cCellGame object stays readable (as in section 13), so
+  `cell_game() != nullptr` is still no proof of anything.
+* The fix (`core.stale_local`): `modes::cell_at` reads a cell only from a pool block that VirtualQuery
+  still finds committed (cached for our frame scope, where no game code runs; every call outside
+  it); `cell_fill` reads only the live local cell or a live puppet; commands use the local entity
+  and the puppets only while `mode_id()` is still the frame's mode, the stage is not being left
+  (BUG-0264) and the adapter still finds them (`local_now()` / `puppet_now()` in coop.cpp).
+* `coop.cellgone` (any thread): pool checks, refusals, and the frame probe's counters.
+
+## New players, diets and the food a guest finds (2026-10-29, fix/w7-eat)
+<a id="cell-new-players-food"></a>
+
+BUG-0279 (Discord: "even at stage 1 only 1 of us could eat"). GOG 2024, lane 9,
+`tools/tests/coop_cell_new_game.py` (both profiles without saves or creations, a new game from the
+stage wizard, the guest joins from its menu).
+
+* ✔ The Cell wizard's diet card picks the premade player cell: herbivore (leaf, left card)
+  `E219E5D2`, carnivore (meat, right card) `252A132F` (`cll` 0x3D97A8E4, group 0x40616200). There is
+  no omnivore card; an omnivore mouth comes only from the cell editor.
+* ✔ A guest without creations of its own plays the host world's cell (`S+0x10` from the save the
+  host shares, `coop.creations`: "mine cell" = the host's key, no swap, no rebuild): host and guest
+  have the same mouth. Its puppet on the host has the same model.
+* ✔ **GetCellModelData 0xE679E0** (same address in both builds) cdecl `u8*(ResourceKey by value)`,
+  only the instance is read: the model data of a cell model from the map at `*(0x16B3C04)+0x70`,
+  built on first use (0xE67940 / 0xE83E30, the 0xE83EC8 fault path of BUG-0004 for an unknown key).
+  `+0x1250` carnivore, `+0x1251` herbivore: CanEat 0xE68470 reads both (`coop.pool diet` prints them
+  for the own cell and the partners').
+* ✔ Runtime, both diets, both players: a herbivore eats plants, a carnivore meat chunks (AvatarEat,
+  +12 / +27 points); a carnivore touching a plant leaves it there with no points; small cells the
+  avatar touches are sometimes swallowed without points (the guest reports them, `eats_sent` >
+  `own_eats`), as in the solo game. With the release 0.7.3.0 the same (lane 9, run below).
+* ✔ Populating ("tiles"): `PopulateTiles` 0xE7D370 (cdecl `(area, tileList*, bool all)`, callers
+  SimUpdate 0xE7F4BA and RebuildLevel 0xE803FE): first every tile in the list that 0xE5F810 finds
+  outside the active set is deleted (its object `+0x300` released, pool DeleteObject), then the
+  active tiles (0xE5FA80(area) fills a stack array of 20-byte entries) that are not in the sorted list
+  are created and populated (`PopulateTile` 0xE7C6C0 -> PopulateMarker per marker of the tile's
+  layer), at most 0x32 per call unless `all`. A tile that leaves the active set and comes back is
+  populated again.
+* ✔ Culling: 0xE5CDE0 (EAX = cell; GOG 2016 0xE5CE00) is true for a gameplay cell (query `G+0x40FC`)
+  whose sphere (`+0x58` * 1.7) is outside the box at 0x16B3C88 (GOG 2024), never for the avatar or
+  the mate `G+0x51D4`. The visibility step 0xE78C00 then destroys only poison (type 5) and part
+  tokens already collected; other cells outside lose their graphics (0xE66010(0)).
+* ✔ Runtime: the area the host's game keeps populated is about one screen around the host's cell,
+  not the 120 m the host sends. A guest holding W away from the host (carnivore, level 2) saw 41-51
+  plants / meat on its screen up to 42 m from the host and **0 from 44 m on** (55, 68, 81, 93, 104,
+  115 m), while the host saw 6-9 all the time. A second run right after the start of a new
+  game (level 1, `--apart 70`): 9-18 up to 13 m, 0 from 23 m to 160 m (the host 2-11). CORRECTION (2026-10-29, fix/w7-eat): docs/known-issues
+  said "more than ~100 m away" (BUG-0174); the empty pool starts at 23-45 m.
+* Fix ideas (not done, BUG-0174): (a) the host populates around each partner too: a second tile
+  list per partner (the list is a sorted vector with an allocator byte at `+0x1018`, layout not
+  traced) passed to PopulateTiles with an area around the puppet, and cells there kept by `+0x354`
+  (0xE7C080) while a partner is near; (b) a guest far from the host spawns its own food (plants and
+  meat only) through PopulateMarker outside the host's area, eaten locally and sent as MSG_CELL_FOOD,
+  removed when the host's area reaches it.
+
+## Populating around every player: tile lists, view boxes, the host's view centres (2026-10-30, fix/w9-cell-food)
+<a id="cell-partner-tiles"></a>
+
+BUG-0174 / BUG-0279 (a guest far from the host swam in an empty pool). GOG 2024, Ghidra
+(`out/ghidra-2024`), names in `overrides_dc04aee5.sym`.
+
+* ✔ **View boxes** `Simulator::Cell::ViewBoxes` 0x16B3C88, 12 floats, written at the start of every
+  SimUpdate by 0xE507F0 from the camera point: `[0..5]` the visible box (x +-10, y +-7.5 around the
+  camera, z 0), `[6..11]` the background box (the same times `1 + globals+0x68 / 15`). Fixed size in
+  cell coordinates at every level (the world scale is `G+0x514C`). Readers: the visibility cull
+  0xE5CDE0, RemoveCellsOfOldScale, the populate range 0xE5F610 (layer 0: the visible box doubled
+  around its centre, so +-20 x +-15; layer 1: the background box), spawn helpers 0xE4xxxx.
+* ✔ **Tile lists**: PopulateTiles 0xE7D370 cdecl `(int levelBase, TileList*, bool all)`. A TileList is
+  an eastl fixed_vector of `{int key, u32 tileIdx}` sorted by key: `+0 begin, +4 end, +8 capacity,
+  +0x10 the fixed buffer` (a growth allocates with GeneralAllocator and frees the old buffer only when
+  it is not the fixed one), `+0x1018` a byte passed to lower_bound 0xB41FA0. The host's list is
+  `cCellGame+0x4128`; a list of our own (same layout, our buffer as the fixed one) works with the
+  same function. Key = `layer<<24 | level<<16 | x<<8 | y` (bytes, compared signed;
+  `cell_logic::tile_key`).
+* ✔ Tile objects live in the pool `cCellGame+0x38`: `{+0 own index, +4 layer, +8 level, +0xC x,
+  +0x10 y, +0x14 flag, +0x300 a released object}`. RebuildLevel (0xE7FD00) clears that pool
+  (`cObjectPool_::Clear`: highWater 0) and empties the host's list; a list of ours then holds dead
+  indices (check: `pool slot < highWater` and the object's first dword == the index).
+* ✔ **IsTileActive** 0xE5F810 cdecl `bool(const int* {layer, level, x, y})`: the level within
+  `[table(level of the food progress), +5]` and (x, y) in the range of the current view boxes.
+  Callers: the delete loop of PopulateTiles and the cell cull **0xE5F8C0** (called by the cell update
+  0xE7C080): a gameplay cell with level != -1 whose `+0x36C` parent is gone is destroyed when the tile
+  under it is not active, unless `+0x354`. So "the active area" for cells is the tile range of the view
+  box, read again for every cell every frame.
+* ✔ **PopulateTile** 0xE7C6C0 cdecl `void(tile*, bool all)`: PopulateMarker for every marker of the
+  tile's layer. Also called by RemoveCellsOfOldScale 0xE7CD10, which after a level change destroys
+  every cell outside the visible box and then repopulates EVERY tile object of the pool (also the
+  ones in our lists).
+* ✔ **Two traps** (both crashed the first runs of the fix, lab 20261030-001703 / -002902): (1) the
+  delete loop of PopulateTiles erases with an inlined loop bound to `cCellGame+0x412C` (the host
+  list's end), not to the list it was given: deleting from any other list shortens the host's list and
+  runs past ours (fault at PopulateTiles+0xC3). Our lists' deletes are done by our own code
+  (`tiles_delete`: release `+0x300`, `cObjectPool_::DeleteObject` 0xB72370 by hand) and the game's
+  loop is told every tile of ours is active. (2) The tile pool `G+0x38` has a fixed capacity (512 seen
+  at level 1; `+0x18`); `cObjectPool_::CreateObject` 0xB72270 returns 0 when it is full and
+  PopulateTiles then fills slot 0 of a live tile (a double free later, the free list broken, faults at
+  CreateObject+0x37). A partner pass runs only with room for 4 x 0x40 tiles and creates no
+  background (layer 1) tiles (its background box is all 0); seen: 71 of 512 with two players 150 m
+  apart. On a level change (the level base argument differs), a rebuild (`all`) or a short pool every
+  tile of ours goes back to the pool before the host's own pass (`coop.pool food 1000` faulted there
+  without it, lab 20261030-004900 cell_evolve_poll). RebuildLevel clears the pool `G+0x38` at
+  0xE7FFFF and calls PopulateTiles(all 1) at 0xE803FE.
+* ✔ **Third trap, the world scale step** `WorldScaleStep` 0xE73E50 (cdecl `void(float dt)`, first in
+  SimUpdate): while the scale `G+0x514C` moves towards `G+0x5150` (a level change takes several frames)
+  it calls 0xE6DB70 (EAX = `0x16B3C0C+0x48`, a float ratio on the stack: rescales the cells, the camera
+  and the boxes), which **empties the host's tile list and fills it again from every tile object of
+  the pool**, one entry per key (the last object of a key wins). With our tiles in the pool the host's
+  list then held them too (both lists freed them: the double free behind the faults at
+  CreateObject+0x37, seen with a consistency check: right after our deletes the host list had exactly
+  our 15 freed tiles, lab runs of 2026-10-30 on lane 2), or one of ours replaced the host's own tile
+  of a shared key (that one leaked). The only deleter of tile objects is PopulateTiles' loop (every
+  other `cObjectPool_::DeleteObject` call is on other pools). Fix: `h_WorldScale` gives all our tiles
+  back to the pool before a moving-scale step, and no partner pass runs while the scale moves.
+* ✔ **Shared tiles hand over**: a tile two lists hold is populated once; the other one is a
+  "shadow" (no cells of its own; RemoveCellsOfOldScale skips it too). When the populated one is ours
+  and goes (a level change flushes all our tiles), the shadow is populated right then (`hand_over`):
+  without it the host's own area stayed empty after a level-up (`cell_new_game`, the host found no
+  meat on its screen, lab 20261030-022912).
+* The fix (`coop.fix cell.partner_tiles` (retired in 0.7.15), cellsync.cpp `h_PopTiles`): on the host, after the game's
+  own pass, one more PopulateTiles call per partner with a list of our own and the 12 view-box floats
+  moved by (partner cell - host box centre), restored right after. `h_PopTile` populates a tile that
+  another list (the host's or another partner's) already holds only once (and remembers the skipped
+  tile objects, so RemoveCellsOfOldScale does not populate them either) and skips a partner's
+  background tiles; `h_TileActive` answers true for a gameplay tile inside ANY player's box, so the
+  host's tiles and cells near a partner stay and a partner's tiles near the host stay. A partner
+  without a cell for 2 s: our code deletes all its tiles and frees the list. Our lists are forgotten (not drained) when
+  the tile pool was cleared or the stage is left. Each guest gets the cells within 120 m of its own
+  cell (before: within 120 m of the host's).
+* **The host's view centres**: ONE module for every stage, `mods/coop/view_centres.{h,cpp}`
+  (namespace `views`, merged 2026-10-30 with fix/w9-creature's BUG-0280 registry,
+  docs/re/creature.md#creature-view-centres). coop.cpp notes each partner it shows in its own place
+  (`views::note`, any stage; a position that is not finite is no centre, BUG-0292); the Creature and
+  Tribe relevance hook reads them (`npc.view_centres`, `npc.view_centres_tribe`), the Cell stage reads
+  the same ones (`views::partners(kCell)`) into a `views::Set` (the host's view first, then every
+  partner, at most `views::kMaxCentres` = 8; `near_any` / `nearest`), rebuilt every SimUpdate and
+  readable as `cellsync::view_centres()`. The cost in Cell is one PopulateTiles call per partner (at
+  most 0x32 new tiles each), IsTileActive up to once per centre for tiles and cells the own box
+  refuses, and the pool holds the cells of up to N screens.
+* Rivals (docs/11-rivals.md, 0.8): every player plays on its own, far from the host. The same module
+  serves it: the registry already holds every partner in every stage; each stage turns it into its
+  own keep-alive (Cell: tile passes + per-guest state; Creature / Tribe: relevance spheres) and asks
+  `views::Set::near_any` / `nearest` instead of "near the host's avatar".
+  Not done for Cell: a per-centre level (a Rivals player far ahead of the host would need its own
+  tile level; the level here is the shared food progress).
+* Not verified: the pool's capacity with four players far apart (the cell pool holds 4096 slots in
+  for_each_cell's bound; seen sizes up to ~650 with 4 players together); a host level-up wipes and
+  repopulates the cells around partners too (vanilla behaviour for anything outside the view).
+## The guest's own pool while the host is away (2026-10-30, fix/w9-cell-away)
+<a id="cell-host-away"></a>
+
+BUG-0205 / BUG-0151 (GitHub #130). GOG 2024, lane 3, `tools/tests/coop_cell_away.py [--editor]`.
+
+* ✔ With the host in the main menu (no state rounds, no totals) the guest's pool stood still: 0 of 14
+  creatures around the guest moved more than 1 m in 6 s (`pool.away` off). The mirrors are held at
+  the host's last pose by `guest_tick` (the extrapolation is capped at 0.5 s), `h_Populate` and
+  `h_SpawnLoot` are off on a guest and `h_Pair` skips every pair without the guest's own cell.
+* ~ Between two frames the AI lock +0x16C read 0 on the mirrors too (`coop.pool npcs`, a console
+  read): the mod writes it every frame (`guest_tick`, `guest_state`), something in the game's step
+  seems to clear it again. The mirrors do not move all the same (the pose is written every frame).
+  Not analysed further; the test checks the movement, not the byte.
+* ✔ Clearing +0x16C and +0x354 (keep-alive) of the former mirrors and forgetting them as mirrors is
+  enough for the guest's game to run them: 11 of 12 creatures moved within 6 s. 570 cells were
+  released (the whole mirrored pool, not only the ones on the screen). `h_Populate` was not called
+  in the ~10 s the host was away (`solo_spawns=0`): the tiles around the guest were already populated.
+* ✔ The return: the host's first complete state round after its reload purges every cell the guest
+  had as a stray (the purge spares the puppets and the mate) and recreates the mirrors: 315 mirrors,
+  each a live host cell, no own creature left within 30 s. No fault on either side.
+* ✔ The guest's food while the host was away (`coop.pool food 10`, the hooked AddFoodPoints): kept
+  on the guest and sent as one numbered meal just before the first state round is applied; the
+  host's total grew 0 -> 10 and the guest's stayed 10. Sent while the host is in the menu, the same
+  meal was acknowledged without its points (BUG-0239) and the guest's total fell back to 0.
+* ✔ The cell editor through the mate: the Cell stage is left ~10 s after the cell touches its mate
+  (9.86 s and 10.02 s, `coop_cell_editor_timed.py`; the mating cinematic). The host's editor
+  therefore counts as away (4 s) only well after the stage was left.
+* ~ The game's death count S+0x70 stayed 0 after a death through KillCell / PlayerDeath (the
+  `selfhit` death of `coop_cell_respawn.py`, both machines); the table above names only
+  BreakOrSwallow 0xE7AEE0 as its writer. Consistent, not checked with a break death.
+## The cell broadphase holds ~2048 cells (2026-10-30, fix/w10-cell-4p)
+<a id="cell-broadphase-cap"></a>
+
+BUG-0295 / BUG-0296 / BUG-0297 / BUG-0298. GOG 2024, Ghidra (`tools/ghidra/q.sh --build 2024`) and
+lanes 2 / 3 with four players (`tools/tests/coop_cell_4p.py`, suite `cell_4p`).
+
+* ✔ `Simulator::Cell::SimUpdate+0x131` (0xE7F4D1) calls 0xBBBF60, a thunk to **SweepPrune::UpdatePairs
+  0xBBB450** (cdecl, one argument): for each of two axes it merges the new endpoints into the sorted
+  endpoint array (**SweepPrune::MergeAxis 0xBBAF10**), then sweeps axis 0 with an active list of 1024
+  ints on its stack and writes the overlapping pairs. An endpoint is 8 bytes `{short type (0 min),
+  short object id, float value}`; object records are 16 bytes at `sap+0x14` (+8 / +0xC: its endpoint
+  index per axis, a short).
+* ✔ MergeAxis keeps the displaced endpoints in a **stack buffer of 0x8000 bytes = 4096 endpoints =
+  2048 objects**, with no bound check. A game holding more cells overruns it: the saved arguments
+  are overwritten and the loop faults at **0x00BBB07B** (MergeAxis+0x16B, `add esi,[ebx+0x14]` with a
+  garbage EBX; EAX, the merge index, read 0x1021..0x1084 in the four logs), which the crash tools
+  symbolise as `Simulator::cStarRecord::GetPlanetRecord+0x4AB`. SporeKit catches it, the frame goes
+  on with a corrupted stack and heap: seen right after it on the same games, a crash in DestroyCell
+  of a mirror (0xA81FE6, cCellGFX, BUG-0296), a null read on a worker thread (0xA479B7, BUG-0297),
+  faults at small addresses (0x9BB) and games that stop answering (lab 20261030-035318 campaign#2
+  and #3: every game faulted at 0xBBB07B within 2 s at level 4, with 1950-2450 live cells).
+* ✔ The cell pool's capacity (4096 slots, `G+0x1C+0x18`) is not the limit: the broadphase is.
+  Measured with the budget off (lab 20261030-052851, four players, food progress at level 4): the
+  host's pool reached 4096 (full) and 8203 faults, the guests 3140 / 2211 / 2334.
+* ✔ Where the cells came from: at level 4 the host alone with three partners next to it held ~1400
+  to 2200 cells; with the partners 200 m apart (BUG-0174's partner passes, one screen of tiles each)
+  it grew past 4000; and a guest got every host cell within 120 m of itself (up to 3140 mirrors).
+* The bound (`coop.fix cell.budget` (retired in 0.7.15), cellsync.cpp): (1) a partner's tile is populated only while the
+  host has fewer than 1100 live cells (kPopCap; first 1400: host peak 1714, lab 20261030-053258; then 1250: peaks 1759-1776, lab 20261030-063326) (`G+0x1C+0xC`); the others are kept as empty tiles ("starved")
+  and populated, 4 per frame, when the pool has room; a tile on the partner's own screen waits
+  only above 1300 (kPopCapScreen; `partner_core`: IsTileActive reads the gameplay range as the visible box
+  doubled, so asked with the partner's visible box halved it answers for the screen itself; without
+  it a far guest's screen stayed empty, lab 20261030-054633); the partner passes take turns being first;
+  a starved tile does not count as "populated elsewhere" for the other lists; (2) each guest gets
+  at most its 900 nearest cells (nth_element by distance to its centre); (3) a guest creates no new
+  mirror at 1500 live cells. Measured with the 1400 cap (lab 20261030-052856): host peak 1557, guests 1282 to
+  1394, no fault, the far guests had 185-322 host cells within 60 m. The host's own pass is never
+  limited (vanilla; ~ superseded 2026-10-30, see the host tiles below), so the host's own area keeps all its food; with four players at level 4 the
+  partners' areas are thinner than the host's (starved tiles waited, 542 starvations, 99 fed later).
+* ✔ `coop.pool` prints `cell_tiles: ... budget= starved=<count>/<now> fed= send_capped= mirror_capped=
+  cells=<live> peak=<highest seen> level=<tile level base>` on both roles.
+* ? Not measured: whether the active list of 1024 (UpdatePairs) can overflow with fewer cells (it
+  holds the cells overlapping one x position; would need ~1000 cells in one column).
+  ~ superseded (2026-10-31): see #cell-sap-active-list. CORRECTION (2026-10-31, fix/w20-cell): it
+  overflows (1100 cells in one column, and a guest with ~1024 objects left open in the campaign):
+  the return address is overwritten, BUG-0337.
+* The sync-check (`net/diagmsg.h` compare) and the campaign's coverage (`coop_multi.measure`) now
+  count only host cells within 60 m of the guest (BUG-0298): each guest is sent the cells around
+  itself, not the ones around the other players (it reported "1033 missing on the guest").
+* ✔ The live count lags: a populated tile's cells reach `G+0x1C+0xC` over the next frames, so many
+  tiles in one frame overshot the caps; from kPopCap - 250 at most 2 partner tiles (passes and
+  feeding together) per frame. A starved tile remembers its partner and is fed by the same rule
+  (screen tiles between the caps: without it a far guest's screen stayed empty, lab
+  20261030-060124). Even so the host's count jumps by ~250 now and then with no partner tile
+  (loot, the game's own spawns; not traced): the caps keep ~450 below the broadphase's limit.
+* ✔ While partners play, the host's own gameplay tiles follow the same rule (its screen up to 1300,
+  the ring of its doubled box only below 1100): at level 4 the host's own box alone held ~1000
+  cells, so with partner-only rules a far guest's screen got nothing (cell_4p, lab
+  20261030-064009). The background layer (layer 1) and a host without partners are never limited.
+  With it: cell_4p 3/3, host peaks 1386-1430, guests <= 1500 (lab 20261030-065411).
+* With caps 1250 / 1500 `cell_4p` x2 (lab 20261030-055041): host peak 1625-1626, guests
+  1135-1339, no fault; the final caps 1100 / 1300: see BUG-0295's Verification.
+* ✔ BUG-0299 (a guest's own cell NaN with no NaN mirror, 4-player campaign_short, lab
+  20261030-053709 i14): the order seen was the own position NaN, then a fault in CreateObject+0x56
+  under PopulateTiles+0x1EF (garbage tiles from NaN view boxes: the pool's live count grew by one
+  per frame while the list held 12), then 90 s later the level-up's RemoveCellsOfOldScale crashed in
+  PopulateTile+0x8A. `coop.pool nanself` (tests) makes the same state: without the guard the
+  guest's game hung after the level-ups (hang report, lab 20261030-055502). The guard
+  (`coop.fix cell.nan_guard` (retired in 0.7.15)): no PopulateTiles / PopulateTile while the own view boxes are not
+  finite, and the own cell is written back to its last finite position (`+0x4C`, `+0x84`, the
+  soft-body particles `G+0x4108` on a ring of 0.4 x size around it, at rest). ? Where the NaN came
+  from is still not known (the guest held 900 mirrors, none NaN).
+
+## A group member copies a dead chase target from its leader (2026-10-30, fix/w12-cell-fault)
+<a id="cell-pick-stale"></a>
+
+BUG-0306. GOG 2024, Ghidra (REA), lab 20261030-104149 campaign#2 (host, 4 players, level 4).
+
+* ✔ The fault `0xC0000005 at 0x00E52949` (data 0x108, ESI=0), which the crash tools name
+  `App::cCellModeStrategy::OnMouseMove+0x1939` and whose chain they name `RestAfterBite+0x479 <
+  DestroyCell+... < PopulateTile+0x25A` (nearest-symbol names, all wrong), is **IsDamageable
+  0xE52940 + 9** (`mov ecx,[esi+0x108]`, ESI = the cell asked about). The real chain from the
+  stack words: `SimUpdate 0xE7F3A0 -> 0xE7E7A0 -> UpdateCells 0xE7C8C0 (ret 0xE7C91A / 0xE7CA4C) ->
+  AI dispatcher 0xE7A190 (ret 0xE7A394) -> behaviour 0x1006 0xE7A0A0 (ret 0xE7A0CA) -> chase step
+  0xE79C30 (ret 0xE79F1E) -> 0xE57CE0 (ret 0xE57D09) -> IsDamageable`. 0xE719F8 in the list is a
+  stale word (the AoE 0xE71980 run earlier by 0xE76A80). The stack held `0xE57CE0(cell
+  0x1C80C870, NULL)`.
+* ✔ **0xE57CE0** cdecl `bool(cell* a, cell* b)`, plain ret: `GetScaleDifferenceWithPlayer 0xE57340(a)
+  != 1 && a+0xFC != 0 && IsDamageable(ESI = b)`; b is not checked for NULL.
+* ✔ **Chase step 0xE79C30** cdecl `void(cell*, resData*, float dt)`: (G+0x51DC and the avatar alive:
+  swim away from the avatar); `+0x224 > 0` rest: count down; `+0x228 > 0`: count down, `+0x178 = 1`;
+  `+0x21C > 0` flee `+0x220`; `+0x230 > 0` chase: `b = GetIfNotDeleted(+0x22C)` (0xB722E0 on G+0x1C,
+  thiscall ret 4: NULL for 0, a slot above the high-water mark or another generation) -> 0xE57CE0(cell,
+  b) -> steering 0xE6F800 (raw Get 0xB72320 of +0x22C, no check); at the end of the chase
+  `+0x224 = res+0x88`; else idle (+0x220 = +0x22C = 0, wander 0xE6FF60). All float tests are COMISS
+  (NaN takes the "<= 0" branch), the same as in 0xE70E30.
+* ✔ **Behaviour 0x1006 0xE7A0A0** = target timers 0xE70E30(cell, res, dt) then 0xE79C30(cell, res,
+  dt); E79C30 has no other caller. 0xE70E30 returns at once when `+0x224 > 0` or `+0x228 > 0`, clears a
+  dead flee target (`+0x21C > 0`, a live one returns), clears a dead chase target (`+0x230 > 0`), and
+  only **then** counts `+0x238` down and calls PickTargets (`+0x238 = 0.25`).
+* ✔ **PickTargets 0xE70CF0** (same address in both builds): a cell whose group (`+0x38C`, pool
+  **G+0xA8**, `GetIfNotDeleted` on it) has a leader (`group+8`) other than itself that is alive copies
+  the leader's `+0x21C, +0x220, +0x230, +0x22C, +0x208` **without checking them** and returns 0. So a
+  leader still holding a dead target (its target died after its last check: it comes later in the
+  pool, or it rests / is dead and skips the behaviours) hands it to the follower, and 0xE79C30 passes
+  NULL to 0xE57CE0 in the same call. A vanilla bug (a crash on Windows), made likely by many deaths
+  per second (four players eating, tiles going inactive) and low frame rates.
+* ✔ Why it repeats at every frame: Wine swallows the access violation and the game's frame is
+  aborted, the rest of UpdateCells included. The leader (later in the pool) never runs its check, the
+  follower's 0xE70E30 clears the copy, sets `+0x238 = 0`, calls PickTargets at once, copies the dead
+  target again and faults again: 8616 faults in 5 min at the host's frame rate, every cell after
+  the follower frozen on the host, until the stage was left.
+* Fix (`coop.fix cell.pick_guard` (retired in 0.7.15), cellsync.cpp h_PickTargets, both roles, puppets left alone):
+  after PickTargets a flee / chase target that is not a live cell is dropped with its timer, as
+  0xE70E30 would do one frame later. `coop.pool` prints `stale_targets=` (cell_contacts line);
+  `coop.pool staletarget [n]` (tests, host) makes n group leaders chase a dead cell and rest 60 s.
+  Test `coop_cell_stale.py` (suite `cell_stale`).
+* ? Not measured: how often the vanilla game reaches the copy with a dead target; which leader
+  held the dead target in the lab run (the follower's index is 0x1C80C870's first dword, not logged).
+
+## The own cell's NaN repeats: fields the heal must repair (2026-10-30, fix/w12-cell-fault)
+<a id="cell-nan-fields"></a>
+
+BUG-0307 (follow-up of BUG-0299, #cell-broadphase-cap end).
+
+* ✔ (lab 20261030-121742 / -122306) A soft-body cell's position comes back from its particles and
+  the shape matching at every cell step: with the rotation (+0x5C), the shape matrix (+0x24), the
+  size (+0x58 / +0xB4), the mass (+0xB8, inverse +0xBC) or a particle's rest offset
+  (`parts + 0x11944 + 12*k`, 1500 particle slots, k from +0x254) NaN, a position written back finite
+  is NaN again after the next step. Repairing position, particles' positions and velocities alone
+  (BUG-0299) does not hold.
+* ✔ Identity matrices, the last finite size and mass and rest offsets on the particles' ring are
+  accepted by the game: the cell swims on and the next fit rebuilds the shape (cell_nan_all,
+  lab 20261030-121908).
+* ✔ Negative: re-creating 900 mirrors 40 times (28 049 CreateCellObject + DestroyCell on the guest)
+  does not use address space (lab 20261030-121142); neither do 15 s of a NaN own cell.
+* ? The first NaN's source: not caught yet. The probes (cellsync.cpp own_probe) name the step where
+  it appears.
+
+## Background cells left behind by jumps, and what did not reproduce (2026-10-30, fix/w13-cell)
+<a id="cell-bg-leftovers"></a>
+
+* ✔ **Background cells are not freed when the camera moves away.** The decoration of the background
+  tiles (cells with query `+0x35C` = `G+0x4100`, levels above the player's, 6 and 7 at level 4) stays
+  in the pool after the own cell has jumped far: 40 jumps of 150-250 m (`coop.pool tp`, 3 s apart)
+  left 1099 of them on a guest and 1075 on the host (37 / 35 before, 807 / 781 over 150 m from the own
+  cell; out/hunt of fix/w13-cell, lanes 2 and 3). Both roles, at 3 fps and at 65 fps, so a game
+  behaviour that our jumps expose: the game frees them only on a level change
+  (RemoveCellsOfOldScale). The foreground cull (0xE5F8C0, per foreground cell in UpdateCells) never
+  sees them. On a guest the pool then reaches the mirror cap (1500 live cells, BUG-0295) and no
+  mirror is created any more: the guest has 0 of the host's cells (BUG-0314, the coverage 1% of
+  BUG-0307's campaign run, whose NaN heals made the own cell jump 100-200 m at a time).
+* ✔ `cell.bg_cull` (cellsync.cpp `bg_cull`): every 2 s, outside a level change, background cells
+  (not `+0x354` keep-alive) farther than 150 m from the own cell are destroyed with DestroyCell (as
+  RemoveCellsOfOldScale destroys cells outside the view), at most 300 a pass. `coop.pool census`
+  lists every used pool slot by kind (foreground, background with distance and levels, mirrors,
+  puppets, strays, culled).
+* ✔ Negative (BUG-0307's address space drain): 3 minutes of a NaN own cell (every field, the heal off,
+  level-ups, swimming) kept the guest at 3632 MB free (lab 20261030-133256); 4 players with Carol at
+  3 fps jumping 80 times (28 538 mirrors created) kept 3613-3620 MB. The drain is neither the NaN
+  state nor the jumps nor the mirror churn. Still unknown.
+* ✔ Negative (BUG-0282): on 5d7f20e the low-frame-rate trail did not come back: 2 players, guest at
+  15 fps, 30 checks, 0 of 16 616 cells over 1.2 m (worst 0.08 m, lab 20261030-133013); 4 players
+  (Carol 15 fps, Dave 30 fps) after the food went to 200: p90 median 0.05 / 0.04 m, largest 0.39 /
+  0.45 m, 0 checks over the limit.
+* ✔ The own_probe lines (BUG-0307) never fired in these runs (4 players, level-ups, 3 fps, jumps):
+  the natural first NaN was not caught.
+
+## Our pool work while the Cell stage is torn down (2026-10-30, fix/w13-cell)
+<a id="cell-leave-guard"></a>
+
+* ✔ Static: between the posted quit (world.cpp `load_slot`: "quit to the galaxy menu posted",
+  `game::stage_leaving`) and the mode change (~0.8 s, three frames in lab 20261030-104149
+  campaign_short#3) `game::mode_id()` still reads Cell and the cell game is still there, so
+  cellsync's `in_cell()` is true. Its `avatar()` reads the pool directly (not `game::avatar`, which is
+  null while leaving, BUG-0264), so `tick()` kept running `guest_tick` / `host_tick` / `bg_cull` /
+  `symbiosis_tick`, `on_message` kept applying MSG_CELL_STATE (`guest_state`: CreateCellObject for
+  new mirrors, field writes, DestroyCell for dropped ones), and modes.cpp `h_SimUpdate` kept writing
+  the puppets' poses, all on the pool the game frees in SimUpdate (the BUG-0308 fault was in
+  `cObjectPool::_dtor` under SimUpdate+0x6ED). A rejoin in Cell is exactly this case: the guest
+  creates ~900 mirrors at the join and the host's world arrives ~3 s later.
+* `cell.leave_guard` (modes.cpp `cell_leaving()`): none of that runs while `game::leaving_stage()`.
+  `coop.pool` prints `leave_writes=` (states / ticks applied while leaving, the off side) and
+  `leave_dropped=` (skipped). Whether this work corrupted the heap is not shown.
+
+## The broadphase sweep's open list holds 1024 objects (2026-10-31, fix/w20-cell)
+<a id="cell-sap-active-list"></a>
+
+BUG-0337. GOG 2024, Ghidra (`tools/ghidra/q.sh --build 2024`), lab 20261031-054758 campaign#1 (the
+report) and `tools/tests/coop_cell_sap.py` (suite `cell_sap`). Answers the "? Not measured" of
+#cell-broadphase-cap: yes, it overflows, and then every frame faults.
+
+* ✔ The cell broadphase is the sweep-and-prune at `cCellGame+0x4104` (SAP, built by 0xBBB570:
+  s+0 pair capacity, +4 object capacity (4096), +8 pair count, +0xC pairs, +0x10 live objects,
+  +0x14 object records (16 bytes), +0x18 high water, +0x1C free list head, +0x20 endpoint count,
+  +0x24 / +0x28 sorted endpoints per axis, +0x2C pending count, +0x30 / +0x34 pending endpoints
+  per axis, each 2 x capacity x 8 bytes). Object record: +0 the pair key, +4 a group (same nonzero:
+  never a pair; -1 after RemoveObject), +8 / +0xA min endpoint index per axis, +0xC / +0xE max
+  (short, bit 15: still in the pending array). Endpoint `{short type (0 min, 1 max, -2 removed),
+  short object, float value}`.
+* ✔ A cell's object id is cell `+0x364` (-1: none). CreateCellObject (0xE74FF6) adds it through
+  0xBBBF40 -> AddObject 0xBBB290 (pending entries, merged at the next sweep); DestroyCell (0xE78116)
+  and the world rebuild 0xE7FD00 remove it through 0xBBBF50 -> RemoveObject 0xBBB380 (its four
+  entries marked -2, the record to the free list; the cell's `+0x364` is not reset). Every frame
+  0xE6DAE0 (and the world scale step 0xE6DB70) moves its bounds, `pos +- r` with r = model radius
+  (model data +0x1244) x cell `+0x58` (0xE6D790), through 0xBBC460 -> UpdateObject 0xBBBFD0, which
+  moves each endpoint by insertion with strict `<` (0xBBB770 / 0xBBB880 / 0xBBB990 / 0xBBBA70). The
+  pending sort's comparator 0xBBAE50 never answers "equal" (equal values: either order).
+* ✔ `SweepPrune::UpdatePairs` 0xBBB450 (SimUpdate+0x131, every frame): MergeAxis for both axes,
+  then the sweep along x keeps the objects whose min it has passed and whose max it has not in
+  **an int[1024] at esp+0x1C of a 0x100C-byte frame, no bound check**. open[1024] is the return
+  address, open[1025] the argument, then SimUpdate's frame. With more than 1024 objects open at
+  once `ret` jumps to an object id: faults at 0x196, 0x4D6, 0x144, ... with **esp=0012D394**,
+  edi=01639470, ebx=034CF4E8, ebp=034CF480 on the main thread (the crash tools name the stale
+  return addresses above it "UIMissionCardPanel_HandleMessage+0x775 < cCellModeStrategy::OnExit+0xC4C",
+  really FUN_00e18aa0 0xE18AD5 and SimUpdate's caller 0xE8084C). EDX at the fault is the open
+  count at the end of the sweep. The game catches it; the rest of SimUpdate is skipped every frame
+  (the own cell stops, 500-750 ms per fault on Wine, lab: 2642 faults in 40 s), the stack above is
+  overwritten.
+* ✔ Reproduced: `coop.pool column 1100` on a host with ~1300 cells (food 300) puts 1100 cells on one
+  40 m line: `coop.fix cell.sap_sweep off` (retired in 0.7.15) -> the same fault signature at once (esp=0012D394, small
+  EIPs, edi=01639470), the host's cell stops, a guest lost its mirrors (lab 20261031-075501).
+* The fix `cell.sap_sweep` (cellsync.cpp `h_UpdatePairs`, hook on 0xBBB450): the same two
+  MergeAxis calls, the same sweep with the open list in a heap vector, the same pair test (the
+  game's `SweepPrune::OverlapOther` 0xBBB110) and the same pairs in the same order. `coop.pool sap`
+  replays the sweep (peak_open, open_at_end, max-before-min, duplicate / lone min entries, which
+  cells are left open) and prints our counters (`sweeps`, `over_1024`, `sweep_peak`,
+  `sweep_left`); more than 64 objects left open at the end of a sweep logs that report (30 s apart).
+* ? Why the campaign's guest (Carol, 927 cells, 900 mirrors) had over 1024 open objects: EDX at its
+  faults was 0x3F9-0x407, i.e. ~1024 objects **still open at the end of the sweep** (a max endpoint
+  before its min, or min entries left behind), more than its live cells. In a healthy game none is
+  left (three replays of the campaign's Cell stage with `coop.pool sap` every 10 s on lanes 5 / 6:
+  peak 13-43 open, 0 left, 0 duplicate or lone entries). The same frame (esp=0012D394, EDX
+  0x614 / 0x7F0 with 2000-2450 cells) is in lab 20261030-035318 after BUG-0295's MergeAxis overrun.
+  Inferred, not seen: the endpoint arrays were corrupted earlier (entries of a removed object left
+  behind by a RemoveObject with stale indices, or a broken order); not reproduced. The warning
+  above records it the next time.
+
+## The broadphase's pending list overflows while the simulation is paused (2026-10-31, fix/w22-cell)
+<a id="cell-sap-pending"></a>
+
+BUG-0348 (and the cause of BUG-0337's objects left open). GOG 2024; lab 20261031-120025
+campaign#1 (guest Bob) and `tools/tests/coop_cell_pause.py` (suite `cell_pause`).
+
+* ✔ AddObject 0xBBB290 (through 0xBBBF40, from CreateCellObject) appends the new object's two
+  endpoints per axis at `s+0x30[axis] + 8 * s+0x2C` and adds 2 to `s+0x2C`, **no bound check**; the
+  pending arrays hold 2 x capacity = 8192 entries (64 KB, allocated by 0xBBB570 right after the
+  sorted array of the same axis). Only UpdatePairs (the sweep, inside SimUpdate) merges and resets
+  them. RemoveObject marks pending entries -2 but `s+0x2C` does not shrink, so every create counts.
+* ✔ In the pause menu SimUpdate does not run, but a guest keeps applying the host's states: mirrors
+  dropped and created again (or new ones as the host moves). Measured on lane 8 (`coop.pool zap 5000`
+  every 2.5 s while paused): pending 1774, 3532, ... **20376** after 12 rounds, 2.5 x the arrays,
+  i.e. ~97 KB written past pending[0] (over the next blocks: the axis-1 sorted endpoints and
+  whatever the heap put after pending[1]). After Resume the sweep left 477 objects open (entries
+  with stale or foreign ids, a broken order: BUG-0337's "~1024 left open").
+* ✔ The campaign case: Bob's position did not change from 13:07:36 to 13:08:36 (game clock) while
+  his mirrors went 354 -> 502 -> 1 -> 95 -> 248 -> 330 (a pause menu whose Resume was lost, BUG-0289);
+  right after it the first warning of BUG-0337's diagnostics: 198 objects left open, 194 of them
+  with his avatar's object id; 30 s later 782 (endpoints 2597 for 904 live objects); then on the
+  way to Creature `GeneralAllocator_FreeInternal+0x13D` freeing the event pool `G+0x54` in the
+  Cell teardown 0xE7F9B0 (return 0xE7FAF0; the crash tools say SimUpdate+0x750).
+* ✔ Reproduced (lane 8, `cell.sap_pending` off): pending 17424 while paused, Resume, then the guest
+  leaves Cell for the galaxy menu (`coop.menu`): 88 faults, first `GeneralAllocator_FreeInternal+0x64`
+  freeing pool `G+0x8C` (return 0xE7FA8D, BUG-0308's exact signature), then 0x00DDA358 (data 0x18) as
+  in both campaign reports. The heap blocks after the pending arrays are what the teardown frees.
+* The guard `cell.sap_pending` (modes.cpp `cell_sap_room()`, used by `cell_create` (mirrors) and
+  `cell_spawn` (puppets)): no cell of ours while `s+0x2C + 2 + 512 > 2 x s+4`; the mirror is made
+  by a later state once the simulation runs again. `coop.pool sap` prints `held=` (creations held).
+  The game itself creates cells only inside SimUpdate, before the sweep of the same frame.
+* ~ BUG-0308 (a rejoined guest, the same fault freeing pool `G+0x8C`, return 0xE7FA8D): the same
+  signature is what the pending overflow gives; whether that guest's game was not simulating while
+  it made mirrors (the join, a pause) is not shown.
+## A guest's bite and the health ring; the editor's DNA budget; joining after a load (2026-10-31, fix/w22-reports2)
+<a id="cell-guest-bite-ring"></a>
+
+* ✔ (Ghidra GOG 2024, DamageCell 0xE7A7C0) the health ring a bite shows is `ShowHealthRollover`
+  0xE62340 (cdecl `void(cell*, int hpBefore)`, plain ret), called by DamageCell before the hp change
+  when the avatar is the victim or the attacker (or the attacker's +0x110). It returns at once without
+  GFX (+0x248 = 0) and otherwise calls 0xE62200(cell index, hp/6): an entry of the cell UI's
+  rollover pool `*cCellUI::_ptr (0x016B3C0C) + 0x9C` (cObjectPool, docs §0): `+4` the cell's pool
+  index (an existing entry for that cell is reused), `+8/+0x14/+0x1C` hp/6, `+0x24` a timer set to
+  0.5 (runtime: 0.42-0.50 0.1 s later), `+0x28` 0.25, `+0x30` a flag. The same ring is made by
+  EatChunkA/B (0xE7DD90 / 0xE7DBD0) and 0xE62500, 0xE71520.
+* ✔ After the hp change DamageCell plays the victim's hurt animation through
+  `Simulator::Cell::PlayAnimation` 0xE6D200 (`(cell*, 0, anim, cell+0x1B0)`: anim 0xE type 1, 0xF
+  type 3, 0x11 type 5, else 0x10; it writes the animation to +0x1B0 and its length to +0x1B8) and
+  schedules event 2 (0xE51EC0) with that length, whose end runs the after-hurt reaction; with a
+  zero length it calls 0xE7A770 at once.
+* ✔ (runtime, lab 20261031-125228..130728, BUG-0350) on a guest the bite on a mirror never ran the
+  original (the host applies it), so no ring: `ring=-1` in the guest's game while the host's own bite
+  on the same creature showed `ring=0.50` in the host's game. The fix `cell.bite_ring` calls
+  ShowHealthRollover itself under DamageCell's conditions (damage > 0, GFX, hp > 0, not dead or
+  dying, +0x17C and +0x111 clear, ShouldNotAttack false): ring 0.50 on each of 3 bites. The hurt
+  animation is not played on the mirror: its event 2 would run the after-hurt AI reaction on a
+  passive mirror (not tried).
+* ✔ A host creature that flees after a bite often has **no GFX on the guest** (`gfx=0 particles=0`,
+  same pool index) for seconds right after the guest was teleported next to it (tests'
+  `coop.pool swimto <key> tp`): it is not drawn there yet, and the game would show no ring either.
+  With the fix off the same. `coop.pool cell <key>` now prints `ring=`, `anim=` (+0x1B0), `idx=` and
+  `onscreen=`; `coop.pool kill` prints `ring=`, `rings=` and `skip=` (why the last guest bite showed
+  none). The `onscreen=` test (world_to_screen) said 0 for cells 3-5 m from the guest's cell on the
+  headless lanes now and then: not a reliable "drawn" test, GFX is.
+<a id="cell-editor-dna"></a>
+* ✔ (Ghidra) the cell editor's DNA budget: the request 0xE59800 computes
+  `DNAForFood(S+0x1C) - S+0x2C` and sends it with message 0x90A03FDF after
+  `Editors::EditorRequest::Submit`. `DNAForFood` 0xE51410 is fastcall (ECX = food), interpolated in
+  the level table 0x01483B54 (7 ints: level, food threshold, DNA, ...): 0 -> 0, 50 -> 5, 100 -> 10,
+  150 -> 13, ... 350 -> 25, 400 -> 28, 450 -> 31, 500 -> 34; food 1000 uses the entry 0x01483DA0.
+  `S+0x2C` is the DNA spent so far. The mod writes neither. Since BUG-0351 the log has
+  `cell: DNA at the editor request: food= plant= spent= dna_for_food= budget=` (each request, also
+  after the vote) and `cell: DNA on entering Cell: ...` (a load, an editor's return).
+<a id="cell-join-after-load"></a>
+* ✔ (player logs 2026-10-31, BUG-0352) a loaded Cell world starts the player's cell at the pool's
+  start, also on a guest; only an own-cell rebuild moved a guest to the host (`join_partner`). The
+  fix `cell.join_after_load`: every new avatar index of a guest (a load, an editor, a rebuild) goes
+  2.5 m next to the host once the host's state is here (2 s to 30 s after the avatar appeared, not
+  while knocked out), when it is 15 m or more away; log `cell: our new cell joined the host`.
+
+## The soft-body particle pool holds 1500 (2026-10-31, fix/w23-cell)
+<a id="cell-particle-pool"></a>
+
+BUG-0338. GOG 2024, Ghidra and `tools/tests/coop_cell_particles.py` (suite `cell_particles`).
+
+* ✔ Particle pool `cCellGame+0x4108` (the `parts` the mod already uses: positions +4 + 12i,
+  velocities +0x4654 + 12i, goal offsets +0x11944 + 12i): owner +0x18E74[i], next +0x1A5E4[i], count
+  +0x1BD54, high water +0x1BD58, free-list head +0x1BD5C; **1500 slots** (0x5DC).
+  Simulator::Cell::ParticleAlloc 0xE4DBA0 returns -1 when 1499 are used (so it never hands out slot
+  1499); Simulator::Cell::ParticleFree 0xE4EC10 has no bound check.
+  ~ superseded (2026-10-31): "never hands out slot 1499", see the CORRECTION below.
+  CORRECTION (2026-10-31, fix/w26-cell-spare): with no free slot below the high water,
+  ParticleAlloc's index is the new count (slots 1..1499, slot 0 never used), so it does hand out
+  1499 at 1498 used; BUG-0338's spare could then be a real cell's particle and that cell's free of
+  it was dropped (one slot lost, `coop.pool orphans`). With `cell.spare` the pool counts as full at
+  1498 used and 1499 is the spare alone (docs/re/cell.md#cell-gfx-pool).
+* ✔ A cell's soft body (cell +0x248 object, +0x24C tier, +0x250 count, +0x254 indices):
+  CreateSoftBody 0xE6D8F0 picks the tier from size +0x58 (>=0.3: 1, >=1: 2, >=2: 3) and takes one
+  particle per node of the quadtree 0x16AE800 at that depth (4 / 16 / 64); tier 0, another query or
+  model type 0 / 5 is the "no particles" form (+0x250 = 1, +0x254 = -1). The re-tier 0xE51A20
+  (from 0xE5A1A0, when a cell grows or shrinks) frees the old particles and takes the new tier's.
+  FreeSoftBody 0xE66010 (DestroyCell) frees every entry when +0x250 > 1.
+* ✔ A full pool's -1 is kept in the list. The game then reads and writes particle -1 (8 bytes
+  before the block: the heap header; a cell's centre computed from it jumped 4000-8400 m) and frees
+  it, which makes -1 the free-list head; the next allocation reads `next[-1]` (another array's
+  last value) as the head and the one after faults: **0x00E4DBD9** (ParticleAlloc+0x39, the host in
+  cell_sap, 1332 faults) and **0x00E4E384** (the advect query 0xE4E320, the guest in cell_sap and in
+  coop_cell_particles with the fix off: 360 faults, own cell 8385 m away). The re-tier from a cell
+  without particles frees its -1 too (the count went to -25 once).
+* How full the pool gets: ordinary 2-player play at level 4 (food 300) peaked at 391 on the host;
+  `coop.pool column 1100` (1100 cells next to the host's cell, cell_sap) filled it (1480-1499 right
+  after). Inferred: real play needs some hundreds of cells crowded near the camera to reach it, not
+  seen outside these tests.
+* The fix `cell.particles` (cellsync.cpp, hooks on ParticleAlloc / ParticleFree): an allocation the
+  game would refuse gets the spare slot 1499 (set to the asking cell's position, at rest; shared by
+  all such cells), and a free of 1499 or of anything outside the pool does nothing. `coop.pool sap`
+  prints `particles=` (the game's count), `peak=`, `spare=`, `bad_frees=`; `coop.pool particles <n>`
+  (tests) fills the pool to n used with real allocations.
+
+## The "ghost" after the own cell's rebuild: our avatar taken for the partner's puppet (2026-10-31, fix/w25-reports)
+<a id="cell-ghost-puppet-address"></a>
+
+BUG-0342. GOG 2024, lanes 5/6, `tools/tests/coop_cell_own_load.py` (34 + 18 runs) with
+`coop.pool collide` / `sapme` / `own_pairs`.
+
+* ✔ Not the cause (the failing runs had the same as the good ones): the cell model data (16 parts,
+  radius 1.259), the broadphase (object, endpoints, bounds, pair list 60-120 of 4096), scale +0x58,
+  matrix +0x5C, flags +0x48, the level. The broadphase held 1-3 pairs of our cell with the plants it
+  touched, both cells live in the pool (GetIfNotDeleted) and Collisions' sphere test (0xE6D790:
+  model data centre +0x1238 and radius +0x1244 times +0x58, turned by +0x5C when +0x48 bit 2) passed,
+  yet HandleCollisionPair (hook h_Pair) saw no pair of our cell (`own_pairs` stayed 0; good runs: 15-70
+  per plant).
+* ✔ The cause: h_Pair drops every pair with a partner's puppet (`modes::cell_is_puppet`), and that
+  asked only a map keyed by the cell's address. RebuildLevel 0xE7FD00 frees every cell and makes the
+  avatar first, often at the address the puppet had; the puppet is then made again at another
+  address, and the old entry is never looked at again (the remote's alive check asks for its new
+  puppet). With the old check: `puppet=1` for our own cell in both ghost runs of 12 (lab of the
+  branch); a game whose avatar is "a puppet" does not eat, bite or get hit until the next rebuild.
+* Fix `cell.puppet_index` (modes.cpp): a puppet is the cell at the address AND its pool index
+  (index + generation, `cell_at`); entries whose index no longer leads to their address are dropped
+  when a puppet is made. With it: see BUG-0342's Verification.
+
+## The cell graphics pool (256) loses soft-body particles when full (2026-10-31, fix/w26-cell-spare)
+<a id="cell-gfx-pool"></a>
+
+BUG-0355. GOG 2024, Ghidra and `tools/tests/coop_cell_spare.py` (suite `cell_spare`), lanes 5/6/8,
+`coop.pool parts` / `coop.pool orphans` / `coop.sample`.
+
+* ✔ Soft-body LOD: every frame UpdateCells 0xE7C8C0 calls Simulator::Cell::SoftBodyLod 0xE78C00 per
+  cell: 0xE5CDE0 asks whether a foreground cell's sphere (pos +0x4C, 1.7 x size +0x58) touches the
+  active area Simulator::Cell::ActiveBox 0x016B3C88 (min xyz, max xyz around the camera; 20 x 15 m
+  at level 4, it also spans the 20 x 15 bucket grid of the advect step 0xE4E8B0); outside it frees the
+  soft body (FreeSoftBody 0xE66010), inside it makes a missing one (+0x248 == 0: CreateSoftBody
+  0xE6D8F0). So only cells near the camera hold particles; the rest of the 900 mirrors have none.
+  Negative: the per-frame tier check 0xE5A1A0 skips cells of the background query (+0x35C ==
+  G+0x4100); a mirror's size changed by us does not re-tier a cell that has no +0x248.
+* ✔ CreateSoftBody allocates the particles (tree walk 0xE5CB60, call site 0xE5CC88) and writes the
+  count +0x250 first, then takes the graphics object (+0x248) from the cObjectPool at
+  `*Simulator::Cell::cCellGFX::_ptr + 0x168` (live +0xC, capacity +0x18 = **256**).
+  cObjectPool_::CreateObject 0xB72270 returns 0 when live == capacity; the 0 is kept, the object
+  set up is cObjectPool_::Get(0). DestroyCell 0xE780A0 calls FreeSoftBody only when +0x248 != 0, and
+  the next frame's LOD sees +0x248 == 0 and calls CreateSoftBody again over the old list. Every cell
+  in the active area beyond the 256th loses its 4-64 particles every frame.
+* ✔ Runtime (2 players, `coop.pool crowd 1000 8` on the host, fix off): within 12 s the pool was full
+  in both games; 611-1491 used slots (guest) and 195-1491 (host) held by no cell, all allocated at
+  0xE5CC88, 1195-1391 of their owners gone; 67 DestroyCell of cells with 616 particles gave back 40
+  (63 of them without +0x248). Then BUG-0338's spare slot is handed to every cell asking: its
+  position was NaN in every such run within seconds (each holder's soft-body step pulls it, up to 64
+  times per cell), the NaN spreads to every holder (the centre is the mean of the particles;
+  guest_tick moves a mirror's particles by the NaN difference): 26-31 NaN cells; the guest's own cell
+  grew in the end-of-Cell cinematic with 56-60 of its 64 particles the spare and went non-finite
+  (BUG-0292 / BUG-0307 lines every frame).
+* ✔ With `cell.gfx_full` (no CreateSoftBody while the graphics pool is full): gfx peak 256, 891
+  calls refused in 12 s, 20 DestroyCell with 164 particles gave back 164, no lost slot.
+* ~ Inferred (no graphics pool numbers in that log): ordinary 4-player play reaches it, the
+  campaign guest's 900 mirrors crowding its screen; its particle pool was full at 18:02:47 (lab 20261031-151552 campaign_short#1 extra1), the other three games and
+  two further fix-off campaign_short runs (lab 20261031-174551 of the branch) did not get there (1 of 5 campaign_short runs so far).
+* ~ Inferred, not reproduced: the campaign guest's 3 fps for good (frames of 300-400 ms) and its
+  address space falling 3526 -> 1899 MB in two minutes. A 2-player crowd with the fix off kept
+  60+ fps (`coop.sample`: no hot spot). Likely the per-frame CreateSoftBody calls of many cells on a
+  full graphics pool (each sets up Get(0)'s object again and plays an animation) once the
+  cinematic's zoom put more cells in the active area, and the own cell flying around with the NaN
+  spare. Both are gone with the fix.
+* A full particle pool can still come legitimately (256 cells x 16 particles at tier 2 is 4096):
+  `cell.spare` frees the soft bodies of the cells farthest from our own (not ours, no puppet, not the
+  asking cell) down to 1300 used and hands out a real slot; such a cell keeps its tier and becomes
+  the game's own "no particles" form (+0x250 = 1, +0x254 = -1, as a model type 0 / 5 cell), moved and
+  drawn without a soft body until the LOD or a re-tier gives it particles again. A cell left with
+  the spare is freed the same way once a frame; the spare is put back to a finite place.
+* Follow-up (2026-10-31, after the merge 55da78b): cell_particles (the pool filled with particles no
+  cell holds, `coop.pool particles 1499`, then the mirrors made again 10-16 times) showed steps of
+  the guest's own cell of 13-18 m in one round on main (2 of 5 runs). Not introduced by BUG-0355: with
+  `cell.spare`, `cell.gfx_full` (and `cell.bare_still`) all off it stepped in 6 of 12 runs, 64 m to
+  1e7 m in 4 of them (the shared NaN spare); with them on 2-4 of 12 at 5-16 m; without a full pool at
+  all (`--no-fill`) 1 of 8 (18.5 m: the own cell was knocked out by the crowd and respawned, its
+  soft body 4 -> 1). With the own cell invulnerable (`coop.pool invuln 1`) the most in a round was
+  4.3 m in 6 runs and 10.8 m in 1 of 6 more (fixes on), 4.8 m in 6 runs (off; one of them drifted 34
+  m in all). ✔ observed: a knock-out's respawn moves the passive own cell; ~ inferred: bites and the
+  mirrors made again on top of it shove it the rest.
+* `cell.bare_still` (with this follow-up): a mirror whose soft body `cell.spare` freed is placed at
+  the host's pose at rest every frame (as a soft mirror is), not steered by velocity like a tier-0
+  mirror. ~ Not shown to matter: steered 4 of 12 runs stepped over 5 m, at rest 2 of 12 (one a
+  knock-out); kept because a bare mirror steered into ours is the one way left for the fix to push it.
+  Tried and dropped: keeping the soft bodies of cells within 8 m of ours (they then share the spare
+  again): 3 of 12 stepped, no better.
+* `cell.gfx_full`, corrected (2026-10-31, follow-up): a cell CreateCellObject makes has count +0x250
+  = 0 (the object pool's memset) until its first CreateSoftBody; refused, it kept 0 for good. In
+  cell_sap (1100 host cells in a column, the host's graphics pool full in every run) 3 of 5 runs
+  failed after the merge: first-interval jumps of the host's cell of 62 and 73 m (limit 60) and
+  once a host cell with a pose that was not finite and the host's own cell at (-9934064 -5482405).
+  Now a refused cell gets the game's "no particles" form (count 1, +0x254 = -1, `count0=` in
+  `coop.pool parts`): 4/4 passed (first intervals 4-37 m); with `cell.gfx_full` off 3/4 (46 m once,
+  one failure on a guest's view). ~ Inferred: some game code divides by or walks the count (the
+  NaN cell); the 62-73 m first intervals are the column pushing itself apart (up to 46 m with the
+  guard off too), not this.
+
+## A negative "spent DNA" after the cell editor (2026-11-01, fix/w30-progress)
+<a id="cell-editor-negative-spent"></a>
+
+* ✔ (player logs 0.7.3.3, BUG-0351) `S+0x2C` (DNA spent) can be negative after the game's cell editor:
+  the host's first editor (budget 20, the starting carnivore cell E3B1B67B) came back with spent=-40
+  (budget 60 on the next request), then -19 and -20. The mod writes neither field
+  (#cell-editor-dna). ~ Inferred: the editor charges the difference of the cells' worth, so removing the
+  starting cell's parts pays DNA back (vanilla sell-back; not checked in a solo game).
+
+## A knocked-out cell still ate what touched it (2026-11-01, fix/w31-cell-gate)
+<a id="cell-ko-eat"></a>
+
+* ✔ observed (BUG-0364, lab 20261101-023131 cell_coop; reproduced by cell_ko_food with
+  `coop.fix cell.ko_no_eat off` (retired in 0.7.15), lab 20261101-093513 and 20261101-094736): the knockout
+  (`go_down` / `downed_tick`: hp held at 1, invulnerable, `stop_at` its spot every frame) does not
+  stop the game's contact events. EatFood 0xE7DF40 (event 0x12) still ran for the avatar: OnEat ->
+  AvatarEat -> AddFoodPoints, +12 per plant, shared with the partner, the plant shrank or was
+  destroyed. The respawn's "small again" body follows the food total (regrow, +0.01 per point), so
+  the cell came back bigger (cell_coop target 0.41 instead of 0.28).
+* Fix `cell.ko_no_eat`: EatFood is hooked (GOG 2024 symbol; the GOG 2016 file has none, the hook is
+  then skipped); while our cell is knocked out a call with our avatar as the eater returns at once
+  (the food stays where it is), and our mouth's chunk bites (events 0x13 / 0x14, `chunk`) are left
+  out too. `coop.pool` counts them as `ko_eats_blocked=`. A partner's cell and the NPCs eat as before.
+* ~ inferred, not seen: the knocked-out cell's own soft body still collides and pushes; only eating
+  is stopped.
+
+## The mating-call button and the hatch after a load (2026-11-01, fix/w34-cell-mate)
+<a id="cell-mate-button"></a>
+
+* ✔ (Ghidra GOG 2024, BUG-0411) Two callers reach the mating call 0xE760F0
+  (docs/re/cell.md, section 12): the HUD's message handler **0xE78E70** (registered in data at
+  0x01485338; window message id `+8 == 0x287259F6`, command `+0xC == 0x44837C0`) calls it with no
+  condition, and **0xE76320** (from 0xE7F630, probably the key binding) only when
+  `*(DAT_016B3C0C + 0x936) == 0`, `G+0x51CC <= 0` and `S+0x69 != 0`. 0xE760F0 creates the mate only
+  when `G+0x51D4` holds no live cell; `G+0x51D4 == 0` (`coop.pool mate` prints `mate=00000000`) means
+  the call never ran in this Cell game (a load starts a new one with 0).
+* ✔ runtime (lane 6, 2026-11-01): a Cell world loaded from the galaxy menu often starts with the
+  cell's hatch, the game's input lock on (`cGameInputManager +0x110`, `coop.uistate input_lock=1`)
+  and a cinematic playing (`coop.pool cine=1`) for about 5-10 s; a click on the heart button then
+  does nothing (no mate, `G+0x51D4` stays 0) and the press is not queued. Some loads show no hatch
+  at all (input_lock=0 at once): which ones is not known.
+* ✔ runtime: after the host's cell editor the host shares its world again (saved 3 s after the
+  stage settled); the guest leaves the Cell stage about 4-5 s after it got the host's new cell
+  record and is back in Cell another ~5 s later. A mate the guest called before that load is gone.
+
+## The Cell parts a player collects, and the party's shared set (2026-11-03, fix/w40-editor)
+<a id="cell-parts-shared"></a>
+
+BUG-0467. GOG 2024, objdump of `SporeApp.exe` (dc04aee5).
+
+* ✔ (disassembly) The Cell stage's collected parts are **13 ints** at cCellSerializableData (`S`,
+  cCellGame+0x5190) **+0x34 + 4*part**, not bytes: 0 locked, 1 unlocked, 2 collected and not seen in
+  the editor yet. 0xE4FB90 turns every 2 into 1 (the editor's return); 0xE4FAA0(int* states) builds
+  the cCollectableItems of the cell editor (`G+0x5164`) from them: state 1 -> UnlockPart, 0 ->
+  LockPart, then state 2 -> UnlockPart, over the table **0x1483DD8** ({part index, item instance} x 12,
+  type 0x150D6D8).
+  CORRECTION (2026-11-03, fix/w40-editor): `coop.pool`'s `parts=` read 13 bytes at `S+0x34` (only the
+  first 3-4 parts' low bytes); it reads the 13 ints now.
+* ✔ (disassembly) **0xE5D7B0 `Simulator::Cell::CollectPart`**, cdecl void(int part), plain ret: a part
+  token collected (from the collision code 0xE7B630; a debug key 0xE81120). The first time
+  (`S+0x69 == 0`) timers `G+0x51D0` / `G+0x51CC` and a callout; then the parts mission (`S+0x90`
+  1 -> 3, counter `S+0x94` up to 6), `S+0x69 = S+0x68 = 1` (the mating-call button), `state[part] = 2`,
+  the part's item key from the table, 0xE83430 (the part pop-up), 0xE4FAA0 over `S+0x34` (the
+  palette's items rebuilt). It runs in the collecting player's game only: a part a guest picked up
+  never reached the host (BUG-0467) and the other way round.
+* The co-op rule (as BUG-0401 for the creature parts): the party has one set, the union, held by the
+  host's game. `parts.shared_cell` (parts.cpp, MSG_PARTS kinds 3 and 4, keys `{part, 0}`): every game
+  polls the 13 states in a live Cell game (1 Hz); a guest that plays the host's world sends the parts
+  it has and the host lacks (kind 4, resent every 3 s, at most 5 times a part), the host collects them
+  through CollectPart (outside the frame: it shows the pop-up) and sends its set (kind 3, at once on a
+  change, else every 10 s); a guest collects what it lacks of the host's set the same way. The notice
+  "Bob found a new cell part: it is in your editor too". Nothing is locked. Older SporeCoop ignores
+  the new kinds. `coop.parts cell [collect <i>]` prints the states (tests: the game's own collect).
+* ~ inferred, not seen: the cell editor opened while a part arrives keeps its palette until the next
+  editor (0xE4FAA0 builds it from the states at the collect and the editor request).
+## A mirror of a creation this game does not have (2026-11-03, fix/w40-crashes)
+<a id="cell-unknown-model"></a>
+
+BUG-0455 (a guest's crash at 0xE83EC8, read 0x9C, "when the host left the evolution editor"), the
+signature of BUG-0004 on another path.
+
+* ✔ The player's dump: CreateCellObject+0x4B9 (0xE74ED9) <- coop.dll `cellsync::guest_state`
+  (cellsync.cpp, `modes::cell_create` with the model key the host sent) -> 0xE6CAF7 -> 0xE69726 ->
+  0xE67A41 (GetCellModelData 0xE679E0: the model data of a key, built on first use) -> 0xE83E30, which
+  calls `Editors::cEditor::LoadCreatureData` (0x4BB500) and reads `[result+0x9C]` at **0xE83EC8**: ecx
+  = 0, the creation's file was not found. Symbolized with a v0.7.3.4 build (`git archive v0.7.3.4`).
+* ~ After the host's Cell editor its cells of the player's species carry the new creation's key; the
+  guest mirrored them before the creation's records reached it (the creation bundle comes later, docs/re
+  /creations.md 8). Lab: a host cell sent with an unknown model instance (`coop.cell spawn <slot> dx dy
+  level <instance>`, cellsync::set_fake_model) faulted the guest at 0xE83EC8 with the players' chain
+  (0xE67A41 0xE69726 0xE6CAF7 0xE4F9E4 0xE74ED9) and the guest made no mirror after it.
+* Fix (`cell.unknown_model`, mods/coop/modes.cpp): every forced model key is checked with
+  `creations::key_known` (RM FindRecord) first; `cell_create` makes no cell of an unknown creation
+  (cellsync tries again with the next state round; `unknown_models=` in coop.status), `cell_spawn`
+  (puppets) falls back to the own avatar's model.
+
+## Does a guest's mirror die when the host's cell is gone? (2026-11-03, fix/w40-cell-evo)
+<a id="cell-stale-mirrors"></a>
+
+BUG-0480. Lane 4, `tools/tests/coop_cell_gone.py` (docs/06-testing.md#testing-world-lod).
+
+* ✔ (runtime) The purge of guest_state: a mirror not listed in a complete round of the host's MSG_CELL_STATE
+  goes at the round's last chunk; after a lost chunk one not listed for 1 s. A 4 s dead link
+  (`coop.pool statehold 4`) while the host destroyed 8 cells near the guest left no mirror of them 2.5 s after
+  the state came back (6 of 6 rounds).
+* ✔ (runtime) The detector's `Cell:guest_only:cell` / `host_only:cell` came mostly from its single host dump:
+  Cell cells live for seconds and a host level change replaces hundreds between two dumps. Bracketing the guest's
+  dump by two host dumps 1.5 s apart: 0 where one dump gave 2 (10 rounds).
+* ? (runtime, 3 of 9 cold runs) 28-49 mirrors at once (meat / rock / bubble, level 0-1) of host indices the host
+  had in neither dump and not in `coop.pool cell` (cell_at) a moment later, though the guest's entry had been
+  refreshed 0.1-0.2 s before; the host never sent an index cell_at did not find at the send. Inferred: cells that
+  exist in the host's pool during part of its frame only (the partner tiles populated for the guest's view);
+  not verified.
+## A knocked-out cell's attacks (2026-11-03, fix/w40-guest-combat)
+<a id="cell-ko-attacks"></a>
+
+* ✔ The knockout (cellsync go_down / downed_tick: hp 1, dead/dying 0, invulnerable +0x111, translucent, held in
+  place) did not stop the avatar's attacks: the game's Bite 0xE7B0A0 for the avatar still ran and killed (lab
+  lane 2, `coop.pool realbite` while downed: a guest's creature 6 -> 3 -> 0 on the host through MSG_CELL_HIT; the
+  host's own bites the same in its game). Only the mouth's chunks and food were blocked (cell.ko_no_eat, BUG-0364).
+* `cell.ko_no_bite` (BUG-0509): while downed, h_Bite (the avatar as attacker) returns false, h_DamageCell drops a
+  hit whose attacker is the avatar (spikes, poison) and h_Break drops a lethal one; the host refuses MSG_CELL_HIT
+  from a guest whose last MSG_CELL_KO state is KO_OUT (an old guest, a hit in flight).
+* ? "got damaged" while knocked out (the report) is not looked at: the cell is invulnerable and its hp forced to 1
+  every frame; inferred: the health ring moving.
+
+## The world scale of a level change on two games (2026-11-03, fix/w40-misc)
+<a id="cell-world-scale"></a>
+
+* ✔ `WorldScaleStep` 0xE73E50: while the world scale `G+0x514C` differs from its target `G+0x5150` it moves
+  it (log-space smoothing 0xE509F0, dt * 0.75) and calls 0xE6DB70 with ratio = new / old. 0xE6DB70 divides by
+  the ratio, about a centre `C`: every soft-body particle, every cell's `+0x4C` pos, `+0x08` target, `+0x58`
+  size, `+0x90` velocity, `+0xB4` target size (and mass), `+0x1C4`, the camera points (0x16B3C0C +0x48/+0x54/
+  +0x60) and `G+4`. `C` is 0x16B3C28 (read (0 0 0) at runtime) while the camera point is within 1000 m of the
+  origin, else 0xE4F900 picks one (not looked at). So in the usual case `pos * G+0x514C` is invariant.
+* ✔ Runtime (lab, cell fixture, lanes 9): world scale 0.5 at level 1, 1.5 at level 2, 5.0 at level 3; one change
+  takes ~3.5 s. The guest's change starts 1-4 frames after the host's (its level follows the shared food total,
+  MSG_CELL_FOOD), so for ~3 s the two scales differ (host 0.964 / guest 0.702 at one sample).
+* ✔ BUG-0511: the guest applied the host's cell poses (MSG_CELL_STATE, in the host's scale) unchanged: the
+  mirrors were 14-18 m (p90, guest metres) from where the host's cells were during each level change and glided
+  back over seconds ("cells float around very fast"). Fix `cell.world_scale` (cellsync.cpp): the host appends its
+  world scale to each state chunk (after the cells: older guests stop reading before it); the guest keeps each
+  mirror's pose in the host's scale and draws it times host scale / own scale every frame (size at receive).
+  p90 0.1 m during the change with it (`cell_grow`, docs/06-testing.md#testing-cell-grow).
+* ? Not done: the players' own cells (puppets, MSG_STATE through `modes::cell_drive`) carry no scale; a partner's
+  puppet may be off in the same way for those ~3 s (BUG-0519).
+
+## The cell camera and the mod's jumps of the own cell (2026-11-04, fix/w41-cell-left)
+<a id="cell-camera"></a>
+
+BUG-0343 ("my screen is off centre" after the co-op respawn; "my cell appears in the lower left of my screen"
+after an editor). GOG 2024, Ghidra (`out/ghidra-2024`) and objdump of `SporeApp.exe`, lane 4.
+
+* ✔ (Ghidra) The camera state lives in cCellUI (`*0x16B3C0C`): `+0x48` the drawn point (SimUpdate passes it in
+  ESI to 0xE507F0, which builds the view boxes 0x16B3C88 around it), `+0x54` the target, `+0x60` a lagging point,
+  `+0x6C..+0x84` the zoom (+0x78 its goal, +0x80 the height), `+0xBC` a 0..1 ramp, `+0xE0` the pool index of a
+  cell the camera follows instead of the avatar (0 = the avatar; cinematics), `+0xE4` / `+0xE8` a fixed point,
+  `+0xF4` the follow speed, `+0x908` a zoom factor.
+* ✔ (Ghidra) **0xE600A0 `Simulator::Cell::CameraUpdate`** cdecl `(float dt, bool)` from 0xE806B0, returns at once
+  during a cinematic (cCinematicManager +0x2A). With no followed cell: the target `+0x54` moves towards a point
+  0.5 m from the avatar (0xE5BA90, a move at a speed) at **1.5 x the avatar's speed** (`|+0x90| * 1.5`) and only
+  while it is more than 0.5 m away; `+0x60` follows `+0x54`; the drawn point eases towards `+0x54 + (+0x54 -
+  +0x60) * lead`; then it is **clamped into a box around the avatar** of 7 x 5 m times 0xE50EB0(+0xBC, speed).
+  So a cell that stands still after a jump keeps its target where it was: the drawn point sits on the box's edge,
+  7 m (x) / 5 m (y) from the cell, until the player swims long enough for the target to catch up.
+* ✔ (Ghidra) The game's own jumps set all three points to the new place: 0xE611B0 (a jump to a random point near
+  the avatar, "clg-notenoughnanites" when it cannot pay) writes `+0x48 = +0x54 = +0x60`, the mating / hatch
+  sequence 0xE794F0 (its bool argument) the same from the avatar's `+0x4C`, cCellUI::Load 0xE54270 and
+  RebuildLevel 0xE7FD00 from 0x15A7D3C.
+* ✔ (runtime, `coop_cell_camera.py`) The mod's jumps (cellsync `stop_at`: the respawn next to the partner after a
+  knockout, the guest's move next to the host after a load / an own editor / an own-cell rebuild
+  (`join_after_load`, `join_partner`), test commands) left the drawn point exactly 7.0 m from the cell, 3 s later
+  still 7.0 m (lab 20261104-020658, both games). Fix `cell.camera_snap` (cellsync.cpp `camera_snap`): a stop_at
+  of the own cell more than 2 m away sets `+0x48`, `+0x54`, `+0x60` to the new place as the game does: 0.06-0.2 m.
+  `coop.pool cam` prints the camera (`off=` the drawn point to the cell).
+* ~ inferred: the players' "after the editor" case is the same jump (a guest's new avatar after a load or its own
+  editor goes next to the host 2 s later, `cell.join_after_load`); not reproduced with an editor.
+
+## A partner's own cell in a level change (2026-11-04, fix/w41-cell-left)
+<a id="cell-puppet-scale"></a>
+
+BUG-0519, the players' half of docs/re/cell.md#cell-world-scale.
+
+* ✔ (runtime, `coop_cell_puppet_scale.py`, lane 4) Each game's own cell travels in MSG_PLAYER_STATE in the
+  sender's world scale. While a level change rescales the two worlds a few frames apart (host 2.34 / guest 1.90 at
+  one sample), the receiver drew the partner's cell up to 10 m from where it is (p90 8.0 m host draws the guest,
+  4.2 m guest draws the host; lab 20261104-021951).
+* Fix `cell.puppet_scale`: PlayerState has an appended field `scale` (the sender's G+0x514C in Cell, 0 elsewhere;
+  older readers stop before it, an older sender's state reads 0 = no conversion); the snapshot buffer blends two
+  states of different scales in the newer one's (net/interp.h), and modes.cpp `cell_drive` draws pos, velocity and
+  size times sender / own scale. p90 0.5 / 0.3 m (the interpolation delay while the scale moves), 0.0-0.1 m after.
+  `coop.pool scalepos` prints the scale, the own cell and every puppet of one frame.
+
+## The editor's DNA budget is lost when the request is held (2026-11-04, fix/w43-world-state)
+<a id="cell-editor-budget"></a>
+
+* ✔ (Ghidra, GOG 2024) the Cell request 0xE84600 builds the EditorRequest (no budget in it), calls
+  `EditorRequest::Submit` (deferred: it posts 0xB03BC30C and a callback) and then **posts** message 0x90A03FDF
+  (IMessageManager vt 0x18, a 0x40-byte refcounted message, vtable `SporeCoop::EditorBudgetMsg_vtable` 0x013EB844,
+  +8 the budget, +0x10 0, +0x18 1, +0x30 the id). `cEditor::OnEnter` 0x58E6D0 registers the editor's listeners
+  (0x90A03FDF among 0x1E ids at 0x013F5FD8) and sets its DNA to the config's start budget (prop 0xB1B76A19 = 100 via
+  the Cell editors' parent 0x3615A30B, ~ read by hand); `cEditor::HandleMessage` 0x592FC6 then sets the shown DNA
+  (`[cEditor+0x434]` vt 0x24(0, msg+8)). On leaving (0xE809A0, not cancelled) the game books
+  `S+0x2C = DNAForFood(S+0x1C) - remaining`.
+* ✔ (lab 20261104-210158, cell.editor_budget off) **BUG-0560**: with two players the request waits for the vote
+  (coop.cpp h_Submit returns false), the game's post goes out at once with no editor listening, and the editor opens
+  with 100: after a free edit the host's spent was -100 (budget 0). The negative spent pays again on every later
+  visit ("a lot of DNA again"). The same loss for every held request (a save, the avatar's new body, the busy gate).
+* Fix (cell.editor_budget): `submit_now` posts the budget again (DNAForFood(food) - spent, computed then) right
+  after the held request's Submit, queued behind its posts as the game does (lab 20261104-210201: spent stays 0).
+* ? the Creature request posts the same message after Submit (0xD455FD, +8 = GetEvolutionPoints): a held Creature
+  evolution may lose its budget the same way (not checked, BUG-0581).
+
+## BUG-0308 was the paused guest's broadphase overflow (2026-11-05, fix/w45-crashes)
+<a id="cell-rejoin-paused-heap"></a>
+
+Re-read of lab 20261030-104149 campaign_short#3 (the guest Dave, 0.7.3.1) against
+[the pending arrays of the cell broadphase](#cell-sap-pending) (BUG-0348).
+* ✔ Dave's pause menu was open: the campaign log says "sync: not compared (pause menu open): Dave"
+  (11:40:18 campaign clock = 12:40:18 game log) and his trace lines keep `pos=(33.6 47.8 0.0)` from
+  12:39:51 to 12:40:51 (a minute standing still, `input_lock=1` at 12:40:01) while his pool churned
+  900 -> 806 -> 900 -> 770 -> 900 mirrors: mirrors made from the host's states while SimUpdate did not
+  sweep, BUG-0348's condition.
+* ✔ Then he left (900 mirrors destroyed: RemoveObject does not shrink the pending count) and joined
+  again 5 s later with 900 mirrors in 0.1 s, still standing at the same place; 3 s later the world
+  arrived and the stage was left.
+* ✔ The fault matches BUG-0348's twin FAIL (fix/w22-cell 20261031-123620): the same instruction
+  (FreeInternal+0x64), the same return 0xE7FA8D from the pool dtor, the same `ebp=0212D3E7`, then
+  0x00DDA358 (data 0x18); the corrupt chunk header in both is a float (0x41FAECC0 = 31.37f here,
+  0x40AB9610 = 5.36f there), the kind of value the broadphase's endpoint arrays hold (cell
+  coordinates).
+* ~ So the heap was damaged by the pending arrays' overflow (inferred from the matching state and
+  signature; the overflow itself was not logged in 0.7.3.1, which had no counter of it).
+* Reproduced the player's path with the fix off: `coop_cell_pause.py --rounds 8 --rejoin` (suite
+  `cell_pause_rejoin`): pause menu, 8 churn rounds, still paused the guest leaves and joins, the
+  host's world arrives and the guest leaves Cell to load it. Runs: see BUG-0308.
+
+## A NaN own-cell velocity, the lost camera, the sync-check's world scale and the part tokens (2026-11-06, fix/w45-cell)
+<a id="cell-view-nan"></a>
+
+BUG-0604, BUG-0307, BUG-0606, BUG-0316. GOG 2024, Ghidra (`tools/ghidra/q.sh --build 2024`), lane 4.
+
+* ✔ (lab 20261105-142923 cell_new_game#1, re-read) The guest's level-up (size 0.82 -> 0.48 at s 93) is where its
+  own cell went non-finite: `own_probe` logged mask **0x104** (the cell's velocity +0x90 and its particles'
+  velocities, the positions finite) 17 frames in a row in 0.24 s, each time "at guest tick, finite at
+  collision", healed each frame (BUG-0299 / BUG-0307's heal), then never again. From that moment on the
+  guest's screen was empty water for 7 minutes (`screen: plants=0 meat=0 creatures=0`).
+* ✔ (Ghidra) `CameraUpdate` 0xE600A0 eases the drawn point `+0x48` towards the target with factors
+  `local_60` / `local_8c` from curves of the avatar's speed `|+0x90|` (0xE837C0) and `1 - exp(-k dt)`: a NaN speed
+  makes `+0x48` NaN; every later frame computes `+0x48 + (x - +0x48) * k`, NaN again; the clamp into the box
+  around the avatar is skipped because its NaN distance fails `1.5e-5 < d`. The target `+0x54` itself stays
+  finite (0xE5BA90 does nothing for a NaN speed: `1.5e-5 <= NaN` is false). Nothing in the game resets
+  `+0x48` except its own jumps (0xE611B0, 0xE794F0, Load, RebuildLevel). The view boxes 0x16B3C88 are built
+  around `+0x48` (0xE507F0).
+* ✔ (runtime, `coop_cell_view_nan.py`, `coop.pool nanself vel 17`: the same mask written after the own cell's
+  soft-body step for 17 steps) with `cell.camera_heal` off: `cam=(nan nan) target=(100.00 100.00)`, 0 cells on
+  the guest's screen 3 s later and after swimming 15 m (lab 20261106-002913), as in the report. Fix
+  `cell.camera_heal` (cellsync.cpp `camera_heal`, every frame in Cell, solo too): a non-finite camera point
+  goes back onto the own cell (`camera_snap`): 17 heals, the camera 0.3 m from the cell, 32 cells on screen
+  (lab 20261106-003015). `coop.pool cam` prints `heals=`.
+* ~ inferred: BUG-0604's guest had the same NaN camera (its camera was not logged in 0.7.8; same mask, same
+  frames, the same empty screen while its cell swam).
+* SimUpdate 0xE7F3A0 order (Ghidra): WorldScaleStep 0xE73E50 (the rescale 0xE6DB70, which re-tiers soft bodies
+  through 0xE5A1A0), view boxes 0xE507F0, ..., PopulateTiles, the broadphase, ..., UpdateCells 0xE7C8C0 (the
+  soft-body step), ..., collisions 0xE7F260, then 0xE5D5B0, 0xE78D10 (the mate meeting), 0xE697E0 (hints);
+  then in 0xE806B0: RebuildLevel 0xE7FD00 when `G+0x51D8` (and SimUpdate again), 0xE73F60 (graphics),
+  0xE53AE0, CameraUpdate 0xE600A0, 0xE6C9F0. The level-up NaN came after the collisions: none of 0xE5D5B0,
+  0xE78D10, 0xE697E0 writes a cell's `+0x90` (read); 0xE73F60 only reads it. Still not found what wrote it
+  (BUG-0307's first NaN). Negative: cell_new_game again with two guest level-ups (lab 20261106-003243): no
+  `own_probe` line.
+* ? (Ghidra, not seen at runtime) ReTierSoftBody 0xE51A20 reads the old particles' positions and velocities by
+  index without a check (a `-1` entry of a full pool reads 8 bytes before the particle arrays) and averages
+  them into the new tier's: a candidate for a NaN at a level-up's size change, not shown.
+
+### The sync-check in a Cell level change (BUG-0606)
+<a id="cell-sync-scale"></a>
+
+* ✔ (runtime, `coop_cell_end_sync.py`, cell fixture) `coop.pool food 1000` (the end of Cell): the world scale
+  goes 0.5 -> 15000 in ~11 s on the host and a few frames later on the guest (host 3.78 / guest 1.93 at one
+  sample) and every position shrinks towards the origin. The guest draws the host's cell 0.04-0.07 m (p90) from
+  where it is (BUG-0519's puppet_scale), but the sync-check compared the guest's raw positions (its scale) with
+  the host's (its own): `p: 2 apart (p0 27.6 p1 26.6)`, `c: 87 apart`, 8 of 30 checks (lab 20261106-005031).
+* ✔ (lab 20261105-233139 campaign_ct#1, re-read) the same check at the end of Cell with 4 players: the host's
+  position went 42 -> 3500 -> 42 000 at ~2800 m/s in the game's numbers while the guests drew it in place
+  (their own cells and the other puppets at ~0): p0 359-740 apart, a MISMATCH on every guest. ~ Why its
+  numbers grew there and shrank in the 2-player fixture (the rescale centre 0xE4F900, the 4 players, the
+  host's place) was not found; the fix covers both.
+* Fix `diag.cell_scale` (diag_sync.cpp): the digest carries the sender's Cell world scale (an appended float,
+  older readers stop before it, an older digest reads 0 = not converted); the host converts the guest's
+  positions by guest scale / host scale before comparing (`pos * scale` is the same for a cell at rest through
+  a change). Lab 20261106-005151: 0 positions apart; only cells the level change removes and adds differ for
+  one check (extra / missing, rechecked 3 s later).
+
+### A guest's touch of a part token (BUG-0316)
+<a id="cell-part-token"></a>
+
+* ✔ (Ghidra) **0xE7B630** (from 0xE7E7F0, ESI = the avatar, argument the token cell): unless the avatar is
+  dying / dead (+0x112 / +0x113), its +0x178 or +0x17F or the token's +0x17B is set, it plays animation 0x31,
+  CollectPart(GetData(token +0x108) + 0xB8) and DestroyCell(token, 1, 0, 0). It runs in the touching player's
+  game: on a guest the token is a mirror, the collect happens there, and h_Destroy sends the touched mirror's
+  removal to the host (ACT_GONE).
+* ✔ The Cell fixture has no part token at level 1 (10 kills of creatures gave only meat; `coop.pool see`
+  of the host's screen 16 times: no "part"); after 1-3 level changes (`coop.pool food 40`) the host's pool has one.
+  `coop.pool tokens [to <id>]` lists the pool's tokens / moves the nearest 4 m from a player's cell;
+  `coop.pool mate nobutton` hides the mating-call button for a test.
+* ✔ (runtime, `coop_cell_part_token.py`) a guest's touch of the host's token: in all 5 runs with a collectable
+  token the guest's game showed the mating-call button, had the part (0 -> 2), the token was gone in the host's
+  game and the host's game had the part (BUG-0316 is not a bug). ? About 15 other tokens were collected by
+  neither game (the host's own touch of the same token failed too); not the token's level (`coop.pool tokens`
+  prints it; the food-progress level and the one under both failed), not its graphics object. Candidates not
+  checked: the avatar's +0x178 / +0x17F or the token's +0x17B (0xE7B630's conditions).
+
+## The collision contact of two cells on one centre (2026-11-06, fix/w45-cell-nan)
+<a id="cell-contact-nan"></a>
+
+BUG-0307 (the first NaN of the own cell). GOG 2024, Ghidra (`tools/ghidra/q.sh --build 2024`) and
+`tools/tests/coop_cell_contact_nan.py` (suite `cell_contact_nan`), lane 4.
+
+* ✔ (Ghidra) Collisions 0xE7F260 does more after its pair loop: `Simulator::Cell::ContactSolvePass` 0xE654D0 runs 10
+  rounds of `Simulator::Cell::ContactSolve` 0xE58C90 over the contact pool (a contact of this frame, +0x3C ==
+  G+0x5160, is solved, an older one deleted). A contact: +4 / +8 the two cells' handles (the solver uses the heads
+  of their +0x36C chains, 0xE58C50), +0x0C point, +0x18 normal, +0x24 -depth, +0x28 accumulated impulse, +0x30 /
+  +0x34 effective mass `1 / (invA + invB)` (+0xBC), +0x38 target. One round: `x = (target - (vB - vA).n) * mass +
+  accum`, `accum' = max(x, 0)`, impulse `(accum' - accum) * n` through `Simulator::Cell::ApplyImpulse` 0xE560D0:
+  velocity +0x90 and, with a soft body, **every particle's velocity** += impulse * +0xBC; positions untouched. This is
+  the only game code between the own cell's last pair and our guest tick that writes +0x90 and the particle
+  velocities but not the positions: the mask 0x104, "at guest tick, finite at collision" of lab 20261105-142923
+  (the previous section's "after the collisions" was after the pair loop, before this solver).
+* ✔ (Ghidra) The contacts come from `Simulator::Cell::AddContact` 0xE66F30 (from 0xE67100, the executor 0xE7E7F0 of
+  HandleCollisionPair) with the normal, point and depth of the sphere tests that 0xE73DD0 picks by whether each cell
+  has a graphics object and a model (+0x248, +0xFC): 0xE6AD80 (both: their model spheres), 0xE73620 / 0xE738F0
+  (one), 0xE73BB0 (neither: one sphere each). All four skip the normal when two sphere centres are closer than
+  0.004 (squared distance under 1.5e-5; the depth becomes r1 + r2): 0xE73BB0 passes the first cell's centre
+  coordinates as the "normal", the other three pass whatever their stack slot held (the last normal of an earlier
+  call at the same depth, or other locals such as a contact point).
+* ✔ (runtime, host, `coop.pool stack2 12 <n>`: n cells without a soft body, 30 m from the own cell and 50+ m from
+  the origin, put on one centre at the start of 12 cell steps) the contact normal was (-70.16 -96.02 0), i.e. minus
+  the cell's centre; the solver's rounds overshoot by ~|n|^2 each: 2 cells flew off at 884 m/s, 4 cells reached
+  1e37 and inf (velocity mask 0x4) within one frame, positions finite (lab 20261106-111709, `cell.contact_finite`
+  off). With the fix: 1.0 and 2.4 m/s, finite (lab 20261106-111835).
+* ✔ (runtime) The own cell's first model sphere put exactly on another cell's (`coop.pool stack 20`, both with a
+  soft body, the soft-soft test 0xE6AD80) gave a unit normal (-0.93 0.37 0): the stack slot held the previous
+  call's normal, harmless; no NaN in that run.
+* ~ inferred, not reproduced on the own cell: the guest's 17 frames of mask 0x104 were such a contact of the own cell
+  with a sphere on one of its own, whose stack-slot normal held coordinates (~150 long at (74 141)). It repeated
+  while BUG-0307's heal put the own cell back on the same "last finite position" each frame, next to the same
+  cell. The graphics pool was full in that second (BUG-0355's line 12 ms later), so cells near the guest had no
+  graphics object: they take 0xE73620 / 0xE738F0 against the own cell, the paths with the stale slot.
+* ✔ 40 level changes on two games (`coop_cell_levelups.py`, food +-50 with both cells swimming, lab
+  20261106-110109, fix off): no non-finite contact and no own-cell probe line on either game. The level change
+  itself does not make the NaN.
+* CORRECTION (2026-11-06, fix/w45-cell-nan): the previous section and BUG-0307 placed the first NaN "at the
+  guest's level-up". ~ The log says otherwise: the NaN frames were at s 93.36-93.59 with food 96 and size 0.824;
+  the level change came with food 102 (s 95.06; the level table's step is 100) and the size 0.48 by s 100.
+* Fix `cell.contact_finite` (cellsync.cpp `h_ContactSolve`): before a contact is solved its normal is made a unit
+  vector (the unset one keeps its direction, a zero or non-finite one becomes +x), and a contact whose impulse is
+  still not finite is not applied. `coop.pool` prints `contacts_unit=` (normals made unit), `contacts_bad=` /
+  `contacts_bad_own=` (impulses not finite) and `contact_solves=`; the first 30 bad contacts are logged with both
+  cells. Probes `before the contact solver` / `contact solver` added to own_probe.
+## The "stale" mirrors were cells the host's game culls a second after making them (2026-11-06, fix/w45-leftovers)
+<a id="cell-short-lived"></a>
+
+BUG-0480. GOG 2024, lane 7, `coop_cell_gone.py --case play` (cold starts), Ghidra (`tools/ghidra/q.sh --build 2024`).
+* ✔ (runtime) Reproduced the old failure with the old oracle (a guest mirror of a host index in neither of two host
+  dumps 2.5 s apart): 29-141 at once in 3 of 8 runs, always one round (round 3 or 7: the same places, e.g. 30-45 m
+  north of both players at (93-124 129-152), level 1, or level 0 at (88-136 75-84)) (out/lab/20261106-111736 #2,
+  20261106-113202 #2 #4; the rel/0.7.9 code the same, its lab 20261106-110218 #2).
+* ✔ (runtime) The host names each sent index's history now (`coop.pool cell <key>` on the host: "last sent X s ago,
+  first Y s ago, N sends; its slot holds ..."): every such cell had been sent 0.12-0.28 s before the question, for
+  0.9-1.7 s in all (8 sends), and its pool slot was free again (a free-list link in the header). So the host's
+  game had them for about a second between its two dumps, and the guest's mirror was one or two rounds (0.1-0.2 s)
+  behind, as designed. Nothing stale.
+* ✔ (runtime) Who destroyed them: DestroyCell's caller for host cells destroyed < 2 s after their first send was
+  **0xE7C3E6 only** (470-471 per run), in CellPhysicsStep 0xE7C080 (Ghidra): after the step, `ShouldCullCell`
+  0xE5F8C0 and the keep-alive byte +0x354 == 0 -> DestroyCell(idx, 0, dt, 0). ShouldCullCell: never for level -1;
+  a cell more than one level under the food-progress level only fades; else true when its parent tile +0x36C is
+  deleted (~ superseded (2026-11-13): +0x36C is a parent CELL, see docs/re/cell.md#cell-levelup-cull-measured) and IsTileActive 0xE5F810 (our h_TileActive, with every player's box) refuses the tile of its position.
+  So the tile they were made for went (the view moved: the test teleports both cells 20 m a round) and their own
+  tile was outside every box: the game's own streaming at the edge of the gameplay range (twice the visible box),
+  in single player too. Not changed.
+* ✔ (runtime) With the oracle on the host's last send (stale = it stopped sending the index >= 1 s before the
+  guest's dump) the same events read "143 / 28 mirrors in neither host dump: 0 stale, sent up to 0.06 / 0.16 s
+  before the guest's dump" (out/lab/20261106-115611 4 of 4 PASS; 20261106-114009 3 of 3, cell_gone and
+  cell_gone_probe 3 of 3: the probe still sees stale mirrors while the state is held).
+* ✔ (runtime) The other half of the ticket, host cells near the guest without a mirror: 0 within 25 m in 150
+  rounds (15 runs; a host cell counts only when it is in both host dumps). The detector's Cell compare had 0
+  findings in 27 comparisons of play_cell (out/lab/20261106-114009-2).
+* ~ The detector's bracket (host dumps 1.5 s apart) can still count a cell living ~1 s between them as
+  `guest_only:cell`; not seen in these runs.
+
+## The Cell mode entry's effect preload faulting in a fresh game (2026-11-06, fix/w45-int3)
+<a id="cell-preload-fault"></a>
+
+* ✔ (disassembly, GOG 2024) The fault of BUG-0622 (`0x00E67643`, named "InstanceEffectOnCell+0xE03" by the nearest
+  symbol) is in a small function at **0xE67610** cdecl(uint32 key): `Simulator::Cell::GetData(key, &handle)`
+  (0xE4CBF0, a jump to 0xE823A0) returns a list `{int count; T* items; items inline from +8}`, stride 0x1C; for each
+  item it calls `cCellGFX::AddPreloadedEffect(item.+0, 0)` (0xE66280); then the handle is released. The Cell mode's
+  init (the code before cCellModeStrategy::Initialize 0xE81CF0) calls it twice, with `GetGlobalsData()` (0xE4CE20)
+  `+0x3C` and `+0x40`; the fault came from the second (return 0xE81AFC).
+* ✔ The registers of the fault: esi (the list) 0x1198FEC8, edx (items) = esi + 8, edi (index) 11, ebx 11 x 0x1C,
+  the read at 0x11990004 = the first byte past a page: the count said more than 11 items, the block ended at the page
+  end. ~ Inferred: the list block was freed (or never filled) while the count still read high: a stale or torn
+  resource, in a process 12 s old, on its first Cell load, under a load that made the games need 512 s to start.
+  The following 38168 faults (the game's own handler went on, the Cell world never came: "pool block 00000000
+  unmapped while the mode reads Cell") follow from it.
+* ✔ No co-op session existed yet (it started 4 minutes later), no co-op or SporeKit hook is in the call chain
+  (0xE81AFC < 0xE81CBF < 0x8856A0 < 0x75DB01 < 0xEF2250 ...), and the 0.7.9 changes of SporeKit (the int3 gate of
+  hooks made after boot) act only on a hook made after the first frame: none was made before the fault (the input
+  hooks come with the first injected key, the Cell model hooks of modes.cpp ensure_model_hook with the first mirror
+  or puppet cell, both in a session). Not reproduced in 13 cold loads: see BUG-0622.
+
+## Goldie's demise and the avatar's collect locks (2026-11-07, fix/w46-part-token)
+<a id="cell-goldie"></a>
+
+BUG-0316, BUG-0666. GOG 2024, Ghidra and lane 3.
+
+* ✔ (Ghidra) AddFoodPoints 0xE7CE10 first checks S+0x68 == 0, 0x77 < food (before the add) < 0x97, at most 4
+  of the 13 part states S+0x34.. non-zero and difficulty S+0x7C != 2, then calls **0xE79720 (Goldie's demise)**:
+  DestroyCell of the cells within 5 m and 15 m of the avatar (0xE78B20), two new cells (Goldie at G+0x516C with
+  +0x354, its eater with +0x22C = Goldie and +0x230 = 1000), G+0x518C = 1, S+0x68 = 1, an event of type 0x24 (15 s)
+  at G+0x5194 and G+0x5198, the cinematic "goldies_demise". Event 0x24 (dispatcher 0xE7E130) -> 0xE794F0: stops the
+  cinematic, DestroyCell(Goldie, loot) (the first part token), the avatar's +0x170 = Goldie, G+0x518C = 0.
+* ✔ (runtime) after it both avatars keep +0x16C, +0x178, +0x17B, +0x17C set with the animation +0x18C at 0 for 30+ s
+  (own meals and swimming do not clear them), with and without a session; 0xE7B630 (the token collect) needs
+  +0x178 == 0, so no token can be collected. A meal from 190 across 200 does not start the tutorial (outside its
+  window). ? What clears them in a player's game is not known (BUG-0666).
+* The other lock writers found (Ghidra, `88 xx 78 01 00 00` / `C6 8x 78 01 00 00 01`): 0xE59A70 (the collect
+  animation 0x31: +0x178 +0x17F), 0xE59AF0, 0xE59010 (hurt), 0xE59170 / 0xE591C0 (death, anim 7), 0xE59260 (break,
+  anim 8), 0xE59500 (anim 9), 0xE598E0 (anim 0x29), 0xE599B0 (level-up zoom 0x1D, from 0xE72B40), 0xE53C50, 0xE58890,
+  0xE5EC10 (the hatch 0xE6EB60, anim 0x2B, G+0x51DB), 0xE72C80 (anim 0x2E, event 0x1F, G+0x5158 = 3). No write of 0
+  to +0x178 was found statically. `coop.pool tokens` prints `locks16c=` (the bytes +0x16C..+0x189) and the event at
+  G+0x5194 (type, timers); `coop.pool mate` prints `goldie_done=` (S+0x68), `mate nogoldie` sets it.
+## A guest's kill and meal once; the host's level-change wipe and a partner's screen (2026-11-06, fix/w46-cell-p0)
+<a id="cell-once"></a>
+
+BUG-0632, BUG-0636, BUG-0635 (player report 2026-11-06, 0.7.8). GOG 2024, lanes 2 and 3.
+
+* ✔ (runtime, `coop_cell_once.py --case kill`) A host's break (BreakOrSwallow from a guest's ACT_BREAK) plays its
+  animation before the dying flag and the loot (event 5 -> 0xE7ADD0); meanwhile the guest's mirror still looks
+  alive (hp 0, no dying / dead flag in the state, its own animation state not 7/8/9 because the break did not run
+  there), so every further bite of the guest's game on it is lethal again and sent again. The host broke the same
+  cell 3-4 times (two or more deaths, two or more loot drops on one spot: the "giant piece of meat"). The third
+  one in the players' log was refused only because the cell was gone by then.
+* ✔ (runtime, `--case eat`, SPORE_NET delay=150) A cell the guest ate is erased from the guest's mirror maps
+  (h_Destroy) and sent as ACT_GONE; state chunks the host sent before it heard of the meal still list the index,
+  and the guest's mirror pass made it again 30-100 ms later; the guest's game ate it again (1-3 times per meal
+  with the mouth on the spot). The host counts the food once ("not here, no points" / points taken back).
+* Class BUG-0420 mechanism: `cell_logic::Once` (cell_logic.h, unit test `once` in tests/cell_tests.cpp), a
+  once-only ledger of pool indices (generation included, so a reused slot is another key) with a ttl.
+  `cell.kill_once`: the guest sends a kill / break of a host index once (10 s), the host applies one once (10 s).
+  `cell.eat_once`: the guest's tombstone of eaten host indices (5 s): no mirror is made of them. `coop.pool` prints
+  `cell_once: ... kills_dup_sent kills_dup_refused eaten_skipped gone_again`.
+
+<a id="cell-levelup-view"></a>
+* ✔ (Ghidra) RemoveCellsOfOldScale 0xE7CD10 destroys (DestroyCell(idx, 0, 0, 0)) every pool cell with level != -1
+  for which 0xE5CDE0 is true (and that heads its +0x36C chain), then PopulateTile 0xE7C6C0 for every tile object.
+  0xE5CDE0 (EAX = the cell): false for the mate G+0x51D4 and the avatar G+0x411C; a foreground cell (+0x35C ==
+  G+0x40FC): true when the sphere at +0x4C with radius 1.7 x +0x58 does not touch the visible box
+  Simulator::Cell::ViewBoxes; a background cell: by the frustum. It runs only when the world scale tier changes:
+  `coop.pool food 50` (one level) made no wipe in the fixture, `+-150` (three levels) one wipe each time (host
+  394-995 cells destroyed).
+* ✔ (runtime, `coop_cell_levelup_view.py`, the guest 30 m from the host) On the host the wipe keeps only what is in
+  the HOST's view: 82-163 of the destroyed cells per wipe were inside the guest's visible box, and the guest lost
+  100% of the cells on its screen on every change (up and down), while the host's own game lost 0-36% on a level
+  down and ~90% on a level up (lab 20261106-220609). So a level-up replaces most of the screen in a single
+  player's game too (the cells of the old tier go, also those the wipe kept: the tiles of the new level), but a
+  level down keeps most of it; the guest lost all of it both ways. Fix `cell.levelup_keep` (cellsync.cpp h_Wipe /
+  h_Destroy, host): inside the wipe a cell within +-15 x +-11 (+ its 1.7 x size radius) of a partner's cell is
+  kept, as 0xE5CDE0 keeps the host's view (121-170 kept per wipe); the guest then loses about what the host loses
+  (60% vs 52% over 6 changes, lab 20261106-220831).
+
+### The player's own species as NPCs; an own-cell rebuild at level 10 (BUG-0637)
+<a id="cell-own-species"></a>
+
+* ✔ (runtime, `coop.pool species`, Cell fixture at food 924 = level 10) the game populates the level with NPCs of
+  the player's own cell (S+0x10): 6-8 creatures of model 4DA56CA5 (the fixture's own cell) next to the level's
+  species (levels 9-11). After an own-cell change (`coop.creations choose cell`, S+0x10 and RebuildLevel) they are of
+  the new cell (BAF1AD40 x16-18), none of the previous one is left, and every creature is of levels 9-11 (labs
+  20261106-221411, -221722). A rebuild populates about twice as many creatures as the level had after its slow
+  growth (39 -> 73-78).
+
+### The guest's cell against the host's NPCs and the partner (BUG-0634)
+<a id="cell-push"></a>
+
+* ✔ (runtime, `coop_cell_push.py`, `coop.pool gap`) A guest's own cell swimming into a mirror of the host's NPC
+  (AI-locked, placed at the host's pose, with its soft body) is pushed off as the host's cell is by its own NPC:
+  closest centre distance 0.67 vs 0.65 of the two sizes (median of 6 each, 46-114 collision pairs per push; lab
+  20261106-222954). Pairs with a partner's puppet are dropped on both games (h_Pair, `pairs_skipped`), so the
+  partners swim through each other; with both players on the same cell model the partner looks like an NPC of the
+  own species.
+
+### Part tokens: the host's collect after a guest's kill (BUG-0633)
+<a id="cell-token-collect"></a>
+
+* ✔ (Ghidra) 0xE7B630 is the executor's interaction kind 0x12 (0xE7E7F0 case 0x12, then 0xE67100); its conditions
+  read the avatar's +0x112 / +0x113 / +0x178 / +0x17F and the token's +0x17B, nothing of the part's state:
+  CollectPart 0xE5D7B0 runs for a part already unlocked too (it sets S+0x34+4*part = 2, the mate button S+0x69, the
+  mission counter S+0x94 up to 6). `coop.pool tokens` prints `lock17b=` per token and `own_locks=` (+0x112 +0x113
+  +0x178 +0x17F) with the animation +0x18C.
+* ✔ (runtime) A guest's kill next to the host sets none of the host's locks (`own_locks=0000` for 4 s after each of 4
+  guest kills, lab 20261106-215829). A collect sets +0x178 / +0x17F during its animation 0x31 (49) and clears them.
+* ✔ (runtime, `coop_cell_once.py --case token`) the host collected 11 of 14 tokens of its pool moved 4 m next to it
+  (labs 20261106-220209 and its retry); the 3 misses were tokens moving at 1.5-6 m/s that were 10-20 m away when
+  the touch came (pushed off; the tp puts the cell next to the token, the swim then chases it).
+  CORRECTION (2026-11-06, fix/w46-cell-p0): the "about 15 tokens collected by neither game" above came from
+  touches of tokens that had moved; tokens touched in place are collected (all 11).
+* ✔ (runtime, `--case drop`) 32 guest kills of creatures next to the host at levels 1-4 (16 with `cell.kill_once`
+  off, every kill broken 1-4 times; 16 with it on) dropped no part token at all (labs 20261106-222600,
+  20261106-222027): the fixture's creatures carry no part in their loot; the tokens of the pool come with its tiles.
+## Goldie's demise: the locks are per frame, the cinematic waits for its button (2026-11-08, fix/w46-k8-open)
+<a id="cell-goldie-button"></a>
+
+BUG-0666, follow-up of [#cell-goldie](#cell-goldie). GOG 2024, Ghidra (q.sh, objdump) and lane 4.
+
+* ✔ (Ghidra) **0xE59E80** runs every frame from SimUpdate 0xE7F3A0 right before the event pass 0xE7E7A0: for every
+  pool cell `memset(cell + 0x16C, 0, 0x44)` (+0x16C..+0x1AF, so +0x170 and +0x18C too). No byte write of 0 to +0x178
+  exists because the reset is this memset; active events set the locks again in the same frame.
+* ✔ (Ghidra) the event pass 0xE7E7A0 -> 0xE7E6C0 -> 0xE7BA30 (switch on type - 1). Type 0x24 (case 0x23):
+  **0xE5F160(ev+0x28 Goldie, ev+0x2C eater)**: avatar +0x170 = Goldie, +0x178, +0x17C, +0x17B, +0x16C, +0x4 = 1,
+  returns 1. 0xE7E6C0 (0xE7E750..0xE7E776) applies an event while ev+0x1C > 0 **or** G+0x5198 == the event: Goldie's
+  event (set at G+0x5198 / G+0x5194 by 0xE79720) never times out.
+* ✔ (Ghidra + the package) the cinematic goldies_demise: states goldies_demise (letterbox, 1 s), _2 (6 s, text), _3
+  (1 s), _4 (2 s, text), then `cell_button: wait -forButton` (the wait command 0xADA1D0; cell_ending ends the same way).
+  The button (the cinematic manager's UI winproc 0xAD94A0, control 0x287259F6, events 0x445C99D / 0x62EF353) posts
+  message 0x445F729; Cell init 0xE819B0 registers **0xE7F960** for it (removed by 0xE81BA0): G+0x5198 = 0, then
+  0xE7E130(dt 0, skipped 0) ends the event: 0xE794F0 (cinematic exit, Goldie destroyed with its loot, +0x170). Esc
+  (key 0x1B in 0xE7F630) -> 0xE7F5A0 ends the event at G+0x5194 as skipped. 0xE806B0 ends it too when G+0x51D8 /
+  G+0x51D9 are set (respawn / level rebuild paths 0xE50920, 0xE72200, 0xE7B410; likely).
+* CORRECTION (2026-11-08, fix/w46-k8-open) of [#cell-goldie](#cell-goldie) "Event 0x24 ... -> 0xE794F0" after 15 s:
+  only the event's timer runs out; 0xE794F0 runs at the button or Esc. Goldie may vanish earlier by its eater.
+* ✔ (runtime, cell_goldie, lab 20261108-010939) in a session both games play the tutorial (the shared food crosses
+  the window on both); 14 s later both avatars hold the locks; each player's own Esc frees its own avatar within 6 s
+  and not the other's. So the lab's "locks for good" was its tests never pressing the button.
+* Other lock writers (event actions): 0xE569B0 (types 0x30, 0x31, all locks), 0xE75C30 (mating, type 0x2D, the mate
+  too), 0xE53C50 (type 0x2F, cell_ending; its event is made at 0xE6E8C0, which sets G+0x5198 too: the same button wait).
+* A mod that had to end it (not needed): post 0x445F729 (MessagePost, vt+0x18), never MessageSend from the frame hook
+  (the DXVK deadlock of world.cpp); stuck = S+0x68 == 1, the event at G+0x5198 of type 0x24 with ev+0x1C <= 0.
+
+
+## The switch to the Creature stage, and its vote (2026-11-08, fix/w46-e1-features)
+<a id="cell-switch-to-creature"></a>
+
+BUG-0315. GOG 2024, Ghidra (out/ghidra-2024) and lane 4 (`tools/tests/coop_switch_vote.py`).
+
+* ✔ (Ghidra) `SporeCoop::CellStage_ToCreature` 0xE62440, cdecl void(void): `cCinematicManager::Get(0)` + 0xAD7DC0, then
+  0xE61140 (CreatureStart_FromCell 0xE83910 with `cCellGame+0x5190`+0x10, the food bonus and `+0x5164`; then 0xE828C0 =
+  `cGameModeManager::Get` -> 0xB1E350 thiscall(mgr, 0x1654C01) ret 4, the mode switch; `cCellGame+0x5168` = 1), the
+  cell effect 0xA1B0293D, byte `[0x16B3C0C]+0x936` = 1. 0xB1E350 does nothing for the active mode, else sets the
+  state manager's switch and `mgr+0x28` = 1 (the switch is pending).
+* ✔ Callers: `App::cCellModeStrategy::HandleMessage` 0xE62700 on message 0x47C1D19 (registered in its Initialize at
+  0xE81E79) and the cell event dispatcher 0xE7E130 case 0x1F (0xE7E369; the event object is deleted after it). The
+  debug key handler 0xE81120 calls 0xE61140 directly (0xE814E6).
+* ✔ (runtime, lab 20261108-035847) History's check reaches it through the event path: the return address was
+  0x00E7E36E (case 0x1F), no cinematic playing. Held (not called) the game stays in Cell with History closed and plays
+  on; called 26 s later from outside the frame (the vote's action, vote_action_tick) the switch ran as the game's own:
+  both games reached Creature and the first Creature editor (FD4902BD) was requested 1.3 s later.
+* `core.switch_vote` (coop.cpp h_CellToCreature): the host's call in a session waits for an action vote; a guest's own
+  call in the host's Cell world is its I'm ready (or nothing). `coop.vote` prints `switch votes`.
+
+## The cell editor through the host's vote: no mating cinematic in between (2026-11-08, fix/w46-n2-desyncs)
+<a id="cell-editor-vote-timing"></a>
+
+* ✔ runtime (lane 9/10, GOG 2024, `coop_cell_editor_timed.py --vote`): the host's evolution vote does not open a
+  guest's own cell editor: the guest that clicks "I'm ready" stays in Cell (`0x01654C00 Cell` while the host is in
+  `Editor`, lab 20261108-034621). The vote moves only the host (docs/re/cell.md 12, 9.3).
+* ✔ runtime: the host's own editor after its vote opens 0.28-0.37 s after the guest's "I'm ready", with no cinematic
+  in between (the mating cinematic ran before the vote). So a host knocked out while its vote is open, whose
+  knockout ends and whose partner clicks "I'm ready" at once, enters its cell editor inside the 2 s (revive) / 3 s
+  (respawn) invulnerability (`av_invuln=1` on the last read in Cell after a revive). This is the BUG-0237 timing
+  that the mate path (~10 s, the cinematic) never reaches.
+* ✔ runtime: even then nothing is left: the editor's return rebuilds the pool and the avatar comes back as a new
+  object (new index and pointer, e.g. 7F010000 -> 844C02A7) with +0x111 = 0, and a bite of 1 takes 6 -> 5 hp (4 runs,
+  lab 20261108-035038). The flag lived in the old avatar object only.
+
+## The broadphase merge above 4096 endpoints: a heap queue (2026-11-08, fix/w46-k2b-content-a)
+<a id="cell-sap-merge"></a>
+
+BUG-0718 (class BUG-0432). GOG 2024, Ghidra (`tools/ghidra/q.sh --build 2024`), lane 6
+(`tools/tests/coop_cell_merge.py`, suite `cell_merge`). Completes #cell-broadphase-cap.
+
+* ✔ (decompile) `SweepPrune::MergeAxis` 0xBBAF10 cdecl `int(SAP* s, Endpoint* sorted, int count, Endpoint* added,
+  size_t nAdded, int axis)`, returns the new count in EAX (0xBBB104: the output index): `qsort(added, nAdded, 8,
+  0xBBAE50)` (the comparator: -1 when a.value < b.value, else 1: never "equal"), then an in-place merge into `sorted`:
+  the write position runs behind the read position; an old entry that the write would overwrite is parked in a
+  linear queue on the stack (`local_8000`, 0x8000 bytes = 4096 endpoints; push count local_8010, pop count
+  local_8004), entries of type -2 (removed) are dropped on both inputs, and every endpoint written to a new position
+  gets its object record's index (`objs + 16 * id`, +8 / +0xA the min per axis, +0xC / +0xE the max) written back
+  (bit 15, "pending", cleared that way). Ties: an added entry goes before a queued old one of the same value, after
+  an old one read in place. Only old entries are ever parked, so `count` <= 4096 cannot overrun the queue.
+* ✔ Only caller: `SweepPrune::UpdatePairs` 0xBBB450 (+0x31, once per axis); its only caller the thunk 0xBBBF60 from
+  `Simulator::Cell::SimUpdate`; the constructor 0xBBB570 and AddObject 0xBBB290 are reached only through their
+  thunks 0xBBBF70 / 0xBBBF40 (cell code). The sweep-and-prune is the Cell stage's only one.
+* ✔ (runtime, lab 20261108-031215, budget off) four players, the host's pool at 4096 cells: the first fault is
+  `0xC0000005 at 0x00BBB07B SweepPrune::MergeAxis+0x16B` (EAX = 0x10D2, the merge index), then 2393 faults and a
+  host whose cell no longer moves: BUG-0295's signature, reached by any count over ~2048 that the soft budgets do
+  not see.
+* The hard guard `cell.sap_merge` (cellsync.cpp `merge_axis`, called from `h_UpdatePairs` when the sorted array holds
+  over 4096 entries): the same merge with the queue on the heap (old entries filtered, the added ones stable-sorted by
+  value, merged with an equal value after the old entry, every written endpoint's index written to its record), at
+  most 2 x the object capacity entries (the array's size; `merge_clipped=` counts what would not fit). At or below
+  4096 entries the game's MergeAxis runs as before. `coop.pool sap` prints `merges_ours= merge_peak= merge_clipped=
+  merge_fix=`. `coop.pool budget <pop> <screen>` (tests) moves the host's two population caps of `cell.budget`.
+* ✔ (runtime, lab 20261108-031701, budget off, the fix on) with the pool at its 4096 slots the merge held (50 merges
+  of ours, peak 8192 entries, no fault at 0xBBB07B), but the full pool broke the game elsewhere: faults at
+  0x00E86C1C / 0x00E86874 (vector writes through a null result in 0xE86B60 / 0xE86830) and in the model data builder
+  0xE83E30 (+0x98), the host's avatar gone ("no own avatar here"), `merge_clipped=4`. The same faults followed the
+  MergeAxis fault in the budget-off run without the fix. So the cell object pool (4096, `G+0x1C+0x18`) is a second
+  fixed pool; it is reached only with `cell.budget` off (the budget keeps the host near 1300-1800,
+  #cell-broadphase-cap); the merge guard is tested with the caps raised instead (`cell_merge`, over 2300 cells).
+
+## A guest's attacks through the game's own functions on the host (2026-11-08, fix/w46-k2b-content-a)
+<a id="cell-guest-hit-game"></a>
+
+BUG-0714 (class BUG-0428). GOG 2024, Ghidra; lane 6 (`tools/tests/coop_cell_guest_hit.py`, suite `cell_guest_hit`).
+Extends #cell-damage-gate and #cell-guest-bite-ring.
+
+* ✔ (decompile) **Bite** 0xE7B0A0 cdecl `bool(u32 attacker, u32 victim, float* at, u32* dir, int, float dt)`: both by
+  `GetIfNotDeleted`, `+0x178 = 1` on both; GetScaleDifferenceWithPlayer(victim) < 3: when IsDamageable(victim) and
+  `GetDamageAmount(attacker, victim) < hp` DamageCell(victim, attacker, -dir, **4**, x, dt), **else BreakOrSwallow**
+  (also for a cell IsDamageable refuses: meat, plants are swallowed); a much smaller victim (>= 3): DamageCell and
+  0xE76AF0(victim, at, ...). No ShouldNotAttack, no +0x111 check on the lethal branch: **an invulnerable (+0x111)
+  cell dies of a lethal bite in the game too**; BreakOrSwallow itself refuses only `+0x17C` and the states 7 / 8 / 9
+  (+0x18C).
+* ✔ (decompile) DamageCell 0xE7A7C0 after the gate: AlertSpeciesOfAttack, `GetDamageAmount(attacker, victim)`,
+  the ring when the avatar is either side or `attacker+0x110` is set, hp clamped at 0, 0xE57910 (ESI = victim) and
+  0xE576F0(attacker index); hp 0: KillCell(victim, attacker, attacker res, byPlayer = attacker is the avatar or
+  `+0x110`, type, dt); else PlayAnimation (0xE type 1, 0xF type 3, 0x11 type 5, else **0x10**) and event 2 with its
+  length (0xE51EC0, the after-hurt reaction; KillIfDead 0xE7A770 at once for a zero length) and 0xE59010.
+* ✔ (runtime) Before the fix a guest's bite on the host's creature changed its hp in the host's game but its
+  animation (+0x1B0) never became 0x10 (3 of 3 bites, lab 20261108-034206), and a lethal bite of a knocked-out guest
+  (sent anyway: `coop.pool sendact c<key> break`) broke it.
+* Fix `cell.guest_hit_game` (cellsync.cpp `guest_attack`): the host calls DamageCell for a MSG_CELL_HIT (what the
+  guest's DamageCell decided: a bite's non-lethal part, spikes, electric, poison) and Bite for the lethal bite
+  (ACT_BREAK), with the guest's puppet as the attacker (a first version sent type-4 hits through Bite too: Bite breaks
+  a cell IsDamageable refuses, so a guest's hit on a rock or meat broke it, cell_guest_bite lab 20261108-042210); `GetDamageAmount` (0xE58980, hooked now:
+  `h_GetDamage`) returns the guest's damage for exactly that attacker / victim pair (the puppet's own NPC table value
+  is not the guest's); a KillCell inside counts as the player's kill (byPlayer). The lethal bite is replayed with
+  the damage raised to the victim's hp, so Bite breaks it as the guest's game did, through the game's gates. A
+  mouth's chunk (type 6) keeps the old path (EatChunk itself writes the hp). The knockout gate of BUG-0509 covers
+  ACT_BREAK / ACT_KILL too. Seen after it: the hurt animation 0x10 in the host's game after each guest bite, the
+  knocked-out guest's bite refused, a later lethal bite breaks it (lab 20261108-034328).
+
+## A guest's electric part and poison clouds (2026-11-08, fix/w46-k2b-content-a)
+<a id="cell-electric-attack"></a>
+
+BUG-0715, BUG-0716 (class BUG-0428). GOG 2024, Ghidra; lane 6 (`tools/tests/coop_cell_parts_attack.py`, suites
+`cell_electric`, `cell_poison`). Answers the "? damage type numbers" of section 6 for electric.
+
+* ✔ (decompile) The cell step's timers 0xE76A80 (EAX = cell, stack dt) run the electric step 0xE71980
+  (`SporeCoop::Cell_ElectricStep`, ESI = cell) and then the poison step 0xE76880 (`SporeCoop::Cell_PoisonStep`).
+  Electric: model data (GetCellModelData 0xE679E0 of +0xFC) +0x1260 the period (-1: no electric part), +0x125C the
+  cooldown after a near target, +0x1264 the charge time, +0x1268 the range (avatar / AI type 0x1001; else the AI block
+  +0x54 / +0x58), +0x126C the most targets; the part records at model data +8 (count +0, 0x48 bytes each, +0 the part
+  type, **6 = electric**). 0xE69190 finds the nearest target near any type-6 part; then
+  **`SporeCoop::Cell_ElectricAttack` 0xE71520** cdecl `void(cell* attacker, int, u32* firstTarget)` chains (0xE693F0,
+  up to 32) and for each target plays animation 0xE (0x3C for one species), schedules event 2, shows the ring when
+  the avatar is either side and writes **hp -= GetDamageAmount(attacker, target)** itself: no DamageCell, no message.
+* ✔ (decompile) Poison: 0xE68630 (GFX, model key, alive, state not 0x2B / 0x2C, scale difference > 1, model data
+  +0x1270 != 0) sets +0x1AC; with +0x374 grown past 1 (by (2 x speed + 1) x dt) it makes model data +0x1274 clouds,
+  one per part position (0xE68000), each a new cell (0xE76480, collision group -5, resource 0xE4CC90(3) for the
+  avatar, (4) for an NPC) with **+0x110 = 1 when the maker is the avatar**, and an event 0x1A of 3 / 5 / 7 s.
+* ✔ (runtime) On a guest an avatar with an electric part (`coop.pool borrow electric graft`: the fixture's level-1
+  pool has no such model, so the avatar's own model data gets a type-6 part and the timings) zapped 12 times next to
+  a host creature with hp 60: the mirrors lost hp locally, the host's creature kept 60 (lab 20261108-035148).
+* ✔ (runtime) A guest's poison cloud never reached a host creature: the guest's own visibility step 0xE78C00
+  destroys it in the frame it is made (return address 0xE78C37, `SporeCoop::Cell_PoisonCull_ret`: a poison cell
+  outside the active area, and a guest has no active tiles of its own; 101 of 101 clouds, lab 20261108-042625).
+  Kept alive by the mod for a test, the clouds still met no mirror in 2 minutes (no collision pair, no DamageCell
+  with a cloud as the attacker; lab 20261108-043126): ? whether the passive mirrors (+0x16C) take part in such pairs.
+  The host's picture of the guest (its puppet, no AI) ran no poison step either, so a guest's poison part did
+  nothing anywhere.
+* Fixes: `cell.electric` (h_Zap on Cell_ElectricAttack, guest, the avatar attacking): the mirrors' hp before the
+  chain is put back after it and each loss goes to the host as MSG_CELL_HIT type 1 (DamageCell's animation for type
+  1 is the chain's 0xE), applied there through DamageCell (#cell-guest-hit-game); a knocked-out avatar zaps nobody.
+  `cell.puppet_poison` (cellsync.cpp `puppet_poison`, host, once per cell step from the world scale step's hook):
+  the game's own poison step for every partner's puppet (ESI = the puppet, the step's dt) with the puppet lent the
+  avatar index for the call (as the NoAttack hook does: the cloud gets the avatar's resource and +0x110), so the
+  guest's clouds are made by the host's game from the partner's creation, hurt the host's creatures there and come
+  to the guests as mirrors. `coop.pool` (guest) prints `zaps= zap_hits= foreign_hits=<mirror>/<puppet>/<other>`
+  ? The poison's damage: with the poison values written into a model's data (+0x1270 = 1.0, +0x1274 = 1, +0x1278 = part
+  0) the host's game made 70 clouds of the guest's puppet and 151 of its own avatar (sharing the model) next to a
+  creature with hp 57 in 90 s, and it lost nothing (lab 20261108-044202): what else a real poison part brings (the
+  cloud resource's damage, the part record's type) is not read. Without +0x1278 (an index list of the parts the
+  clouds start at) the step made no cloud at all.
+  (a mirror's other attackers: another mirror, whose pair the host simulates; a partner's puppet, whose owner sends
+  its own hits); `coop.pool borrow status [x p<id>]` (tests) the poison step's state, `clouds_made=` (the avatar's),
+  `puppet_clouds=` (host: the partners'), `puppet_poison_steps=` and who destroyed the avatar's clouds.
+## What a cell can eat (2026-11-08, fix/w46-g4-tests)
+<a id="cell-eat-gate"></a>
+
+Static (Ghidra, GOG 2024 decompile and disassembly; BUG-0293 / BUG-0589). "Kind" below is the **interaction kind**
+(interaction `+8`, chosen per part pair), not the event type (`+0x24` in the event pool, dispatcher 0xE7E130):
+the Bite of §3 runs from event type 10, which interaction kind 8 posts.
+
+* ✔ Who decides: HandleCollisionPair 0xE7F140 -> 0xE73DD0 (both ways) picks the pair test by who has a model
+  (`+0xFC`) and GFX (`+0x248`): both 0xE6AD80 (part vs part), only the other 0xE73620, only this one 0xE738F0 (its
+  parts vs the other's body, other part type 0xC), neither 0xE73BB0. Parts come from GetCellModelData 0xE679E0
+  (rows of 0x48 bytes: `+0xC` part type, `+0x10..+0x18` offset, `+0x3C` radius, placed at `+0x4C + size * (offset * M)`,
+  radius * size; part type 1 is skipped). Meat has no model: the eater's parts are tested against its body. Every
+  touching pair asks **0xE6A3F0** for a kind (args: self part type, other cellType `+0xB4`, other res flags `+0xB0`,
+  `d = GetScaleDifference(self, other)` 0xE573E0, other part type); 0xE59CC0 keeps the highest kind, then the
+  executor 0xE7E7F0 runs it (EBX = A = the part's owner, EDI = B). A kind whose handler refuses falls back to the
+  plain contact push 0xE67100.
+* ✔ `d = clamp(other.level - self.level + 2, 0, 4)` with `+0x358`; the avatar's -1 is read as the level of the food
+  total `S+0x1C` (0xE4EE40, table 0x1483B54 rows of 0x1C): **level 1 at 0-99, 2 at 100-199, 3 at 200-299 ... (1 +
+  food / 100), 10 at 1000** (the size steps every 50 points, the level every 100). d = 2 is the same level, 1 the
+  food one level smaller. **There is no size test**: only levels, part types and flags.
+* ✔ Meat (cellType 2, ai.type 0) touched by a part of type 2 (inferred: the carnivore mouth):
+  d 0 (both alive) or d 1 (food not the avatar, eater alive) -> **kind 10** = eat: 0xE7E020 (ESI = food) plays
+  animation 0xC, posts event type 1 (foodType 2) whose callback 0xE7DB80 -> 0xE7D880 swallows the food (DestroyCell,
+  avatar: telemetry 0xE514A0) and whose end 0xE7D800 runs OnEat 0xE7D760 -> AvatarEat (points, hp). **Not EatFood**
+  (event 0x12 is the plant path below), so the EatFood hook (`cell.ko_no_eat`) does not see a carnivore's meat.
+  d 2 (same level) -> kind 7 = mouth bite 0xE7B470 (event type 4, callback 0xE7B280): meat is not damageable
+  (IsDamageable), so BreakOrSwallow 0xE7AEE0: the meat breaks, **no points**. d 3 -> kind 4/7; d 4 -> push only.
+* ✔ Plants (cellType 3): part type 4 (inferred: the herbivore mouth) at d 1 -> **kind 0xB** -> 0xE72910 posts
+  **event 0x12 = EatFood** 0xE7DF40 (OnEat, then the plant shrinks one level by table 0x1483B10 or is destroyed);
+  part type 3 at d 1 -> kind 9 (swallowed whole, event type 1, foodType 3). Other d: no eat. Part type 4 on a cell
+  with AI (or the avatar) at d 1-2 -> kind 0xC (event 0x13 EatChunkA); 0xE57560 = "has an AI block type != 0 or is
+  the avatar", so never on meat.
+* ✔ Refusals in the handlers (then only the push): kind 10 (0xE7E020) and kind 0xB (0xE72910): **the eater's
+  `+0x178` lock**, the food's `+0x17B`, ShouldNotAttack(eater, food) (kind 10), the food's `+0x111` (kind 10); the
+  food's `+0x179` (being eaten) makes them do nothing. Kind 7 (0xE7B470): eater `+0x178` / `+0x17F`, victim `+0x17C`
+  / `+0x17B`. CollectPartToken 0xE7B630 refuses on the same eater `+0x178`. The eater's `+0x111`
+  (invulnerable), its hp and its size are not read; no timer or respawn cooldown is read (no hatch either: the
+  co-op small respawn is the mod's `downed_tick`, not RebuildLevel). Writers of `+0x178 = 1`: Bite 0xE7B0A0 (attacker
+  **and victim**), KillCell's locks 0xE59170, PlayerDeath 0xE72060, 0xE591C0, 0xE59500, 0xE59A70, 0xE5F160,
+  0xE69A90 and more; the code that clears it again was not found (?).
+* CanEat 0xE68470 (§9) is the AI's prey test, not this gate: it says yes to same-level meat (d 2) where a mouth
+  only breaks it.
+* `coop.pool see` columns: `see c<key> <kind> <size ratio = its +0x58 / our +0x58> <hp> <distance m> <screen x> <screen y>`
+  (nearest first; puppets, dead and dying left out; a guest lists only mirrors). The ratio is for reading only:
+  the game's rule uses levels. A cell's `level=` (`coop.pool cell`, `coop.pool meat`) is its `+0x358`; a player's is
+  -1 and counts as the food-total level above.
+* Applied to lab 20261106-003243 (BUG-0293): food 102 -> player level 2, the meat level 1 -> d 1: edible by the
+  host as by the guest (who ate level-1 meat at the same food). The host's 4 tries left the meat alive with hp 6 and
+  pushed it 1-3 m along the host's path (observed), i.e. neither kind 10 nor kind 7 ran: either no mouth part touched
+  it or the host's `+0x178` was set (inferred: its cell had been knocked out and respawned small just before,
+  `respawns=1`, `bites_taken=4`; Bite sets the victim's `+0x178`, and the lethal one is intercepted by `go_down`
+  before the game's death flow). Not measured: the host's lock bytes during the tries (`coop.pool tokens`
+  own_locks, third digit = `+0x178`).
+* BUG-0589's one guest miss (meat "the same level 3"): if that was d 2, a mouth could only have broken it, never eaten
+  it (inferred).
+
+## A knocked-out cell swallowed meat whole (2026-11-08, fix/w46-b1-tribe)
+<a id="cell-ko-swallow"></a>
+
+BUG-0746 (from the static [eat gate](#cell-eat-gate)). GOG 2024, lane 7, `coop_cell_ko_food.py`.
+* ✔ observed (lab 20261108-142803, `coop.fix cell.ko_no_swallow off`): the knockout (`go_down` / `downed_tick`) does
+  not set the avatar's `+0x178` lock, so StartEatSwallow 0xE7E020 accepts interaction kind 10 (meat) of the
+  knocked-out avatar: SwallowWhole 0xE7D880 and FinishEatEvent 0xE7D800 -> OnEat -> AvatarEat run and the meal is
+  counted (+12 on both games for two meat cells). The event takes about a second (the swallow animation 0xC, the
+  callback at a third of it).
+* ✔ The executor 0xE7E7F0 (cdecl void(interaction*, float dt); +0 the eater's pool index, +4 the other's, +8 the kind,
+  +0xC the eater's part, +0x18 the contact point, +0x24 the normal) can be called from the console between steps
+  with a made-up interaction (`coop.pool swallow <key> [kind]`, kind 10 by default): the event is posted and runs in
+  the next steps as from a real contact.
+* Fix `cell.ko_no_swallow`: the executor is hooked; kinds 9 and 10 with our knocked-out avatar as the eater run as
+  kind 1 (the executor's plain contact push, what it does when a swallow refuses). Counted as `ko_swallows_blocked=`
+  in `coop.pool`. A partner's cell and the NPCs swallow as before.
+
+## Fork findings: personal Cell editors, spawn models, Cell editor return (2026-11-10, plan/w47-lineages)
+<a id="cell-fork-lineages-43"></a>
+
+From a fork, not verified by us: PandizeLive/SporeCoop-Lineages lineages30..43-dev (Steam / GOG 2024 code).
+Tickets: BUG-0802, BUG-0809, BUG-0868, BUG-0872.
+* The Cell growth table's personal editor ids (EditorRequest +0xC) seen live: 0x1D2EC0A0 and 0x1D2EC0A4..0x1D2EC0A7
+  (the mating call); the Creature landfall editor is 0xFD4902BD.
+* The model of a native spawn is chosen once inside CreateCellObject by GetModelKeyForCellResource 0xE65640; no call
+  outside a population marker while a game runs. The graphics come from the cell's +0xFC, so the key given at creation
+  stays the cell's look and diet. The cell resource reference +0x108 (`*(u32*)ref` = .cell instance) is shared by
+  every cell of a species.
+* A native predator species (.cell 0BC1FF72, AI 0x1006) has a herbivore model (B0B9BAFF: +0x1250 = 0, +0x1251 = 1);
+  AI 0x1006 picks prey by the model's diet (IsPrey -> CanEat): the mouth decides hunting or grazing.
+* A cell creation in EditorSaves.package is its bem record (0x1A99B06B) plus metadata (0x030BDEE3); no record of type
+  cll (0x3D97A8E4) although the key says cll. After a free rename of an imported cell only the metadata is written
+  (BUG-0802).
+* cCellGFX::PreloadCreature 0xE64980: cdecl void(u32 instance), plain ret; builds {instance, cll, group 0x40616200} and
+  loads it through cCellGFX+0x58 vt 0x30.
+* Collision: `+0x58` is a scale; the sphere is model radius (+0x1244) times it.
+* Level 1 creature species of a new carnivore game had no loot table (res+0xD4 = 0); the loot table's entry layout is
+  not known (entries did not resolve to cell types).
+* Cell UI camera: cCellUI +0x48 / +0x54 / +0x60 drawn / target / lag positions (agrees with our BUG-0343 fix).
+* CORRECTION note (fork, 2026-11-07): the first saved editor visit of a starter model changed spent DNA from 0 to -88
+  in a solo-like fixture while food and earned DNA stayed; a starter-model valuation / refund is a candidate for
+  BUG-0351, not proven vanilla sell-back. Not checked by us.
+
+
+## How fast a hunter takes a player that comes into its prey range (2026-11-10, fix/w47-play-bots)
+<a id="cell-hunt-trial"></a>
+
+BUG-0910. GOG 2024, lab lane 10, the cell fixture after `coop.pool food 600` on the host (hunters that take the
+players for prey: 5-14 within 80 m, prey ranges 4.0 and 8.3 m), `coop.pool prey 80 hunters`.
+* ✔ (runtime, 4 trials) A player's cell put 0.6 of the prey range from a hunter's centre (`coop.pool swimto c<key>
+  tp <m>`), the other player outside the range: the hunter's chase target `+0x22C` in the host's game is that
+  player's cell 0.2-2.1 s later (the re-pick timer `+0x238`), for the host's avatar and for a guest's puppet alike.
+* ✔ (runtime) With the puppet's level left as it was made (`coop.fix cell.puppet_level off`, the bug of section 9):
+  IsPrey is 1 for the host and 0 for the guest for every hunter (prey_rules 13 of 57 differ) and none of 10 hunters
+  took the guest in 8 s each, while the first one tried took the host in 0.2-1.3 s.
+* How often a player is hunted in free play says little about this: over 45 lab runs of play_cell the host's NPCs
+  chased the host in 24916 samples and the guest in 24165 (in reach as prey 3225 / 3420), while single runs went
+  from 25 / 416 to 1269 / 339 (a pack that follows one player makes hundreds of samples).
+
+## Which cells a guest gets while the host's game stands (2026-11-11, fix/w47-final12)
+<a id="cell-send-centres"></a>
+
+BUG-0927. GOG 2024, lab lanes 2 and 5.
+* ✔ (runtime) The game runs no tile pass (PopulateTiles, our hook `h_PopTiles`) while its simulation stands:
+  the pause menu (`tile_passes` of `coop.pool` 1855 -> 1855 over 8 s, lab 20261111-063915), a caption that waits for
+  its check mark / a cinematic (`busy=cinematic,input_lock`, the `tiles:` line once in 110 s, lab 20261111-044257
+  campaign). Nothing is populated or removed on the host meanwhile; the mod's `host_tick` still sends states 10
+  times a second and the guests still play.
+* ✔ Anything the host decides per send tick must not read state that only the tile pass refreshes: the per-guest
+  choice (within 120 m, the nearest 900) read the tile pass's view centres and a guest that swam on got the cells
+  around its old place (10-13 % of the host's cells around it). The centres now come from `views::partners` in
+  every tick (`cell.send_centres`).
+* A guest that swims out of the area the host populated before it stood finds open water until the host plays
+  again (the tile pass is the game's): not changed.
+
+## A guest in another Cell world plays its own pool (2026-11-12, fix/w48-own-world)
+<a id="cell-own-world-pool"></a>
+
+* ✔ BUG-0797: the guest-side hooks h_Populate (returns 0), h_SpawnLoot (returns) and h_Pair (drops pairs without the
+  avatar) are gated only by "a guest in Cell and not solo"; solo came from g_host_away (the host in the menu, an
+  editor or a load). A guest in a Cell world of its own (or still in Cell while the host is in Creature) had a pool
+  with 0 own creature cells within 80 m for 60 s (lab 20261112-025524). With cell.solo_elsewhere the solo state also
+  starts on own_world::elsewhere() / host_left() (docs/re/host-centric.md#host-centric-own-world).
+* ✔ The game fills the own pool slowly after the solo start: the guest's game had 0 creatures in the first ~20 s,
+  then 6-10 within 80 m and a cell pool of up to 167 (lab 20261112-025009). Tests wait 35 s before they count.
+* ✔ BUG-0809: the host's per-guest send of MSG_CELL_STATE (host_tick) now skips a guest whose latest state is not
+  the host's Cell world (own_world::peer_here); the food total (MSG_CELL_FOOD, reliable, every 2 s) still goes.
+
+## Package C1 of 0.7.13: the knockout spot, poison, the kill ledger, swallows, spawn slots (2026-11-12, fix/w48-cell)
+<a id="cell-c1-0713"></a>
+
+GOG 2024, lab lanes 2 / 3 (tests in docs/06-testing.md#testing-cell-c1). BUG-0798, 0799, 0821, 0827, 0835, 0792, 0887.
+* ✔ (runtime, BUG-0798) The knockout's hold (`downed_tick` -> stop_at every frame) kept the spot in the metres of the
+  knockout's moment: after a level change in the 10 s the guest's cell lay at (115.7 101.1) in a world of scale 1.5
+  where it had been at scale 0.5 (102 m from its place in the world, 106 m from the host; lab 20261112-065614). With
+  `cell.down_scale` the spot is kept with its scale and drawn as `spot x scale_then / scale_now` (pos x G+0x514C is
+  what a rescale keeps, #cell-world-scale): 0.00-0.05 m off, revived by the host (20261112-064328). A level change
+  divides every distance by 3 (level 1 -> 2): cells 6 m apart are 2 m apart after it, inside the revive distance.
+* ✔ (runtime, BUG-0799) The poison step calls the cloud maker (Cell_PoisonCloud 0xE76660) for a knocked-out cell as
+  for a live one (hp 1 is alive): the host's knocked-out avatar made 18 clouds in 8 s (lab 20261112-065846, fix off).
+  With the cloud refused the step asks again every frame (600-900 refused calls in 8-10 s): its accumulator is reset
+  only by a cloud. The host's game also runs the poison step for a partner's puppet by itself, not only through
+  puppet_poison (BUG-0716): with puppet_poison skipped for the knocked-out guest the puppet still made clouds (lab
+  20261112-064328) once the grafted model data was shared with it (the fixture's host and guest cells have the same
+  model 4DA56CA5: a graft into one is in both). `cell.ko_no_poison` refuses the cloud in h_Cloud for our knocked-out
+  avatar and for a knocked-out partner's puppet (found by its slot, puppet_cell), and skips puppet_poison for it.
+* ✔ (code + runtime, BUG-0821) A guest's ACT_BREAK is replayed through Bite with the damage raised to the host's hp
+  (guest_attack: `dmg = max(dmg, hp)`): the host's hp never spares a lethal bite; Bite's other gates do (+0x17C lock,
+  BreakOrSwallow's states 7 / 8 / 9). The host's trace says "from N kill cK: applied" also for a kill it then refuses
+  for the knockout (the eat line comes before the knockout check). `cell.kill_refused`: g_kill_applied records a
+  kill only when the cell is dying after it (dying, dead, hp 0 or state 7 / 8 / 9); a guest drops its "kill sent"
+  entry and sends again when the creature still lives 2 s after its last send.
+* ✔ (runtime, BUG-0827) SwallowWhole 0xE7D880 (the only call 0xE7DBBF: cdecl, 3 arguments, `add esp,0xC`) of a cell
+  with a model plays "cell_death_eaten" (animation 9, its length as the event time) and posts event 7, whose handler
+  destroys the cell (the guest's `coop.pool why`: return address 0xE7B468); a guest's swallowed mirror was destroyed
+  ~1.1 s after the swallow, past the 1 s touch window, so in 1 of 3 swallows no ACT_GONE went out and the host's
+  creature lived on (lab 20261112-065805, fix off). `cell.swallow_gone` (h_Swallow, guest): a mirror our avatar
+  swallows is marked and its destroy in the next 10 s counts as eaten.
+* ✔ (runtime, BUG-0835, not reproduced) A guest's game never destroyed a mirror of the host's poison clouds, touched or
+  not (`coop.pool why`: none after 12 clouds the guest was put onto, lab 20261112-065459): the cull at 0xE78C37 that
+  destroys the guest's OWN clouds (#cell-electric-attack) does not reach the mirrors, so no ACT_GONE goes out for
+  them. The guard tried (never count a poison cell as eaten) was taken out.
+* ✔ (runtime, BUG-0792) Three players: two guests knocked out side by side far from the host respawned 2.3 m apart
+  (both at host + (2, 1)), and after a load both stayed at the pool's start 0.01-0.02 m apart (each one's nearest
+  partner was the other guest, within the 15 m that counts as "joined"; lab 20261112-065700).
+  `cell.spawn_slots`: a guest goes to its own slot around the HOST's cell (cell_logic::player_spawn_offset: radius 4 m,
+  guests 1-3 at 0 / 120 / 240 degrees); after a load it waits for the host's cell (not another guest's) and also
+  moves when another player's cell is within 2 m of it.
+* ✔ (runtime, BUG-0887, not reproduced) Over the player network (250 ms spikes every 7 s) a guest's cell swimming back
+  and forth was never drawn ahead of itself in the host's game (at most 0.03 m in 1351 rows, without and with the
+  Creature fall-off in Cell, lab 20261112-065254 / -065045): a cell slows down over ~1 s and the state's velocity is
+  the cell's +0x90 (? small for the soft-body avatar: inferred, not read), so the 0.25 s of extrapolation adds
+  nothing visible. The switch tried (drive.cell_fall) was taken out.
+
+## A guest's poison clouds hurt the host's creatures (2026-11-12, fix/w48-small)
+<a id="cell-poison-damage"></a>
+
+BUG-0892. Lab lane 3, cell fixture (`coop_cell_parts_attack.py --part poison`).
+* ✔ (runtime) The clouds the host's game makes for a guest's puppet (puppet_poison, the graft in the puppet's model data)
+  hurt a creature that touches them: put onto 7 new clouds (`coop.pool place`) the creature lost 6 hp in the host's game
+  (57 -> 51, 60 -> 54), and the guest's mirror showed it. With cell.puppet_poison off the puppet made no cloud in that
+  run (the game's own poison step did not run for it: the "it runs by itself" of #cell-c1-0713 needs the shared model
+  data at the moment the step looks; here nothing came).
+* ✔ The poison step needs the puppet's GFX in the host's game (`borrow status x p<id>`: gfx=0 with the host's cell 14 m
+  and 45 m away, no cloud): the host's camera must show the puppet.
+* ✔ puppet_poison lends the puppet the avatar index for its step, so in the cloud maker (h_Cloud) the maker of a
+  partner's cloud is `avatar()` too: tell them apart with `modes::cell_is_puppet(maker)`.
+* CORRECTION (2026-11-12, fix/w48-small, BUG-0892): "with the poison values written into a model's data ... it lost
+  nothing (lab 20261108-044202)" (#cell-electric-attack) is superseded for the damage: the creature then stood next to
+  the clouds and never touched one; on a cloud it loses health.
+## A partner's poison clouds and a player's cell (2026-11-12, fix/w48-pass)
+<a id="cell-partner-poison"></a>
+
+BUG-0958, GOG 2024, lab lane 7 (`coop_cell_partner_poison.py`). Answers the "Not checked" of #cell-c1-0713.
+* ✔ (runtime) A cloud's hit on a cell is DamageCell type 3 with the cloud cell as the attacker. A guest's own game
+  calls it for its avatar and the mirror of a host's cloud (the guest's own collision step; the mirror is passive, its
+  +0x110 is 0 on the guest): 18 hits in 11 s on 10 clouds, hp 4 -> 1 and knocked out (lab 20261112-115819).
+* ✔ (runtime) The host's game never called DamageCell for its own avatar and a guest's cloud (made for the puppet
+  with the avatar index lent, so +0x110 is set): 0 hits on 10 such clouds (20261112-120150). So the game spares its
+  avatar from +0x110 clouds by itself; ? where (not read: the contact step or the cloud's own update).
+* `cell.partner_poison` (cellsync.cpp): MSG_CELL_STATE carries +0x110 as flag 4 of a cell (the flags byte: 1 dying,
+  2 dead); a guest's mirror keeps it (`Mirror::product`) and DamageCell of the own avatar by a poison mirror with it
+  is refused while friendly fire is off outside Rivals; on the host the cells a partner's puppet's cloud maker added
+  (h_Cloud, a before / after pass over the pool) are refused the same way. `coop.pool`: `cell_partner_poison:`.
+
+## A fall of several levels at once overflows the tile pass (2026-11-12, fix/w48-cellcull)
+<a id="cell-level-fall"></a>
+
+BUG-0975. GOG 2024, Ghidra and lanes 6 / 7.
+
+* ✔ (Ghidra) PopulateTiles 0xE7D370 builds its active set with 0xE5FA80 into a stack buffer of 0x27F4 bytes (511
+  entries of 20 bytes) with no bound: nine groups by 0xE5FA00, layer 0 at the levels base+2, +1, 0, -1 from the
+  visible box doubled about its centre, layer 1 at base+4 .. base from the background box. Each group writes every
+  tile {layer, level, x, y} of the box (0xE5F610: floor / ceil of the box times 1 / size), size =
+  `Simulator::Cell::TileSizes[level]` (10, 30, 100, 300, ... x sqrt(10) a level) / world scale G+0x514C x step x
+  0.85, step 0xE51FD0 by level - LevelOfFood(S+0x1C): 1 at -1 and below, 0.5 at 0, halving up to 1/32 at +4.
+  The level base is LevelOfFood (1 + food / 100).
+* ✔ (Ghidra) AddFoodPoints sets the target scale G+0x5150 at once; WorldScaleStep eases G+0x514C to it over ~3 s.
+  Up, the old scale is smaller: fewer, bigger tiles. Down, the old scale is bigger: for a fall of k levels the
+  lowest groups get ~10^k times their tiles (estimate with the boxes +-10 x +-7.5 / +-20 x +-15: settled 36-80,
+  one level down 470-490, three levels down 37 000).
+* ✔ (runtime, `coop_cell_level_drop.py`, fix off) food 330 -> 0 in one AddFoodPoints kills the game in its first
+  tile pass: 0xC0000005 at 0x00E5FA50 (the write loop of 0xE5FA00, EDI at the stack top 0x0012FFF4, data
+  0x00130000; the symbolizer calls it ShouldCullCell+0x190), the process gone without a crash report. Both on a
+  guest that joins a host at food 0 (the host's total in one call, lab 20261112-194555) and in a game alone with no
+  session (`coop.pool food -330`, the game's own AddFoodPoints, lab 20261112-194555-2). So it is the game's own
+  bug; the game itself never lowers food by more than 50 (its debug keys), the mod's shared total does.
+* `cell.tile_cap` (cellsync.cpp h_PopTiles, cell_logic::active_tiles): no pass while the world scale is more than
+  one level above its target (G+0x514C > 3.5 x G+0x5150; one level is x sqrt(10)) or while the active set would exceed 480 tiles (`tiles: pass skipped ...`, `coop.pool`
+  `tilecap_skips=` / `tilecap_max=`); measured: the set 14 200-14 400 tiles right after 330 -> 0, the scale 15 ->
+  0.5 in ~2.5 s, 151-303 passes held.
+* ✔ (runtime, lab 20261112-195008) the 480 cap alone is not enough in a game alone: the first pass that fits (at
+  3-6 x the settled set, scale ~3) populated the new level with that many cells at once and the game faulted in
+  CreateSoftBody / CellPhysicsStep / effects (2138 faults). A guest in a session (its cells are the host's
+  mirrors) had no fault with the cap alone. A hold for the whole descent (G+0x514C > G+0x5150) also held the
+  one-level falls of cell_levelup_view (-150) and the guest lost more of its screen there (78-82 %, labs
+  20261112-201333); the hold stops at one level above, so a one-level fall runs as in the game.
+
+## Loot tables, KillCell's death alert, mirrors that go NaN (2026-11-13, fix/w49-cell)
+<a id="cell-loot-alert"></a>
+
+BUG-1004, BUG-1008, BUG-1006, BUG-0999. GOG 2024, Ghidra (out/ghidra-2024) and lanes 4 / 5.
+
+* ✔ (Ghidra) **SpawnLoot 0xE771D0's table**: `GetData(lootTable)` gives `{entries*, count, radius min, radius max,
+  +0x10 ?, +0x14 speed, +0x18 flag, +0x1C flag (the "not on screen" test), +0x20 ?}`. An entry is 0x1C bytes: +0 type
+  (0 nothing, 1 cells, 2 repeat), +4 the cell resource key, +8 the sub-table of a repeat, +0xC float weight, +0x10 base
+  count, +0x14 random range (RandomInt), +0x18 level offset. One entry is picked by weight; type 1 makes `+0x10 +
+  RandomInt(+0x14)` cells through 0xE76480 and appends each to `outIdx` when given (no bound; a failed create appends
+  its 0 too); type 2 calls SpawnLoot again with the sub-table and the same list. The break event 0xE7ADD0 passes the
+  global table `0xE4CC90(7)` (not the creature's own `res+0xD4`, which KillCell uses through 0xE52A20).
+* ✔ (Ghidra) **KillCell 0xE7A4A0's death alert 0xE71F00** (cdecl `void(cell* victim, u32 killerIdx)`): reads the
+  victim's AI block (difficulty G+0x5190+0x7C: 0 -> res+0x248, 2 -> res+0x194 when not -1, else res+0xE0); only when
+  the block's float **+0x2C** is not 0, FindCellsInRadius(victim pos, table[..] / world scale x +0x2C / 30) and every
+  cell there with the **same resource ref** (+0x108, not the model key) gets flee target **+0x220 = killer**, flee time
+  +0x21C = block +0x34, and 0xE70950(cell, killer) (the flee start). The fixture's level-1 kinds have +0x2C = 0: their
+  kills alert nobody (runtime, lane 4: 4 cells of the kind 3 m round the victim kept flee 0).
+* `coop.pool npcflag c<key> alert <r>` (tests) sets +0x2C of the kind's AI blocks; `coop.pool herd c<key> <n>` puts
+  cells of the same resource round it; `coop.pool targets <idx,...>` prints +0x220 / +0x21C / +0x22C.
+* ✔ (runtime, BUG-1006) A guest's mirror whose particles are NaN never recovers without a repair: lab
+  20261113-022529 (`cell.mirror_nan_heal off`) still had non-finite fields 0x284 after 1 s and 0x385 after 3 s
+  (particle positions, then the centre, velocity and matrix: cell_move adds `want - pos` with pos NaN).
+* ✔ (code, BUG-0999) the host's view set is empty whenever its own view box centre fails views::finite_pos: with
+  cell.nan_guard on that is still reachable with both x edges at exactly 1e7 (view_bad refuses only > 1e7).
+
+## A level change round a partner in the host's game; the rescale and the food drain (2026-11-13, fix/w49-cell2)
+<a id="cell-levelup-partner-area"></a>
+
+BUG-1064, BUG-1066. GOG 2024, Ghidra (out/ghidra-2024) and lanes 2 / 3.
+
+* ✔ (Ghidra) the cell cull **0xE5F8C0** (cdecl `bool(cell*)`, called from the cell update 0xE7C080 at 0xE7C3AF): a
+  cell with level +0x358 == -1 is kept; a cell whose level + 1 is below the current level (0xE4EE40) gets target size
+  +0xB4 = 0 (it shrinks away: the old tier of an up change; its DestroyCell comes from 0xE7BFB0, return address
+  0xE7C03C); else, with no +0x36C parent, the tile under it {fg / bg, level, floor(pos / tile size)} (tile size
+  TileSizes[level] / world scale x step 0xE51FD0 x 0.85, as PopulateTiles) goes to IsTileActive, and when that says no
+  (and +0x354 is 0, and it is not G+0x51B0) 0xE7C080 destroys it (DestroyCell return address **0xE7C3E6**). So the
+  cells kept round a partner during a level change are the ones whose tile is inside a box of `g_view_boxes`
+  (h_TileActive's union), recomputed every frame from the view centres.
+* ✔ (runtime, `coop.pool areas`, `coop_cell_levelup_area.py`, the guest 60 m left of and 40 m below the host) per
+  change in the host's game the cells of its own visible box and of the same box round the partner: on an up change
+  nearly all are removed by 0xE7C03C (the old tier), on a down change by the cull 0xE7C3E6. With the partner's view
+  centre as it came the host's game lost more round the partner: down 52 % against 10 % of its own (lab
+  20261113-044709). Cause, measured (`centre_err`): coop.cpp noted the partner's centre (`views::note`) from its
+  state's pose, which is in the PARTNER's world scale (BUG-0519); each world rescales over ~3.5 s at its own moment
+  (and the state is sampled ~0.1 s late), so while the scale moved the centre was 17-37 m from where the host's game
+  draws the partner's cell (settled: 0-7 m), and the cull took the cells round the partner whose tiles were then
+  outside every box. Fix `cell.view_centre_scale` (coop.cpp view_pos): the centre times partner scale / own scale,
+  as cell_drive draws the cell (BUG-0519). With it the error is 0.7-3.6 m and the partner's area lost down 11 %
+  against 20 % (lab 20261113-044709-2), but in later runs still 28 / 16 %, 87 / 24 %, 74 / 22 % (labs
+  20261113-071833, -123921, -123921-2): the centre was one cause, not the only one (BUG-1064 open, known-issues
+  #issue-cell-first-down-partner).
+* ✔ (runtime) the Cell fixture's host sits near the level's right edge (x ~100 at world scale 0.5): `coop.pool tp 200
+  0` left the guest 5 m from the host (clamped), so the two areas were one. +-150 food is one world-scale step here
+  (0.5 <-> 1.5: distances to a third and back), and the host's view box (the camera) trails its cell by up to 40 m
+  right after a down change.
+* ✔ (runtime, BUG-1066) `food_drain` (BUG-0633: the food of a partner or of the shared total, applied inside the
+  step) runs in h_WorldScale right before the game's WorldScaleStep; its AddFoodPoints sets the target scale
+  G+0x5150, so the very step it runs in rescales (0xE6DB70 empties the host's list cCellGame+0x4128 and fills it from
+  every tile object of the pool, the last object of a key wins). The flush of our tiles looked at `scale_moving()`
+  before the drain: our tiles were in the pool for that first rescale, our shadow of a shared key replaced the host's
+  own populated tile in the host's list, h_PopTiles took ours out again (`unshared`, 15 a change) and the host's own
+  tile objects of those keys stayed live in no list (pool live 55, list entries 40), never deleted by anyone. The
+  tile check (`tiles_check`) logged it and its 21-warning budget was gone after two changes. Fix
+  `cell.scale_food_flush` (cellsync.cpp h_WorldScale): the flush runs after the drain. With it 0 unshared, 0
+  mismatches in 6 changes (lab 20261113-033642); off: 15 per change, 21 warnings (lab 20261113-033642-2).
+
+## The cull round a partner on a level down, measured with the areas apart (2026-11-13, fix/w49-cell3)
+<a id="cell-levelup-cull-measured"></a>
+
+BUG-1064 (the rest after `cell.view_centre_scale`). GOG 2024, objdump of `SporeApp.exe`, lanes 2 / 3 / 6 / 7,
+`coop.pool areas` (now also per ring of the box, the cull of each marked cell, `coop_cell_levelup_area.py`).
+
+* ✔ (objdump) **IsTileActive 0xE5F810** {layer, level, x, y}: the level within `[T - 1, T + 5]` (`level + 1 >= T`,
+  T the table entry 0x1483B54 + 0x1C per row for the food progress, 0x1483DA0 at food 1000); x, y within the range
+  of **0xE5F610** (layer in EAX, level in ESI): layer 0 the visible box (ViewBoxes 0..5) doubled about its centre,
+  layer 1 the background box (6..11), both divided by the tile size `TileSizes[level] / G+0x514C x step(0xE51FD0) x
+  0.85` and rounded outwards (floor / ceil): the active range is whole tiles, so how much of a box's surroundings
+  stays active depends on where its centre sits in the tile grid.
+* ✔ (objdump) CORRECTION (2026-11-13, fix/w49-cell3): ShouldCullCell's **+0x36C is a parent CELL** (the handle is
+  looked up in the cell pool G+0x1C, `cObjectPool_::GetIfNotDeleted` 0xB722E0), not a parent tile: a cell whose
+  parent cell lives is never culled. (The note "its parent tile +0x36C is deleted" in the section on cells destroyed
+  < 2 s after their first send, and the .sym entry, said tile.) In the test areas no marked cell had a live parent.
+* ✔ (runtime, 22 runs) negative: on a +-150 change the tile cap (BUG-0975, `tiles_overflow`) skipped no pass, and the
+  partner boxes the cull read were always built in the same frame (`stale=0`): not a stale box.
+* ✔ (runtime) while a down change rescales, the noted partner centre (views::note, state pose x scale ratio) trails
+  the partner's cell as the host's game draws it by 0.5-2.6 m towards the origin (every position moves away from it
+  at up to ~35 m/s; a state comes every ~0.1 s). Asked with the host's box moved onto the drawn cell, IsTileActive
+  would have kept 130 of 217 culled partner cells (boundary tiles), the host's own box on its cell 84 of 321 (labs
+  20261113-164346 .. -164352). Tried as `cell.view_centre_drawn` (the partner's box on its puppet cell): those culls
+  went to ~0, but the pooled loss did not change, with the areas together (labs 20261113-165344 .. -165350) or apart
+  (-170542 .. -170548, off / on alike): the cells the rescale pushes outwards leave the range a few frames later
+  anyway. Not shipped.
+* ✔ (runtime) the test's earlier excess was its own: one `coop.pool tp -60 -40` right after the start did not hold,
+  the guest was 1-8 m from the host at the marks in every lab of fix/w49-cell2 (20261113-044709-2, -071833,
+  -123921, -123921-2, -162634-2), so the partner's area was only the band of its box outside the host's box: the
+  outer cells, which a down change (positions x 3 about the origin, the box fixed) pushes out of the doubled range
+  first, while the host's area (with the overlap) had both boxes. Per ring of the box (sixths of the half size, down
+  changes, labs 20261113-165909 .. -165915) the cull took 0 % inside 3/6, then host 3 / 15 / 31 / 53 %, partner
+  2 / 13 / 49 / 75 %; the partner's area held 48 % of its cells in the outer two rings, the host's 37 %.
+* ✔ (runtime) with the guest 70 m (scale 0.5) / 30 m (1.5) away before each change and the host's camera on its
+  cell, 20 runs (labs 20261113-170542 .. -171723): one area loses 2-57 % of its cells in one down change, the host's
+  as much as the partner's; pooled per run partner minus host -38 .. +9 points on the down changes (mostly well
+  below 0), -14 .. +17 on the up changes (the old tier fading 0xE7C03C, decided by a cell's level). The rest is the game's own cull at the
+  edge of a whole-tile range, the same round the host.
+* ✔ (runtime) a still cell's camera (CameraUpdate moves it only at 1.5 x the avatar's speed) stays where a level
+  change's rescale left it: the host's visible box 7-40 m off its cell after a change in 2 of 8 runs, still 6-7 m
+  off a second after `coop.pool camsnap` at some marks. Single-player behaviour.
+
+## The mate is culled with the tiles; the hatch holds the input lock (2026-11-15, fix/w51-cell)
+<a id="cell-mate-cull"></a>
+
+BUG-1186. GOG 2024, lane 7, `coop.pool mate` (now with `from_host=(dx dy)` and `gone_by=<DestroyCell return address>`).
+
+* ✔ (runtime) The mate `G+0x51D4` is NOT spared by the cell cull of CellPhysicsStep 0xE7C080 (ShouldCullCell
+  0xE5F8C0, DestroyCell return address **0xE7C3E6**; the step spares only `G+0x51B0` and a cell with its keep-alive
+  byte +0x354): the visibility step's 0xE5CDE0 spares the mate (section 8, SoftBodyLod in the .sym), this one does
+  not. A guest that called its mate and then jumped 25 m to the other side (`coop.pool tp 25 0` with the mate on the
+  host's -x side, ~40 m from the cell) lost the mate within 0.5 s, `gone_by=0x00E7C3E6` (labs 20261115-232616 #1 / #3);
+  on the same side it stayed alive (#2, and 20261115-233205 x3 with the jump towards the mate). Single-player rule: a
+  mate whose tile leaves the active range goes, as any cell. Lab runs before 2026-11-02 kept a mate on the far side
+  (cell_editor_timed's left-side mates of 20261030-133815, 20261101-162501 survived); not traced which change since
+  made the guest's active range smaller there (inferred: the guest's own tile pass and boxes, BUG-0174 / BUG-1064).
+* ✔ (runtime) After a load the own cell hatches with the game's input lock on (`coop.uistate` input_lock=1, the
+  trace's `input_lock=1`) for ~5.5 s after the Cell stage is entered on a guest at load 25-30 (lab 20261115-231325:
+  Cell at s 6.1, still locked at s 10.1, `cell: our new cell joined the host` at s 11.6, which waits for the lock).
+  A swallow (`coop.pool swallow`, the executor 0xE7E7F0 kind 10) run inside it never reached SwallowWhole 0xE7D880
+  (`swallows_marked` 2 of 3, the first one's mirror never destroyed on the guest), the same after the lock 3 of 3.

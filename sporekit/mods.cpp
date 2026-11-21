@@ -3,11 +3,75 @@
 #include "core.h"
 
 #include <memory>
+#include <deque>
+#include <limits>
+#include <mutex>
 
 namespace sk {
 
 static std::vector<std::unique_ptr<SkMod>> g_mods;
 static int g_gen = 0;
+static const DWORD kUnloadGraceMs = 50;
+static const DWORD kCmdWaitMs = 10000; // BUG-1018: coop.sample runs up to 30 s; longer ones keep the old image
+
+enum class ModOperation { Load, Reload, Unload };
+struct ModRequest {
+    std::string name;
+    ModOperation operation;
+    uint64_t id;
+};
+static std::mutex g_lifecycle_mu;
+static std::deque<ModRequest> g_lifecycle_queue;
+static uint64_t g_request_id = 0;
+static bool g_lifecycle_busy = false, g_lifecycle_scheduled = false, g_lifecycle_stopping = false;
+static void drain_lifecycle();
+
+static bool lifecycle_thread()
+{
+    // in_frame is main-thread state; never read it from a worker.
+    return main_thread_id() != 0 && GetCurrentThreadId() == main_thread_id() && !in_frame();
+}
+
+static bool executor_current(std::string& err)
+{
+    if (!lifecycle_thread()) {
+        err = "mod lifecycle requires the main thread outside Present";
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(g_lifecycle_mu);
+    if (!g_lifecycle_busy) {
+        err = "mod lifecycle executor is not active";
+        return false;
+    }
+    return true;
+}
+
+// Caller holds g_lifecycle_mu. The existing outside queue only enqueues; it
+// never invokes its callback inline. No mod pointer/output/callback is retained.
+static void schedule_lifecycle()
+{
+    if (!g_lifecycle_busy && !g_lifecycle_stopping && !g_lifecycle_queue.empty() && !g_lifecycle_scheduled) {
+        run_outside_frame(drain_lifecycle);
+        g_lifecycle_scheduled = true;
+    }
+}
+
+struct LifecycleExecution {
+    ~LifecycleExecution()
+    {
+        size_t cancelled = 0;
+        {
+            std::lock_guard<std::mutex> lock(g_lifecycle_mu);
+            g_lifecycle_busy = false;
+            try { schedule_lifecycle(); }
+            catch (...) { cancelled = g_lifecycle_queue.size(); g_lifecycle_queue.clear(); }
+        }
+        if (cancelled) {
+            try { SKLOG(SK_ERROR, "mod lifecycle dispatch failed; cancelled %u requests", unsigned(cancelled)); }
+            catch (...) {} // A failing diagnostic must not unwind an execution guard.
+        }
+    }
+};
 
 static std::wstring shadow_dir() { return mods_dirw() + L"\\.shadow"; }
 
@@ -17,6 +81,28 @@ std::vector<SkMod*> mods_list()
     for (auto& m : g_mods)
         v.push_back(m.get());
     return v;
+}
+
+// BUG-1022: the mods line of a report written off the main thread (watchdog, crash report thread) walked g_mods and
+// m->info while mod.load / mod.reload changed them. A copy of the line is kept under a lock instead, made on the main
+// thread after every load and unload.
+static std::mutex g_line_mu;
+static std::string g_line;
+
+static void mods_line_update()
+{
+    std::string s;
+    for (auto& m : g_mods)
+        if (m->module)
+            s += m->name + (m->info && m->info->version ? std::string(" ") + m->info->version : "") + "  ";
+    std::lock_guard<std::mutex> lk(g_line_mu);
+    g_line = s;
+}
+
+std::string mods_line()
+{
+    std::lock_guard<std::mutex> lk(g_line_mu);
+    return g_line;
 }
 
 static SkMod* find_mod(const std::string& name)
@@ -29,6 +115,7 @@ static SkMod* find_mod(const std::string& name)
 
 static bool load_into(SkMod* m, std::string& err)
 {
+    if (!executor_current(err)) return false;
     CreateDirectoryW(shadow_dir().c_str(), nullptr);
     m->generation = ++g_gen;
     // instance id in the name: several game instances share the mods folder
@@ -57,6 +144,7 @@ static bool load_into(SkMod* m, std::string& err)
         hooks_remove_all(m);
         unsubscribe_all(m);
         diag_context_remove(m);
+        diag_headline(m, nullptr);
         commands_remove_all(m);
         ui_winprocs_disable_mod(m);
         FreeLibrary(m->module);
@@ -64,29 +152,66 @@ static bool load_into(SkMod* m, std::string& err)
         return false;
     }
     logf(m, SK_INFO, "loaded %s v%s (gen %d)", m->info->name, m->info->version, m->generation);
+    mods_line_update();
     return true;
 }
 
-static void unload_from(SkMod* m)
+static bool unload_from(SkMod* m, std::string& err)
 {
+    if (!executor_current(err)) return false;
     if (!m->module)
-        return;
+        return true;
+    // BUG-1018: a console command of the mod running on another thread (any-thread commands, coop.sample) would come
+    // back into unmapped code: no new call starts once its commands are gone, the running ones are waited for before
+    // the mod tears down its state; one that does not return in time keeps the old image mapped (a leak of one DLL
+    // copy in a dev path, not a crash)
+    bool keep_image = false;
+    if (fixed(g_fix_cmdkeep)) {
+        commands_remove_all(m);
+        std::string why;
+        if (!commands_wait_idle(m, kCmdWaitMs, why)) {
+            keep_image = true;
+            logf(m, SK_WARN, "unload: %s; the old image stays mapped (BUG-1018)", why.c_str());
+        }
+    }
     if (m->info && m->info->on_unload)
         m->info->on_unload();
-    hooks_remove_all(m);
+    int hooks = hooks_remove_all(m);
     unsubscribe_all(m);
     diag_context_remove(m);
+    diag_headline(m, nullptr);
     commands_remove_all(m);
     ui_winprocs_disable_mod(m);
-    FreeLibrary(m->module);
+    // a game worker thread may still be inside one of the mod's detours (they are no longer entered:
+    // the original bytes are back): give it time to return before the DLL's code is unmapped
+    // (BUG-0132). Not a guarantee for a detour that blocks, only for short ones (RandomInt).
+    if (hooks && fixed(g_fix_hookkeep))
+        Sleep(kUnloadGraceMs);
+    {
+        // tasks the mod queued and that have not run: their code goes with the image (BUG-0060)
+        auto base = (uintptr_t)m->module;
+        auto* nt = (IMAGE_NT_HEADERS*)(base + ((IMAGE_DOS_HEADER*)base)->e_lfanew);
+        if (size_t n = drop_tasks_in(base, base + nt->OptionalHeader.SizeOfImage))
+            logf(m, SK_INFO, "dropped %u queued task(s) of the old image", (unsigned)n);
+    }
+    if (!keep_image) {
+        FreeLibrary(m->module);
+        DeleteFileW(m->live_path.c_str());
+    }
     m->module = nullptr;
     m->info = nullptr;
-    DeleteFileW(m->live_path.c_str());
+    mods_line_update();
     logf(m, SK_INFO, "unloaded");
+    return true;
 }
 
-bool mod_load(const std::string& name, std::string& err)
+static bool load_mod(const std::string& name, std::string& err)
 {
+    if (!executor_current(err)) return false;
+    if (*unsupported_build_text()) { // BUG-1125: a game build that is not supported (GOG 2016) runs no mod
+        err = unsupported_build_text();
+        return false;
+    }
     if (find_mod(name) && find_mod(name)->module) {
         err = "already loaded";
         return false;
@@ -105,27 +230,110 @@ bool mod_load(const std::string& name, std::string& err)
     return load_into(m, err);
 }
 
-bool mod_unload(const std::string& name, std::string& err)
+static bool unload_mod(const std::string& name, std::string& err)
 {
+    if (!executor_current(err)) return false;
     SkMod* m = find_mod(name);
     if (!m || !m->module) {
         err = "not loaded";
         return false;
     }
-    unload_from(m);
-    return true;
+    return unload_from(m, err);
 }
 
-bool mod_reload(const std::string& name, std::string& err)
+static bool reload_mod(const std::string& name, std::string& err)
 {
+    if (!executor_current(err)) return false;
     SkMod* m = find_mod(name);
-    if (m && m->module)
-        unload_from(m);
-    return mod_load(name, err);
+    if (m && m->module && !unload_from(m, err)) return false;
+    return load_mod(name, err);
 }
+
+static bool execute_request(const ModRequest& request, std::string& err)
+{
+    if (!executor_current(err)) return false;
+    switch (request.operation) {
+    case ModOperation::Load: return load_mod(request.name, err);
+    case ModOperation::Reload: return reload_mod(request.name, err);
+    case ModOperation::Unload: return unload_mod(request.name, err);
+    }
+    err = "invalid mod lifecycle operation";
+    return false;
+}
+
+static void drain_lifecycle()
+{
+    {
+        std::lock_guard<std::mutex> lock(g_lifecycle_mu);
+        g_lifecycle_scheduled = false;
+        if (g_lifecycle_stopping || g_lifecycle_busy) return;
+        if (!lifecycle_thread()) {
+            g_lifecycle_queue.clear();
+            return; // Reject unexpected dispatch rather than unload inside Render/off-thread.
+        }
+        g_lifecycle_busy = true;
+    }
+    LifecycleExecution execution;
+    // Reentrant callbacks can add work. Bound this turn as well as the queue.
+    for (unsigned count = 0; count < 64; ++count) {
+        ModRequest request;
+        {
+            std::lock_guard<std::mutex> lock(g_lifecycle_mu);
+            if (g_lifecycle_queue.empty()) return;
+            request = std::move(g_lifecycle_queue.front());
+            g_lifecycle_queue.pop_front();
+        }
+        std::string err;
+        bool ok = false;
+        try { ok = execute_request(request, err); }
+        catch (...) { err = "mod lifecycle callback threw"; }
+        SKLOG(ok ? SK_INFO : SK_ERROR, "mod request %llu (%s): %s",
+              static_cast<unsigned long long>(request.id), request.name.c_str(), ok ? "completed" : err.c_str());
+    }
+}
+
+static bool request_mod(ModOperation operation, const std::string& name, std::string& status)
+{
+    // File stems only; bound every queued name independently of caller storage.
+    if (name.empty() || name.size() > 255 || name == "." || name.find("..") != std::string::npos ||
+        name.find_first_of("/\\:") != std::string::npos || name.find('\0') != std::string::npos) {
+        status = "invalid mod name";
+        return false;
+    }
+    try {
+        std::lock_guard<std::mutex> lock(g_lifecycle_mu);
+        if (g_lifecycle_stopping) { status = "mod manager is shutting down"; return false; }
+        if (g_lifecycle_queue.size() >= 64) { status = "mod lifecycle queue is full"; return false; }
+        if (g_request_id == std::numeric_limits<uint64_t>::max()) { status = "mod request IDs exhausted"; return false; }
+        const auto id = g_request_id + 1;
+        std::string accepted = "queued request " + std::to_string(id);
+        g_lifecycle_queue.push_back({name, operation, id});
+        try { schedule_lifecycle(); }
+        catch (...) { g_lifecycle_queue.pop_back(); status = "mod lifecycle dispatch failed"; return false; }
+        g_request_id = id;
+        status.swap(accepted);
+        return true;
+    } catch (...) {
+        status = "cannot retain mod lifecycle request";
+        return false;
+    }
+}
+
+bool mod_load(const std::string& name, std::string& status) { return request_mod(ModOperation::Load, name, status); }
+bool mod_unload(const std::string& name, std::string& status) { return request_mod(ModOperation::Unload, name, status); }
+bool mod_reload(const std::string& name, std::string& status) { return request_mod(ModOperation::Reload, name, status); }
 
 void mods_load_all()
 {
+    {
+        std::lock_guard<std::mutex> lock(g_lifecycle_mu);
+        if (!lifecycle_thread() || g_lifecycle_busy || g_lifecycle_stopping) {
+            SKLOG(SK_ERROR, "unsafe mod bootstrap rejected");
+            return;
+        }
+        g_lifecycle_busy = true;
+    }
+    LifecycleExecution execution;
     // clean stale shadow copies from previous runs
     WIN32_FIND_DATAW fd;
     HANDLE h = FindFirstFileW((shadow_dir() + L"\\*.i" + std::to_wstring(instance_id()) + L".*.dll").c_str(), &fd);
@@ -163,15 +371,31 @@ void mods_load_all()
     }
     for (auto& n : names) {
         std::string err;
-        if (!mod_load(n, err))
+        if (!load_mod(n, err))
             SKLOG(SK_ERROR, "mod %s: %s", n.c_str(), err.c_str());
     }
 }
 
 void mods_shutdown()
 {
-    for (auto it = g_mods.rbegin(); it != g_mods.rend(); ++it)
-        unload_from(it->get());
+    {
+        std::lock_guard<std::mutex> lock(g_lifecycle_mu);
+        if (!lifecycle_thread() || g_lifecycle_busy) {
+            SKLOG(SK_ERROR, "unsafe mod shutdown rejected");
+            return;
+        }
+        g_lifecycle_stopping = true;
+        g_lifecycle_queue.clear();
+        g_lifecycle_scheduled = false;
+        g_lifecycle_busy = true;
+    }
+    LifecycleExecution execution;
+    for (auto it = g_mods.rbegin(); it != g_mods.rend(); ++it) {
+        std::string err;
+        try {
+            if (!unload_from(it->get(), err)) SKLOG(SK_ERROR, "mod shutdown: %s", err.c_str());
+        } catch (...) { SKLOG(SK_ERROR, "mod shutdown callback threw; module retained"); }
+    }
 }
 
 } // namespace sk

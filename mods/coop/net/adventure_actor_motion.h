@@ -11,6 +11,7 @@ struct Scope {
     uint64_t run = 0;
     uint8_t act = 0;
     uint32_t host_incarnation = 0, local_incarnation = 0;
+    uint64_t motion_generation = 0;
     bool operator==(const Scope&) const = default;
 };
 struct Sample {
@@ -53,6 +54,9 @@ public:
         const float norm=q.x*q.x+q.y*q.y+q.z*q.z+q.w*q.w;
         if (!scope.run || scope.act>=8 || !sample.sequence || !finite(sample.position) ||
             !std::isfinite(sample.arrival_time) || sample.arrival_time<0 || !std::isfinite(norm) || norm<.0001f) return false;
+        if(present_ && scope.run==scope_.run && scope.act==scope_.act &&
+           scope.host_incarnation==scope_.host_incarnation && scope.local_incarnation==scope_.local_incarnation &&
+           scope.motion_generation<scope_.motion_generation)return false;
         if (present_ && scope_==scope && (int32_t(sample.sequence-latest_.sequence)<=0 ||
             sample.arrival_time<latest_.arrival_time)) return false;
         if (!present_ || !(scope_==scope)) {

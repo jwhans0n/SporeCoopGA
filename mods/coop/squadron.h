@@ -31,5 +31,10 @@ void on_session_end();
 std::string status();
 std::vector<syncdbg::Entry> sync_entries(); // coop.sync (tests)
 std::string debug(const std::vector<std::string>& args);
+// BUG-0378 (tests, coop.fleet track): every ship as this game drew it, sampled at the start of the
+// mod's frame (after the game's update, before any write of ours), on the session clock
+void frame_start(double session_t, bool clock_ok);
+// BUG-0677: a guest's hit whose attacker (a combatant) is a mirror of a host ship: a copied shot, it hurts nothing
+bool shot_is_cosmetic(void* attacker_combatant);
 
 } // namespace squadron

@@ -6,17 +6,25 @@
 #include <atomic>
 #include <intrin.h>
 #include <cstdio>
+#include <cstring>
+#include <mutex>
 
 namespace sk {
 
 static std::atomic<uint32_t> g_progress{0};
 static std::atomic<const char*> g_stage{"boot"};
+static std::atomic<uint32_t> g_loop_ticks{0};
 
 void watchdog_mark(const char* stage)
 {
     g_stage = stage;
     g_progress++;
 }
+
+// BUG-0347: App::Canvas::Tick returned. Minimized (it sleeps 200 ms per tick), unfocused without
+// background mode, or behind a device that is lost (alt-tab out of full screen) the game draws
+// nothing and SporeKit sees no frame, while the loop goes on: a pause, not a hang.
+void watchdog_loop_tick() { g_loop_ticks.fetch_add(1, std::memory_order_relaxed); }
 
 // module name from an address without the loader lock: AllocationBase -> PE export name
 static std::string module_of(uintptr_t a, uintptr_t* base_out)
@@ -48,46 +56,239 @@ static DWORD loader_lock_owner()
     return cs ? (DWORD)(uintptr_t)cs->OwningThread : 0;
 }
 
-static void dump_thread_stack(DWORD tid, const char* why)
+// While a thread is suspended nothing may allocate or take a lock it might hold: the heap's (the
+// main thread allocates all the time), the loader's, the log's. Only GetThreadContext and copies into
+// the caller's buffer run before the resume; names and text come after (BUG-0050).
+// BUG-0880: not VirtualQuery either. Under Wine NtQueryVirtualMemory takes the process's virtual memory
+// lock, which the suspended thread may hold (inside VirtualAlloc / VirtualProtect / a heap growth): the
+// caller then waits for ever and never resumes it (the MinHook freeze of docs/05-re-notes.md). The stack's
+// bounds come from the thread's TEB (StackBase +4, StackLimit +8, via NtQueryInformationThread) before
+// the suspend; while suspended only [esp, StackBase) is copied. `kit.fix stackvq 0`: the VirtualQuery loop.
+typedef LONG(NTAPI* NtQIT_t)(HANDLE, int, void*, ULONG, ULONG*);
+struct ThreadBasicInfo {
+    LONG exit;
+    void* teb;
+    void* pid;
+    void* tid;
+    ULONG_PTR affinity;
+    LONG prio, base;
+};
+static bool stack_bounds(HANDLE t, uintptr_t& base, uintptr_t& limit)
 {
-    HANDLE t = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT, FALSE, tid);
-    if (!t)
-        return;
-    SuspendThread(t);
-    CONTEXT c{};
-    c.ContextFlags = CONTEXT_FULL;
-    GetThreadContext(t, &c);
-    std::string out;
-    char b[256];
-    snprintf(b, sizeof b, "WATCHDOG (%s, stage '%s'): thread %lu%s eip=%08lX esp=%08lX\n", why,
-             g_stage.load(), tid, tid == main_thread_id() ? " (main)" : "", c.Eip, c.Esp);
-    out += b;
-    auto describe = [&](uintptr_t a) {
-        uintptr_t base = 0;
-        std::string m = module_of(a, &base);
-        std::string s = symbols_reverse(a);
-        snprintf(b, sizeof b, "%s+0x%X %s", m.c_str(), (unsigned)(a - base), s.c_str());
-        return std::string(b);
-    };
-    out += "  eip " + describe(c.Eip) + "\n";
-    const uint32_t* sp = (const uint32_t*)c.Esp;
-    int found = 0;
-    for (int i = 0; i < 2048 && found < 40; i++) {
-        MEMORY_BASIC_INFORMATION mbi;
-        if (!VirtualQuery(sp + i, &mbi, sizeof mbi) || mbi.State != MEM_COMMIT)
-            break;
-        uint32_t v = sp[i];
-        MEMORY_BASIC_INFORMATION vm;
-        if (VirtualQuery((void*)(uintptr_t)v, &vm, sizeof vm) && vm.State == MEM_COMMIT &&
-            vm.Type == MEM_IMAGE && (vm.Protect & (PAGE_EXECUTE_READ | PAGE_EXECUTE | PAGE_EXECUTE_READWRITE))) {
-            snprintf(b, sizeof b, "  [esp+%04X] %08X ", i * 4, v);
-            out += b + describe(v) + "\n";
-            found++;
+    static NtQIT_t q = (NtQIT_t)GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtQueryInformationThread");
+    ThreadBasicInfo bi{};
+    if (!q || q(t, 0 /* ThreadBasicInformation */, &bi, sizeof bi, nullptr) < 0 || !bi.teb)
+        return false;
+    uintptr_t w[2] = {}; // (a copy that cannot fault: the thread may end meanwhile; before the suspend)
+    SIZE_T got = 0;
+    if (!ReadProcessMemory(GetCurrentProcess(), (const uint8_t*)bi.teb + 4, w, sizeof w, &got) || got != sizeof w)
+        return false;
+    base = w[0];
+    limit = w[1];
+    return base > limit;
+}
+
+bool thread_snapshot(DWORD tid, ThreadSnap& s, std::string* why, void (*while_suspended)(void*), void* ctx)
+{
+    s.n = 0;
+    if (tid == GetCurrentThreadId() && fixed(g_fix_cheatwait)) { // a thread must never suspend itself (BUG-0065)
+        if (why)
+            *why = "cannot read the stack of the calling thread itself (use stack.here)";
+        return false;
+    }
+    HANDLE t = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION, FALSE, tid);
+    if (!t) {
+        if (why)
+            *why = "OpenThread failed";
+        return false;
+    }
+    s.vq_suspended = 0;
+    const bool no_vq = fixed(g_fix_stackvq);
+    uintptr_t sbase = 0, slimit = 0;
+    bool teb = no_vq && stack_bounds(t, sbase, slimit);
+    if (SuspendThread(t) == (DWORD)-1) {
+        CloseHandle(t);
+        if (why)
+            *why = "SuspendThread failed";
+        return false;
+    }
+    memset(&s.c, 0, sizeof s.c);
+    s.c.ContextFlags = CONTEXT_FULL;
+    GetThreadContext(t, &s.c);
+    s.esp = s.c.Esp;
+    const uint32_t* sp = (const uint32_t*)s.esp;
+    const int cap = (int)(sizeof s.words / sizeof s.words[0]);
+    if (no_vq) {
+        // the TEB's bounds only: an esp outside [StackLimit, StackBase) (no TEB, a fiber) copies nothing
+        if (teb && s.esp >= slimit && s.esp < sbase && !(s.esp & 3)) {
+            uintptr_t words = (sbase - s.esp) / 4;
+            s.n = (int)(words < (uintptr_t)cap ? words : (uintptr_t)cap);
+            memcpy(s.words, sp, (size_t)s.n * 4);
         }
     }
+    while (!no_vq && s.n < cap) {
+        MEMORY_BASIC_INFORMATION mbi;
+        s.vq_suspended++;
+        const uint32_t* p = sp + s.n;
+        if (!VirtualQuery(p, &mbi, sizeof mbi) || mbi.State != MEM_COMMIT ||
+            (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)) || !mbi.Protect)
+            break;
+        const uint32_t* end = (const uint32_t*)((const uint8_t*)mbi.BaseAddress + mbi.RegionSize);
+        while (p < end && s.n < cap)
+            s.words[s.n++] = *p++;
+    }
+    if (while_suspended)
+        while_suspended(ctx); // kit.fix stackdump 0: the old order (format while the thread is suspended)
     ResumeThread(t);
     CloseHandle(t);
+    return true;
+}
+
+static void dump_thread_stack(DWORD tid, const char* why)
+{
+    static ThreadSnap snap; // 16 KB; the watchdog thread and the console both come here
+    static std::mutex mu;
+    std::lock_guard<std::mutex> lk(mu);
+    std::string out;
+    auto format = [&] {
+        char b[256];
+        snprintf(b, sizeof b, "WATCHDOG (%s, stage '%s'): thread %lu%s eip=%08lX esp=%08lX\n", why,
+                 g_stage.load(), tid, tid == main_thread_id() ? " (main)" : "", snap.c.Eip, snap.c.Esp);
+        out += b;
+        auto describe = [&](uintptr_t a) {
+            uintptr_t base = 0;
+            std::string m = module_of(a, &base);
+            std::string s = symbols_reverse(a);
+            snprintf(b, sizeof b, "%s+0x%X %s", m.c_str(), (unsigned)(a - base), s.c_str());
+            return std::string(b);
+        };
+        out += "  eip " + describe(snap.c.Eip) + "\n";
+        int found = 0;
+        for (int i = 0; i < snap.n && i < 2048 && found < 40; i++) {
+            uint32_t v = snap.words[i];
+            MEMORY_BASIC_INFORMATION vm;
+            if (VirtualQuery((void*)(uintptr_t)v, &vm, sizeof vm) && vm.State == MEM_COMMIT &&
+                vm.Type == MEM_IMAGE && (vm.Protect & (PAGE_EXECUTE_READ | PAGE_EXECUTE | PAGE_EXECUTE_READWRITE))) {
+                snprintf(b, sizeof b, "  [esp+%04X] %08X ", i * 4, v);
+                out += b + describe(v) + "\n";
+                found++;
+            }
+        }
+    };
+    std::string err;
+    bool now = fixed(g_fix_stackdump);
+    if (!thread_snapshot(tid, snap, &err, now ? nullptr : call_lambda<decltype(format)>, &format)) {
+        logf(&g_kit_mod, SK_ERROR, "WATCHDOG (%s): thread %lu: %s", why, tid, err.c_str());
+        return;
+    }
+    if (now)
+        format();
     logf(&g_kit_mod, SK_ERROR, "%s", out.c_str());
+}
+
+// BUG-0925: a dialog on the main thread (class #32770) stops the frames for good while the thread pumps messages:
+// the C runtime's error box (the game's MSVCR90 and our UCRT both show it: "Runtime error!" with R6025 pure virtual
+// function call, "abnormal program termination" from abort(), an assertion) raises no exception, so nothing was
+// logged: the 0.7.12 final check's long_creature host sat in 'Wine C++ Runtime Library' and the log had the title
+// only. Once per stall, 2 s in, the dialog's title and the text of its controls go to the log, with the main
+// thread's stack (every module: the caller of the runtime's function is under the box's frames) and, for a runtime
+// library box, a report. Nothing is dismissed. The texts are read with a timeout: the thread may not pump.
+static BOOL CALLBACK find_dialog(HWND w, LPARAM l)
+{
+    wchar_t cls[16] = L"";
+    GetClassNameW(w, cls, 16);
+    if (wcscmp(cls, L"#32770") || !IsWindowVisible(w))
+        return TRUE;
+    *(HWND*)l = w;
+    return FALSE;
+}
+
+static std::string window_text(HWND w)
+{
+    wchar_t t[1024] = L"";
+    DWORD_PTR n = 0;
+    if (!SendMessageTimeoutW(w, WM_GETTEXT, 1024, (LPARAM)t, SMTO_ABORTIFHUNG, 500, &n))
+        return "(no answer)";
+    std::string s = narrow(t);
+    for (size_t i = 0; i < s.size(); i++) // one log line
+        if (s[i] == '\r' || s[i] == '\n' || s[i] == '\t')
+            s[i] = s[i] == '\n' ? '|' : ' ';
+    return s;
+}
+
+static BOOL CALLBACK dialog_child(HWND w, LPARAM l)
+{
+    auto* out = (std::string*)l;
+    wchar_t cls[32] = L"";
+    GetClassNameW(w, cls, 32);
+    std::string t = window_text(w);
+    if (!t.empty() && out->size() < 1400)
+        *out += " [" + narrow(cls) + "] '" + t + "'";
+    return TRUE;
+}
+
+// The main thread's call chain while it shows the dialog, read by the main thread itself from the box's message loop
+// (the window procedure, WM_SK_STACK), inside a frame or not. Not through a suspend: under Wine the suspend of a
+// thread that waits in a nested message loop did not come back before the loop ended, and the thread then stayed
+// stopped (lab 20261111-062921-2: no dump, no frame after the box; BUG-0687's watchdog dump "never reached the log"
+// the same way). Return addresses of every module from its esp up to the stack base: the runtime's own frames
+// (msvcr90 / ucrtbase) and their caller (SporeApp.exe, coop.dll, sporekit.dll) are under the box's.
+static std::atomic<bool> g_stack_here_pending{false};
+void watchdog_stack_here()
+{
+    if (!g_stack_here_pending.exchange(false) || GetCurrentThreadId() != main_thread_id())
+        return;
+    volatile uint32_t marker = 0;
+    const uint32_t* hi = *(uint32_t**)((uint8_t*)NtCurrentTeb() + 4);
+    std::string out = "WATCHDOG (a dialog on the main thread): its call chain, read by the thread itself\n";
+    int found = 0;
+    for (const uint32_t* p = (const uint32_t*)&marker; p < hi && found < 200; p++) {
+        uint32_t v = *p;
+        MEMORY_BASIC_INFORMATION vm;
+        if (v < 0x10000 || !VirtualQuery((void*)(uintptr_t)v, &vm, sizeof vm) || vm.State != MEM_COMMIT || vm.Type != MEM_IMAGE ||
+            !(vm.Protect & (PAGE_EXECUTE_READ | PAGE_EXECUTE | PAGE_EXECUTE_READWRITE)) || v - 6 < (uintptr_t)vm.BaseAddress)
+            continue;
+        const uint8_t* c = (const uint8_t*)(uintptr_t)v; // after a call instruction only (text and data words look like addresses too)
+        if (c[-5] != 0xE8 && c[-6] != 0xFF && c[-3] != 0xFF && c[-2] != 0xFF)
+            continue;
+        uintptr_t base = 0;
+        std::string m = module_of(v, &base);
+        char b[256];
+        snprintf(b, sizeof b, "  [%p] %08X %s+0x%X %s\n", (const void*)p, v, m.c_str(), (unsigned)(v - base), symbols_reverse(v).c_str());
+        if (out.size() + strlen(b) > 1800) { // (a log line holds 2 KB)
+            logf(&g_kit_mod, SK_ERROR, "%s", out.c_str());
+            out = "WATCHDOG (a dialog on the main thread), more:\n";
+        }
+        out += b;
+        found++;
+    }
+    logf(&g_kit_mod, SK_ERROR, "%s", out.c_str());
+}
+
+static bool g_dialog_test_report; // tests (kit.test.dialog report): the report also for a box that is not the runtime's
+void watchdog_dialog_test_report(bool on) { g_dialog_test_report = on; }
+
+// the visible dialog of the main thread, if any: logged with its text and the thread's stack; true when there was one
+static bool note_dialog(DWORD stalled_ms)
+{
+    HWND dlg = nullptr;
+    EnumThreadWindows(main_thread_id(), find_dialog, (LPARAM)&dlg);
+    if (!dlg)
+        return false;
+    std::string title = window_text(dlg), text;
+    static int no_answer;
+    if (title == "(no answer)" && ++no_answer <= 3) // the box is still being made, or its thread is busy: once more in a second
+        return false;
+    no_answer = 0;
+    EnumChildWindows(dlg, dialog_child, (LPARAM)&text);
+    logf(&g_kit_mod, SK_ERROR, "watchdog: no frames for %.1f s, the main thread shows a dialog '%s':%s", stalled_ms / 1000.0,
+         title.c_str(), text.empty() ? " (no text read)" : text.c_str());
+    g_stack_here_pending = true;
+    if (HWND w = (HWND)game_window())
+        PostMessageW(w, WM_SK_STACK, 0, 0);
+    if (title.find("Runtime Library") != std::string::npos || g_dialog_test_report)
+        diag_dialog_report(("the game shows an error dialog '" + title + "':" + text).c_str());
+    return true;
 }
 
 static HANDLE g_started;
@@ -101,6 +302,9 @@ static DWORD WINAPI watchdog_thread(void*)
     bool dumped = false;
     DWORD ll_owner = 0, ll_since = 0;
     bool ll_dumped = false;
+    uint32_t last_loop = g_loop_ticks;
+    DWORD loop_seen = since;
+    bool paused_logged = false, dialog_noted = false;
     for (;;) {
         Sleep(1000);
         DWORD o = loader_lock_owner();
@@ -114,16 +318,48 @@ static DWORD WINAPI watchdog_thread(void*)
         }
         uint32_t p = g_progress;
         uint64_t f = frame_index();
+        uint32_t lt = g_loop_ticks.load(std::memory_order_relaxed);
+        DWORD now = GetTickCount();
+        if (lt != last_loop) {
+            last_loop = lt;
+            loop_seen = now;
+        }
         if (p != last || f != last_frame) {
+            if (paused_logged)
+                logf(&g_kit_mod, SK_INFO, "watchdog: frames again after %lu s without frames (the game loop ran)",
+                     (now - since) / 1000);
             last = p;
             last_frame = f;
-            since = GetTickCount();
+            since = now;
             dumped = false;
+            paused_logged = false;
+            dialog_noted = false;
             continue;
         }
+        if (!dialog_noted && now - since > 2000 && fixed(g_fix_dialognote))
+            dialog_noted = note_dialog(now - since);
         // frames legitimately stop in menus only when minimized; boot must progress
         DWORD limit = frame_index() == 0 ? 15000 : 30000;
-        if (!dumped && GetTickCount() - since > limit) {
+        DWORD stall_from = since;
+        if (fixed(g_fix_hangloop) && frame_index() > 0) {
+            // the game loop ran in the last few seconds: no frames, but no hang either (BUG-0347);
+            // a real stall is counted from the later of the last frame and the last loop pass
+            if ((int)(loop_seen - since) > 0)
+                stall_from = loop_seen;
+            if (now - loop_seen < 5000) {
+                if (!paused_logged && now - since > limit) {
+                    HWND w = (HWND)game_window();
+                    logf(&g_kit_mod, SK_INFO,
+                         "watchdog: no frames for %lu s, the game loop runs (window minimized %d, visible %d, "
+                         "foreground %d): the game is paused or not drawing, not a hang",
+                         (now - since) / 1000, w ? (int)IsIconic(w) : -1, w ? (int)IsWindowVisible(w) : -1,
+                         w ? (int)(GetForegroundWindow() == w) : -1);
+                    paused_logged = true;
+                }
+                continue;
+            }
+        }
+        if (!dumped && now - stall_from > limit) {
             dump_main_stack(frame_index() == 0 ? "no boot progress" : "no frames");
             dumped = true;
             if (frame_index() > 0)
@@ -144,6 +380,8 @@ void watchdog_start()
 
 std::string watchdog_dump_now()
 {
+    if (main_thread_id() == GetCurrentThreadId() && fixed(g_fix_cheatwait))
+        return "hangdump cannot run on the main thread itself (use stack.here)";
     dump_main_stack("requested");
     return "dumped to log";
 }

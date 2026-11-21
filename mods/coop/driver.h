@@ -5,35 +5,214 @@
 
 #include <cmath>
 
+#include "drive_plan.h"
 #include "game.h"
 #include "net/interp.h"
 
 namespace drive {
 
+// BUG-0361 / BUG-0394: the remote's interpolated path frame by frame (where the driver is asked to put the
+// creature), for a remote that moves without reporting a speed and for a walk's last frames
+struct PathTrack {
+    net::Vec3 prev{};
+    double prev_t = 0;
+    net::Vec3 v{};     // this frame's path velocity
+    net::Vec3 v_ema{}; // smoothed over ~0.2 s
+    float sp_ema = 0;  // its speed, smoothed over ~0.2 s
+};
+
 struct State {
     double last_cmd = 0;
-    double stuck_since = 0;
+    Track track;
     net::Vec3 last_target;
     // diagnostics (coop.status): did the last frame's nudge stay where we put it?
     net::Vec3 nudged_to;
     bool nudged = false;
-    uint32_t nudges = 0, nudges_kept = 0, teleports = 0;
+    uint32_t nudges = 0, nudges_kept = 0, teleports = 0, stalls = 0, trails = 0, goals = 0;
+    uint32_t grounded = 0;   // BUG-0399: put out of the ground (step with ground)
+    float grounded_from = 0; // BUG-0399: how far over (negative: under) the ground it was then (m)
     float last_err = 0, last_speed = 0;
+    float last_want_speed = 0; // BUG-0788 tests: the speed the last catch-up walk of step asked for
+    double hold_until = 0; // BUG-0305: after a trail teleport the nudge puts it on the path every frame
+    double last_step = 0;  // BUG-0175: the time of the previous step (the nudge per second, not per frame)
+    bool kinematic = false; // BUG-0360: a walking partner's puppet, walked and placed on its path (modes.cpp)
+    net::Vec3 goal_dir;     // BUG-0360: the direction of the walk goal given to it
+    PathTrack path;          // BUG-0361 / BUG-0394: path_update
+    net::Vec3 placed_to;    // BUG-0361 (walk_place): where it was placed last frame
+    uint32_t place_lost = 0; // BUG-0361: frames the game did not keep that place (a teleport with the mark then)
+    double stuck_since = 0;  // BUG-0361: since when its error grows although it is placed
+    bool held = false;       // BUG-0361: teleported (with the mark) onto the path until it is on it again
+    double held_since = 0;   // BUG-0440: since when it is held
+    bool hold_on = false;    // BUG-0440: held placings kept through the game's update (WalkPlace::hold_after)
+    // BUG-0440 (diagnostics): per frame of walk_place, smoothed over ~0.25 s: how fast the game moved the body back
+    // from last frame's place, against the direction to the target (m/s, negative: on towards it), and how far the
+    // body is from the place right after the placing call (m: the call itself not taken)
+    float back_ema = 0, readback_ema = 0;
+    net::Vec3 jump_from;    // BUG-0499: the target of the frame before (a jump of the target: the puppet jumps too)
+    bool jump_have = false;
+    uint32_t jumps = 0;     // BUG-0499: puppets put at a target that jumped
+    uint32_t airs = 0;      // BUG-0376: frames placed in the air (the partner off the ground)
+    double stop_until = 0;  // BUG-0408: held where the partner stopped until then
+    uint32_t stop_holds = 0; // BUG-0408: frames held so
+    double under_since = -1; // BUG-0683: since when the standing puppet is under this game's terrain (-1: not)
+    uint32_t ungrounded = 0; // BUG-0683: times it was put onto it
+    float tgt_sp = 0;        // BUG-0408: the target's own speed last frame (a stop: it drops to 0.3 m/s or less)
+    net::Vec3 step_to;      // BUG-1228: where the last step drove it (its target after own_height and the ground)
+    net::Vec3 drawn;        // BUG-0360 (coop.track): its position before this frame's driving, i.e. where the
+                            // game's update put it and drew it (the mod's frame runs at Present)
 };
 
 inline float speed(const net::Vec3& v) { return std::sqrt(v.x * v.x + v.y * v.y + v.z * v.z); }
+
+// once per frame with the remote's interpolated position: the path's velocity (0 after a gap)
+inline void path_update(State& ds, const net::Vec3& pos, double now)
+{
+    PathTrack& t = ds.path;
+    double dt = now - t.prev_t;
+    if (t.prev_t > 0 && dt > 0 && dt < 0.25) {
+        float k = 1.f / (float)dt, a = (float)std::min(1.0, dt / 0.2);
+        t.v = {(pos.x - t.prev.x) * k, (pos.y - t.prev.y) * k, (pos.z - t.prev.z) * k};
+        t.v_ema = {t.v_ema.x + (t.v.x - t.v_ema.x) * a, t.v_ema.y + (t.v.y - t.v_ema.y) * a,
+                   t.v_ema.z + (t.v.z - t.v_ema.z) * a};
+        t.sp_ema += (speed(t.v) - t.sp_ema) * a;
+    } else {
+        t.v = t.v_ema = {};
+        t.sp_ema = 0;
+    }
+    t.prev = pos;
+    t.prev_t = now;
+}
+
+// the velocity of a remote that moves without reporting one: the smoothed path once it is over 0.5 m/s, before
+// that this frame's path from 0.8 m/s on (a walk's start: the smoothed one is frames late at 30 fps); not a
+// jump of the path (over 15 m/s). A remote that stands has a still path (turning on the spot moves nothing)
+inline net::Vec3 path_velocity(const State& ds)
+{
+    const PathTrack& t = ds.path;
+    if (speed(t.v_ema) > 0.5f)
+        return t.v_ema;
+    float v = speed(t.v);
+    return v > 0.8f && v < 15.f ? t.v : net::Vec3{};
+}
+
+// BUG-0366 (creature.puppet_ground): see walk_place below
+constexpr float kOverGround = 0.5f, kUnderGround = 3.f; // m
+constexpr float kSink = 0.05f;                          // m (0.15: the drawn puppet 0.13 m under at times)
+inline net::Vec3 on_own_ground(const net::Vec3& pos)
+{
+    float r = std::sqrt(pos.x * pos.x + pos.y * pos.y + pos.z * pos.z), g = game::ground_radius(pos);
+    if (g <= 0 || r < 1.f || r - g > kOverGround || r - g < -kUnderGround)
+        return pos;
+    float k = (g - kSink) / r;
+    return {pos.x * k, pos.y * k, pos.z * k};
+}
+
+// BUG-0399 (npc.proxy_ground): right after a join some Tribe animal proxies, driven at their own height
+// (own_height: the radius they have, BUG-0329), stood or walked 0.75-1.7 m under the guest's ground for 1-30 s
+// (docs/re/tribe.md#tribe-proxy-ground). A proxy made at the host's absolute height where this game's ground
+// lies higher (BUG-0329: up to 5 m) would start under it too (inferred). A target more than kUnderTol and at most
+// kOutMax under this game's ground (cPlanetModel::GetHeightAt, the terrain only: never under it legitimately)
+// goes onto it, kSink into it as on_own_ground.
+inline bool g_out_of_ground_fix = true;
+constexpr float kUnderTol = 0.25f, kOutMax = 15.f; // m
+inline net::Vec3 out_of_ground(const net::Vec3& pos, bool fix = g_out_of_ground_fix)
+{
+    float r = std::sqrt(pos.x * pos.x + pos.y * pos.y + pos.z * pos.z);
+    if (!fix || r < 1.f)
+        return pos;
+    float g = game::ground_radius(pos);
+    if (g <= 0 || r - g >= -kUnderTol || r - g < -kOutMax)
+        return pos;
+    float k = (g - kSink) / r;
+    return {pos.x * k, pos.y * k, pos.z * k};
+}
+// BUG-0444: onto this game's ground from up to kOutMax under or over it, for a creature the
+// game does not ground itself (its game time paused: no locomotion runs). Higher up it is left where it is.
+inline net::Vec3 onto_ground(const net::Vec3& pos)
+{
+    float r = std::sqrt(pos.x * pos.x + pos.y * pos.y + pos.z * pos.z);
+    if (r < 1.f)
+        return pos;
+    float g = game::ground_radius(pos);
+    if (g <= 0 || std::fabs(r - g) > kOutMax)
+        return pos;
+    float k = (g - kSink) / r;
+    return {pos.x * k, pos.y * k, pos.z * k};
+}
+// how far `pos` is over this game's ground (m; 0 when unknown)
+inline float over_ground(const net::Vec3& pos)
+{
+    float r = std::sqrt(pos.x * pos.x + pos.y * pos.y + pos.z * pos.z), g = r > 1.f ? game::ground_radius(pos) : 0.f;
+    return g > 0 ? r - g : 0.f;
+}
+
+// BUG-0425 (the height rule for every remote body): the sender's body is either on its ground (the game's own
+// grounded byte +0x137 set, or within kAirOver of GetHeightAt) and the receiver puts it on ITS ground (the
+// terrains of two games can differ by metres in Tribe, BUG-0329), or it is off the ground for a reason the
+// sender's game knows (a jump, a fall, thrown by a hit, flying: +0x137 = 0 and more than kAirOver off
+// GetHeightAt) and the receiver keeps its height over the sender's terrain (agl) over its own terrain, marked
+// not grounded so that its game does not put it back onto the terrain (air_place).
+constexpr float kAirOver = 0.15f; // m off GetHeightAt: a grounded creature walks 0-3 cm over it
+inline float g_agl_max = 30.f;
+// `coop.fix drive.sender_agl off`: a body off the ground at the sender's absolute position (0.7.7)
+inline bool g_sender_agl_fix = true;    // m: farther from this game's ground + agl than this the sender's pos is kept
+inline bool body_airborne(void* c)
+{
+    if (!c || game::grounded(c))
+        return false;
+    return std::fabs(over_ground(game::position(c))) > kAirOver;
+}
+// the sender's position at its height over the sender's terrain, over this game's terrain (unknown agl: as given)
+inline net::Vec3 at_sender_agl(const net::Vec3& pos, float agl)
+{
+    float r = std::sqrt(pos.x * pos.x + pos.y * pos.y + pos.z * pos.z);
+    if (!g_sender_agl_fix || !net::agl_known(agl) || r < 1.f)
+        return pos;
+    float g = game::ground_radius(pos);
+    if (g <= 0 || std::fabs(g + agl - r) > g_agl_max)
+        return pos;
+    float k = (g + agl) / r;
+    return {pos.x * k, pos.y * k, pos.z * k};
+}
 
 // age: how old `pos` is (a snapshot received `age` seconds ago): the target moves on with the
 // remote velocity, so the puppet does not trail a walking creature by its latency
 // nudge: also pull the puppet a part of the way every frame (it cannot walk faster than the
 // creature's top speed, so a walking puppet would otherwise trail by its latency)
 // snap: teleport when the puppet is this far from where it should be
+// stall: also teleport when it stays more than 2.5 m off for 3 s whatever the remote's speed (NPC
+// proxies, BUG-0169: an NPC of the host pushing against a rock reports a speed while it stands)
+// trail: also teleport when it stays more than 1.5 m off for 0.5 s (NPC proxies, BUG-0305: proxies of
+// a herd that flees together push each other off the path and cannot run faster than the animal)
 inline void step(void* p, const net::Vec3& pos_in, const net::Quat& rot, const net::Vec3& vel, State& ds, double now,
-                 double age = 0, bool nudge = false, float snap = 8.f)
+                 double age = 0, bool nudge = false, float snap = 8.f, bool stall = false, bool trail = false,
+                 bool own_height = false, bool ground = false)
 {
     float a = (float)std::min(std::max(age, 0.0), 0.5);
     net::Vec3 pos{pos_in.x + vel.x * a, pos_in.y + vel.y * a, pos_in.z + vel.z * a};
     net::Vec3 cur = game::position(p);
+    if (own_height) // BUG-0329: the guest's own ground height, not the host's
+        pos = at_own_height(pos, cur);
+    if (ground) {
+        // BUG-0399: never a target under this game's ground; a creature found under it (made there, or
+        // kept there by own_height) is put onto it at once (walked or pulled it would stay under).
+        // `ground` is the caller's switch (npc.proxy_ground, BUG-0444)
+        pos = out_of_ground(pos, true);
+        ds.step_to = pos;
+        if (net::dist(out_of_ground(cur, true), cur) > 0.01f) {
+            ds.grounded_from = over_ground(cur);
+            game::teleport(p, pos, rot);
+            ds.teleports++;
+            ds.grounded++;
+            ds.last_step = now;
+            ds.last_cmd = now;
+            ds.track = Track{};
+            return;
+        }
+    }
+    ds.step_to = pos;
+    const double dt = ds.last_step > 0 && now > ds.last_step ? now - ds.last_step : 1.0 / 60;
+    ds.last_step = now;
     if (ds.nudged && net::dist(cur, ds.nudged_to) < 0.5f)
         ds.nudges_kept++;
     ds.nudged = false;
@@ -41,22 +220,26 @@ inline void step(void* p, const net::Vec3& pos_in, const net::Quat& rot, const n
     float sp = speed(vel);
     ds.last_err = err;
     ds.last_speed = speed(game::velocity(p));
-    if (err > snap) {
+    Plan pl = plan(ds.track, err, sp, now, snap, stall, trail);
+    if (pl.snap) {
         game::teleport(p, pos, rot);
         ds.teleports++;
         ds.last_cmd = now;
-    } else if (sp > 0.3f || err > 0.8f) {
+    } else if (pl.walk) {
         // walk towards a point slightly ahead, faster than the remote while behind (catch up)
         net::Vec3 tgt{pos.x + vel.x * 0.25f, pos.y + vel.y * 0.25f, pos.z + vel.z * 0.25f};
         float want_sp = std::min((sp > 0.5f ? sp : 2.f) + err * 1.2f, std::max(sp, 2.f) * 2.5f);
         if (now - ds.last_cmd > 0.1 || net::dist(tgt, ds.last_target) > 1.f) {
+            // (BUG-0788: MoveTo ends with SetDesiredSpeed(standard), so this speed is lost; the order does not matter:
+            // the game sets a puppet's desired speed again every frame, docs/re/creature.md#creature-c2-audit-0713)
             game::set_speed(p, want_sp);
             game::move_to(p, tgt, 0.3f);
+            ds.last_want_speed = want_sp;
             ds.last_cmd = now;
             ds.last_target = tgt;
         }
         if (nudge && err > 0.5f) {
-            const float k = 0.15f;
+            const float k = now < ds.hold_until ? 1.f : pull_k(0.15f, dt); // BUG-0175: per second
             ds.nudged_to = {cur.x + (pos.x - cur.x) * k, cur.y + (pos.y - cur.y) * k, cur.z + (pos.z - cur.z) * k};
             game::set_position(p, ds.nudged_to);
             ds.nudged = true;
@@ -67,17 +250,224 @@ inline void step(void* p, const net::Vec3& pos_in, const net::Quat& rot, const n
     } else {
         game::set_orientation(p, rot);
     }
-    // the remote stands still but the puppet could not reach it (rocks, other creatures)
-    if (sp < 0.3f && err > 1.0f) {
-        if (ds.stuck_since == 0)
-            ds.stuck_since = now;
-        else if (now - ds.stuck_since > 1.5) {
-            game::teleport(p, pos, rot);
-            ds.teleports++;
-            ds.stuck_since = 0;
-        }
-    } else
+    // the remote stands still but the puppet could not reach it (rocks, other creatures), or it
+    // stays far off and gets no closer (stall)
+    if (pl.stuck || pl.stall || pl.trail) {
+        game::teleport(p, pos, rot);
+        ds.teleports++;
+        ds.stalls += pl.stall;
+        ds.trails += pl.trail;
+        if (pl.trail)
+            ds.hold_until = now + kTrailQuiet;
+    }
+}
+
+// BUG-0360 (Creature puppets), BUG-0365 (Tribe mirrors): a remote creature that walks is walked by the game
+// and placed on its path. drive::step gave a MoveTo again every 0.1 s (which restarts the game's walk: the
+// creature stood or crept, or a citizen at its default 9 m/s reached the point ahead and stopped) and pulled
+// it with SetPosition (which the locomotion undoes), so it moved in steps and trailed until a snap.
+// walk_place, every frame while the remote moves:
+// * the game walks it: the remote's speed (SetDesiredSpeed) and a MoveTo goal_ahead m ahead on its path,
+//   given again only when that direction turns more than ~6 degrees (at most every min_gap s, at least
+//   every max_gap s): its walk gait and walk animation run;
+// * game::place puts it on the remote's path with the remote's facing: a teleport (the locomotion keeps
+//   its own position, SetPosition alone is undone) without the teleport mark +0xB5D, which restarts the
+//   animation's gait. An error left from standing is closed at catch_up m/s faster than the remote.
+// walk_end when the remote stands again: a MoveTo to where it stands (not StopMovement, which put it back
+// up to 3 m to where its own walk was), then drive::step takes over.
+// BUG-0366 (creature.puppet_ground): a target from kUnderGround under to kOverGround over this game's
+// ground (cPlanetModel::GetHeightAt) goes kSink into it: placed exactly on the ground a walking creature is
+// a few cm over it after the game's next step downhill and plays its fall animation; under the ground it
+// stays there. Higher up (a jump, a rock) it is left where it is.
+struct WalkPlace {
+    float goal_ahead = 12.f;  // m: the MoveTo point ahead on the remote's path
+    float turn_dot = 0.995f;  // a new MoveTo when its direction turns more than ~6 degrees,
+    double min_gap = 0.3;     // not more often than this (s: given every 0.1 s it restarts the walk)
+    double max_gap = 1.5;     // and at least this often (s)
+    float catch_up = 3.f;     // m/s faster than the remote while it is off the path
+    bool own_height = false;  // BUG-0329: at the creature's own distance from the planet's centre
+    // BUG-0365: the speed after the MoveTo (~ a MoveTo sets a citizen's speed back to its default 9 m/s:
+    // the first frame of a mirror's walk went at 9 m/s); the Creature puppets keep the old order
+    bool speed_after_goal = false;
+    // BUG-0366: the target onto this game's ground (on_own_ground). The Creature puppet puts its target
+    // there before it chooses walk or stand (creature_drive), so it leaves this off
+    bool ground = false;
+    // the longest frame the catch-up step is scaled by (s). BUG-0365: a guest at 3-4 fps (226-336 ms
+    // frames, lab load 31 on 12 cores) closed 1.2 m per frame of a 2-3 m step of its member, fell 8 m
+    // behind and was teleported; the Creature puppet keeps 0.1
+    double max_dt = 0.1;
+    // BUG-0361 (NPC proxies): the speed the game walks it at when that is slower than the remote's reported
+    // speed (a herd animal pushed by its mates walks slower than it reports); the placing follows the remote
+    float walk_speed = -1.f;
+    // BUG-0361: farther off than this (m) it is teleported onto the path when the remote itself jumped (its
+    // path moved over snap/2 in this frame: a host NPC put 4.8 m to the side stayed 2-7 m off for 2 s when
+    // closed at catch_up); needs path_update with this frame's target first; 0: never
+    float snap = 0.f;
+    // BUG-0997: the path point of this frame when pos_in is aimed elsewhere (npc.place_now aims a frame ahead along the
+    // velocity): the snap's "the path jumped this frame" test compares it with ds.path.prev; unset: pos_in
+    bool has_path_pos = false;
+    net::Vec3 path_pos{};
+    // BUG-0361: when the game does not keep the place (a host NPC thrown back by a hit, 9 m/s slowing down:
+    // without the teleport mark the proxy's own locomotion moved it back each frame by as much as it was
+    // placed, it stood and ended 4.5 m off), i.e. its error grows over kWalkLostErr for kWalkLostAfter s or
+    // last frame's place is lost outright, it is moved by teleports with the mark (at the same catch-up
+    // speed) until it is on the path again
+    bool keep_lost = false;
+    // tests (coop.npctrack variant): 1 place only, no walk goal (the velocity written); 2 the walk goal
+    // but teleports with the mark; 3 keep_lost off
+    int variant = 0;
+    // BUG-0425 (drive.lead): the error is closed in about kCatchTime s (faster than catch_up for a big one), at
+    // most at the remote's speed + catch_up on top of its speed. A remote that starts to walk is known here a
+    // latency late; its lead target is then 1-3 m ahead and was closed at catch_up (3 m/s): a Tribe member at
+    // 9 m/s stayed 2-3 m behind for the first 0.75 s of every walk over the player network (p90 2.9-3.1 m)
+    bool catch_prop = false;
+    // BUG-0619: > 0: the remote's own speed (a Tribe member mirror's raw lead) when it is walked faster than that
+    // (at its smoothed target's speed, the lead's offset closing included). What the player sees in a frame is the
+    // placing's step from where the game's walk had it plus the game's walk of the next frame, so the placing's step
+    // is held to (2 x lead_speed + catch_up - the walk's speed) x dt: a frame never draws more than 0.7.8's
+    // (2 x speed + 3 m/s). Placed from the last placing instead, the next walk came on top (1-1.3 m frames)
+    float lead_speed = 0.f;
+    // BUG-0440 (npc.proxy_hold): a held placing (teleport with the mark) is also kept through the game's next creature
+    // and physics update (game::place_hold): Tribe animal proxies were moved back by the game's update at 6-7 m/s while
+    // placed every frame (walk err 3-8 m, `held 1`, pushed back 6.9 m/s with the call itself taken)
+    bool hold_after = false;
+};
+constexpr float kCatchTime = 0.25f;     // s
+constexpr float kWalkLostErr = 0.75f;   // m
+constexpr double kWalkLostAfter = 0.15; // s
+constexpr float kHoldErr = 1.5f;        // m (BUG-0440)
+constexpr double kHoldAfter = 0.3;      // s (BUG-0440)
+// BUG-0440: a move back by the game's update up to (walk speed x kHoldWalkK + kHoldWalkAdd) x the frame is its own walk
+// (a turn, a reversal of the host's path: kept through the update the copy ran a frame ahead, tribe_npc_dash); the
+// reported hold moved it back at 6.9 m/s with the host animal walking at 2.5 m/s
+constexpr float kHoldWalkK = 1.2f, kHoldWalkAdd = 0.5f; // -, m/s
+
+inline void walk_place(void* p, const net::Vec3& pos_in, const net::Quat& rot, const net::Vec3& vel, State& ds, double now,
+                       const WalkPlace& o = {})
+{
+    float sp = speed(vel);
+    if (sp <= 0.f)
+        return;
+    net::Vec3 pos = o.own_height ? at_own_height(pos_in, game::position(p)) : pos_in;
+    if (o.ground)
+        pos = on_own_ground(pos);
+    bool was = ds.kinematic;
+    ds.kinematic = true;
+    if (!was) {
+        ds.held = false;
         ds.stuck_since = 0;
+    }
+    const float walk_sp = o.walk_speed > 0 ? std::min(o.walk_speed, sp) : sp;
+    if (o.variant != 1) {
+        if (!o.speed_after_goal)
+            game::set_speed(p, walk_sp);
+        net::Vec3 hd{vel.x / sp, vel.y / sp, vel.z / sp};
+        float dot = hd.x * ds.goal_dir.x + hd.y * ds.goal_dir.y + hd.z * ds.goal_dir.z;
+        if (!was || (now - ds.last_cmd > o.min_gap && dot < o.turn_dot) || now - ds.last_cmd > o.max_gap) {
+            game::move_to(p, {pos.x + hd.x * o.goal_ahead, pos.y + hd.y * o.goal_ahead, pos.z + hd.z * o.goal_ahead}, 0.3f);
+            ds.goal_dir = hd;
+            ds.last_cmd = now;
+            ds.goals++;
+        }
+        if (o.speed_after_goal)
+            game::set_speed(p, walk_sp);
+    } else
+        *(net::Vec3*)((uint8_t*)p + game::kVelOff) = vel;
+    net::Vec3 cur = game::position(p);
+    float err = net::dist(cur, pos);
+    double dt = was && now > ds.last_step ? std::min(now - ds.last_step, o.max_dt) : 1.0 / 60;
+    if (was && dt > 0) { // BUG-0440 diagnostics
+        net::Vec3 d{pos.x - ds.placed_to.x, pos.y - ds.placed_to.y, pos.z - ds.placed_to.z};
+        float dl = speed(d);
+        if (dl > 0.05f) {
+            float back = -((cur.x - ds.placed_to.x) * d.x + (cur.y - ds.placed_to.y) * d.y + (cur.z - ds.placed_to.z) * d.z) /
+                         dl / (float)dt;
+            ds.back_ema += (back - ds.back_ema) * 0.15f;
+        }
+    }
+    if (o.keep_lost && o.variant != 3) {
+        bool lost = was && net::dist(cur, ds.placed_to) > std::max(0.5f, 2.f * (sp + o.catch_up) * (float)dt);
+        if (was && err > kWalkLostErr && err > ds.last_err + 0.005f) {
+            if (ds.stuck_since <= 0)
+                ds.stuck_since = now;
+            lost = lost || now - ds.stuck_since > kWalkLostAfter;
+        } else if (err <= kWalkLostErr)
+            ds.stuck_since = 0;
+        if (lost) {
+            if (!ds.held)
+                ds.held_since = now;
+            ds.held = true;
+        } else if (err < 0.2f)
+            ds.held = false;
+        ds.place_lost += ds.held;
+    }
+    ds.last_err = err;
+    // (only when the path itself jumped this frame: a proxy thrown back with its NPC by a hit trails it by
+    // more than snap at 30 fps over the player network and was teleported 2.4-4 m, npc_walk_player)
+    if (o.snap > 0 && err > o.snap && net::dist(ds.path.prev, o.has_path_pos ? o.path_pos : pos_in) < 0.01f &&
+        speed(ds.path.v) * (float)(now - ds.last_step) > 0.5f * o.snap) {
+        game::teleport(p, pos, rot);
+        ds.teleports++;
+        ds.placed_to = pos;
+        ds.last_step = now;
+        ds.track = Track{};
+        return;
+    }
+    float catch_up = o.catch_up;
+    if (o.catch_prop && net::g_lead_fix)
+        catch_up = std::max(catch_up, std::min(err / kCatchTime, sp + o.catch_up));
+    float max_step = (sp + catch_up) * (float)dt;
+    if (o.lead_speed > 0)
+        max_step = std::min(max_step, std::max(0.f, 2.f * o.lead_speed + catch_up - walk_sp) * (float)dt);
+    net::Vec3 to = pos;
+    if (err > max_step) {
+        float k = max_step / err;
+        to = {cur.x + (pos.x - cur.x) * k, cur.y + (pos.y - cur.y) * k, cur.z + (pos.z - cur.z) * k};
+    }
+    if (!ds.held)
+        ds.hold_on = false;
+    if (o.variant == 2 || ds.held) { // held: closed at the same speed, but with the mark (the game keeps it)
+        game::teleport(p, to, rot);
+        // (only a hold that lasts: held over kHoldErr for kHoldAfter s, then until it is on the path again, and only a
+        // move back faster than its walk: the brief holds of a turning or reversing walk are the game's; kept through
+        // the update the copy turned early, tribe_npc_dash's lag along the path -0.05 .. -0.16 s)
+        if (o.hold_after && ds.held && (ds.hold_on || (err > kHoldErr && now - ds.held_since > kHoldAfter)))
+            ds.hold_on = true;
+        if (ds.hold_on)
+            game::place_hold(p, to, rot, pos, (walk_sp * kHoldWalkK + kHoldWalkAdd) * (float)dt);
+    } else
+        game::place(p, to, rot);
+    ds.readback_ema += (net::dist(game::position(p), to) - ds.readback_ema) * 0.15f; // BUG-0440 diagnostics
+    ds.placed_to = to;
+    ds.last_step = now;
+    ds.track = Track{};
+}
+
+inline void walk_end(void* p, const net::Vec3& pos, State& ds, double now)
+{
+    if (!ds.kinematic)
+        return;
+    ds.kinematic = false;
+    game::move_to(p, pos, 0.3f);
+    ds.last_cmd = now;
+}
+
+// BUG-0376 (the partner's puppet), BUG-0550 / BUG-0425 (NPC proxies): a remote body off its ground is placed where
+// the sender has it (at_sender_agl), not walked (walked, the game put it onto its terrain in 15-20 frames of a fall),
+// marked not grounded (+0x137 = 0) with the sender's velocity (its fall speed: left to the game it grew frame by
+// frame while the placing held it up and one update took it 1-1.6 m down), and held there through the game's
+// animation starts and updates (game::air_hold, BUG-0532). walk_end first: it walks again after the landing.
+inline void air_place(void* p, const net::Vec3& pos, const net::Quat& rot, const net::Vec3& vel, State& ds, double now,
+                      bool hold = true)
+{
+    walk_end(p, pos, ds, now);
+    game::place(p, pos, rot);
+    game::set_grounded(p, false);
+    *(net::Vec3*)((uint8_t*)p + game::kVelOff) = vel;
+    game::air_hold(p, hold, pos, rot, vel);
+    ds.last_step = now;
+    ds.track = Track{};
+    ds.airs++;
 }
 
 } // namespace drive

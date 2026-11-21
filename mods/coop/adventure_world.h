@@ -40,9 +40,13 @@ struct Ctx {
 
 bool init(const SkHost* host, SkMod* mod, Ctx ctx);
 bool available();
+// Initial authoritative goals/roster belong to this run and have reached the
+// local gameplay adapter. This never starts or mutates gameplay.
+bool ready_for_run(uint64_t run);
 void tick(double now);
 void on_message(uint8_t from, net::Reader& payload); // subkinds 128..191, consumes subkind itself
 void reset();
+void shutdown(); // remove the shared native hold interceptor before context teardown
 void peer_changed(uint8_t player);
 adventure_pickups::Ctx pickups_context();
 adventure_explosives::Ctx explosives_context();

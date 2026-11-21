@@ -2,10 +2,13 @@
 
 #include <windows.h>
 
+#include <algorithm>
 #include <atomic>
+#include <cstdlib>
 #include <mutex>
 
 #include "../../updater/winupdate.h"
+#include "fixes.h"
 
 namespace autoupdate {
 
@@ -37,6 +40,53 @@ static std::wstring game_root()
     return m;
 }
 
+// BUG-0060: a hot reload (mod.reload coop) freed the DLL while this thread was blocked in WinHTTP
+// (up to 30 s); it then returned into unmapped memory or into the next image at the same base.
+// Every thread holds a reference to its own module and leaves through FreeLibraryAndExitThread,
+// so the old image stays mapped until the thread is done. `g_unloaded` keeps an old image's thread
+// quiet after on_unload (it only finishes its own copy of the state).
+static std::atomic<bool> g_unloaded{false};
+static std::atomic<int> g_threads{0};
+bool g_pin_fix = true; // tests: `coop.fix core.update_pin off` = threads without a module reference
+COOP_FIX_UNSAFE("core.update_pin", "BUG-0060", g_pin_fix, "update: its threads hold a reference to their module (hot reload)");
+
+static bool start_thread(LPTHREAD_START_ROUTINE fn)
+{
+    HMODULE self = nullptr;
+    if (g_pin_fix && !GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, (LPCWSTR)(void*)&start_thread, &self))
+        return false;
+    g_threads++;
+    HANDLE h = CreateThread(nullptr, 0, fn, self, 0, nullptr);
+    if (!h) {
+        g_threads--;
+        if (self)
+            FreeLibrary(self);
+        return false;
+    }
+    CloseHandle(h);
+    return true;
+}
+
+// BUG-1015: (a) a thread set its final state (Available, Failed, ...) and cleared g_busy only later in end_thread, so
+// an Update click (start_update) in between was dropped without a word; (b) Try again showed the last attempt's
+// "Downloading ... N %" until the first progress callback (g_got / g_total never reset). On: the final state and
+// g_busy change together under g_mu (end_thread leaves g_busy alone: a new thread may own it already), and the
+// progress starts at 0. Off (`coop.fix core.update_busy off`): as 0.7.13.
+static bool g_busy_fix = true;
+COOP_FIX("core.update_busy", "BUG-1015", g_busy_fix, "update: an Update click right after the check is taken; Try again starts its progress at 0");
+static int g_test_apply_delay_ms; // tests (coop.update applydelay <ms>): a download waits this long before it starts
+static int g_test_end_delay_ms; // tests (coop.update testdelay <ms>): a thread waits this long after its final state
+
+[[noreturn]] static void end_thread(void* self)
+{
+    if (!g_busy_fix)
+        g_busy = false;
+    g_threads--;
+    if (!self)
+        ExitThread(0); // the old way (update_pin 0): the image may be gone under this thread
+    FreeLibraryAndExitThread((HMODULE)self, 0);
+}
+
 static void set(State s, const std::string& err = {})
 {
     std::lock_guard<std::mutex> l(g_mu);
@@ -44,32 +94,65 @@ static void set(State s, const std::string& err = {})
     g_err = err;
 }
 
-static DWORD WINAPI check_thread(void*)
+// a thread's last state: with core.update_busy the thread is no longer busy from the same moment
+static void set_final(State s, const std::string& err = {})
+{
+    {
+        std::lock_guard<std::mutex> l(g_mu);
+        g_state = s;
+        g_err = err;
+        if (g_busy_fix)
+            g_busy = false;
+    }
+    if (g_test_end_delay_ms > 0)
+        Sleep((DWORD)g_test_end_delay_ms); // tests: the old window between the state and end_thread, widened
+}
+
+// BUG-0241: ExitThread / FreeLibraryAndExitThread do not unwind the C++ stack: a thread function
+// that called end_thread() with its locals in scope leaked them (the whole decoded update pack, several
+// MB, at every Update / Try again). The work runs in a function of its own whose locals are destroyed
+// when it returns; the thread functions hold no objects and only call it and end_thread().
+static void check_work()
 {
     upd::Release r;
     std::string err;
     set(Checking);
     if (!upd::latest_release(g_url, r, err)) {
-        H->log(M, SK_INFO, "update check: %s", err.c_str());
-        set(Idle); // offline is normal: no message
+        if (!g_unloaded)
+            H->log(M, SK_INFO, "update check: %s", err.c_str());
+        set_final(Idle); // offline is normal: no message
     } else {
-        std::lock_guard<std::mutex> l(g_mu);
-        g_rel = r;
-        g_state = upd::compare_versions(r.version, g_version) > 0 && !r.pack_url.empty() ? Available : UpToDate;
-        H->log(M, SK_INFO, "update check: latest %s, running %s", r.version.c_str(), g_version.c_str());
+        State st;
+        {
+            std::lock_guard<std::mutex> l(g_mu);
+            g_rel = r;
+            st = upd::compare_versions(r.version, g_version) > 0 && !r.pack_url.empty() ? Available : UpToDate;
+            if (!g_unloaded)
+                H->log(M, SK_INFO, "update check: latest %s, running %s%s", r.version.c_str(), g_version.c_str(),
+                       r.from_web ? " (from the release page: the GitHub API refused, BUG-0392)" : "");
+        }
+        set_final(st);
     }
-    g_busy = false;
-    return 0;
 }
 
-static DWORD WINAPI apply_thread(void*)
+static DWORD WINAPI check_thread(void* self)
+{
+    check_work();
+    end_thread(self);
+}
+
+static void apply_work()
 {
     upd::Release r;
     {
         std::lock_guard<std::mutex> l(g_mu);
         r = g_rel;
     }
+    if (g_busy_fix)
+        g_got = g_total = 0;
     set(Downloading);
+    if (g_test_apply_delay_ms > 0)
+        Sleep((DWORD)g_test_apply_delay_ms); // tests: the line before the first progress callback
     upd::Pack p;
     std::string err;
     bool ok = upd::download_pack(r, p, err, [](uint64_t got, uint64_t total) {
@@ -83,16 +166,29 @@ static DWORD WINAPI apply_thread(void*)
     int later = 0;
     if (ok)
         ok = upd::apply_pack(game_root(), p, err, &later); // files the game holds open: next start
-    H->log(M, ok ? SK_INFO : SK_WARN, "update to %s: %s", r.version.c_str(), ok ? "installed" : err.c_str());
-    set(ok ? Ready : Failed, err);
-    g_busy = false;
-    return 0;
+    if (!g_unloaded)
+        H->log(M, ok ? SK_INFO : SK_WARN, "update to %s: %s", r.version.c_str(), ok ? "installed" : err.c_str());
+    set_final(ok ? Ready : Failed, err);
+}
+
+static DWORD WINAPI apply_thread(void* self)
+{
+    apply_work();
+    end_thread(self);
+}
+
+// BUG-0755: each retry of a download or of the release check goes to sporekit.log
+static void log_retry(const std::string& s)
+{
+    if (!g_unloaded && H)
+        H->log(M, SK_INFO, "%s", s.c_str());
 }
 
 void init(const SkHost* host, SkMod* mod, const char* version)
 {
     H = host;
     M = mod;
+    upd::g_log = log_retry;
     g_version = version;
     g_enabled = H->config_int(M, "update", "check", 1) != 0;
     char b[512];
@@ -100,10 +196,18 @@ void init(const SkHost* host, SkMod* mod, const char* version)
     g_url = b;
     upd::cleanup_old(game_root()); // the files an update replaced last time
     if (g_enabled && !g_busy.exchange(true))
-        CloseHandle(CreateThread(nullptr, 0, check_thread, nullptr, 0, nullptr));
+        if (!start_thread(check_thread))
+            g_busy = false;
 }
 
 void set_feed(void (*f)(const std::string&)) { g_feed = f; }
+
+int shutdown()
+{
+    g_unloaded = true;
+    g_feed = nullptr;
+    return g_threads;
+}
 
 void tick()
 {
@@ -129,6 +233,14 @@ void tick()
     }
 }
 
+// the co-op window's line while downloading (g_mu held)
+static std::string download_line()
+{
+    uint32_t got = g_got, total = g_total;
+    return "Downloading SporeCoop " + g_rel.version + "... " +
+           (total ? std::to_string(got * 100ull / total) + " %" : std::to_string(got / 1024) + " KB");
+}
+
 bool ui(std::string& line, std::string& button)
 {
     std::lock_guard<std::mutex> l(g_mu);
@@ -137,12 +249,9 @@ bool ui(std::string& line, std::string& button)
         line = "SporeCoop " + g_rel.version + " is available (you have " + g_version + ")";
         button = "Update";
         return true;
-    case Downloading: {
-        uint32_t got = g_got, total = g_total;
-        line = "Downloading SporeCoop " + g_rel.version + "... " +
-               (total ? std::to_string(got * 100ull / total) + " %" : std::to_string(got / 1024) + " KB");
+    case Downloading:
+        line = download_line();
         return true;
-    }
     case Ready:
         line = "SporeCoop " + g_rel.version + " is installed: restart Spore to use it";
         return true;
@@ -164,14 +273,26 @@ void start_update()
         g_told_failed = false;
     }
     if (!g_busy.exchange(true))
-        CloseHandle(CreateThread(nullptr, 0, apply_thread, nullptr, 0, nullptr));
+        if (!start_thread(apply_thread))
+            g_busy = false;
 }
 
-std::string command(const std::string& arg)
+std::string command(const std::string& arg, const std::string& val)
 {
+    if (arg == "url" && !val.empty()) { // tests (BUG-1015): a local release server
+        std::lock_guard<std::mutex> l(g_mu);
+        g_url = val;
+        return "url " + g_url + "\n";
+    }
+    if (arg == "testdelay" || arg == "applydelay") { // tests (BUG-1015): the windows of the race, widened
+        int ms = std::max(0, std::min(20000, atoi(val.c_str())));
+        (arg == "testdelay" ? g_test_end_delay_ms : g_test_apply_delay_ms) = ms;
+        return arg + " " + std::to_string(ms) + "\n";
+    }
     if (arg == "check") {
         if (!g_busy.exchange(true))
-            CloseHandle(CreateThread(nullptr, 0, check_thread, nullptr, 0, nullptr));
+            if (!start_thread(check_thread))
+            g_busy = false;
         return "checking " + g_url;
     }
     if (arg == "apply") {
@@ -181,7 +302,10 @@ std::string command(const std::string& arg)
     static const char* names[] = {"idle", "checking", "up to date", "available", "downloading", "ready", "failed"};
     std::lock_guard<std::mutex> l(g_mu);
     return std::string("update: ") + names[g_state] + " running=" + g_version + " latest=" + g_rel.version +
-           " check=" + (g_enabled ? "on" : "off") + " url=" + g_url + (g_err.empty() ? "" : " error=" + g_err);
+           (g_rel.from_web ? " via=page" : "") +
+           " check=" + (g_enabled ? "on" : "off") + " url=" + g_url + (g_err.empty() ? "" : " error=" + g_err) +
+           " busy=" + std::to_string((int)g_busy.load()) +
+           (g_state == Downloading ? " line='" + download_line() + "'" : std::string());
 }
 
 } // namespace autoupdate

@@ -2,8 +2,9 @@
 //
 //  -sporekit-profile:<name>   user data (saves, preferences, caches) goes to
 //                             AppData\Roaming\SporeKit-<name>\Spore instead of the real
-//                             profile. Documents uses the same test root, so creation PNGs
-//                             cannot be written into the player's My Spore Creations folder.
+//                             profile, and Documents (My Spore Creations) to
+//                             AppData\Roaming\SporeKit-<name>\Documents, so automated tests never
+//                             touch the player's data. -sporekit-profile-docs:0: AppData only.
 //  -sporekit-instance:N (N>=2) unique single-instance mutex + console/coop ports +N-1;
 //                             implies profile "inst<N>" unless a profile is given.
 #include "core.h"
@@ -20,20 +21,53 @@ static std::wstring g_profile;
 
 const std::wstring& profile_name() { return g_profile; }
 
+static bool g_redirect_docs = true; // -sporekit-profile-docs:0 = only AppData (the old behaviour, tests)
+
+// The game's per-user folders that a profile redirects: AppData (saves, preferences, caches) and,
+// since BUG-0156, Documents ("My Spore Creations": creation PNGs, screenshots, videos) with the
+// picture / video / music folders. Without it a test on lane 1 (the owner's own bottle) wrote creations and
+// screenshots into the owner's Documents.
+static const wchar_t* docs_subfolder(int id)
+{
+    switch (id) {
+    case CSIDL_PERSONAL: return L"Documents";
+    case CSIDL_MYPICTURES: return L"Documents\\Pictures";
+    case CSIDL_MYVIDEO: return L"Documents\\Videos";
+    case CSIDL_MYMUSIC: return L"Documents\\Music";
+    default: return nullptr;
+    }
+}
+
 static HRESULT WINAPI h_SHGetFolderPathW(HWND h, int csidl, HANDLE tok, DWORD flags, LPWSTR out)
 {
-    HRESULT r = o_SHGetFolderPathW(h, csidl, tok, flags, out);
-    int folder = csidl & 0xFF;
-    if (SUCCEEDED(r) && out && !g_profile.empty() && (folder == CSIDL_APPDATA || folder == CSIDL_PERSONAL)) {
-        wchar_t roaming[MAX_PATH];
-        if (folder == CSIDL_PERSONAL && FAILED(o_SHGetFolderPathW(h, CSIDL_APPDATA, tok, flags, roaming)))
-            return E_FAIL; // a test profile must not fall back to the player's Documents
-        std::wstring p = std::wstring(folder == CSIDL_PERSONAL ? roaming : out) + L"\\SporeKit-" + g_profile;
-        CreateDirectoryW(p.c_str(), nullptr);
-        if (folder == CSIDL_PERSONAL) {
+    int id = csidl & 0xFF;
+    const wchar_t* docs = g_redirect_docs && !g_profile.empty() ? docs_subfolder(id) : nullptr;
+    if (docs && out) {
+        // <AppData>\SporeKit-<name>\Documents...: from the real AppData, whatever Documents is
+        HRESULT r = o_SHGetFolderPathW(h, CSIDL_APPDATA | (csidl & ~0xFF), tok, flags, out);
+        if (SUCCEEDED(r)) {
+            std::wstring p = std::wstring(out) + L"\\SporeKit-" + g_profile;
+            CreateDirectoryW(p.c_str(), nullptr);
             p += L"\\Documents";
             CreateDirectoryW(p.c_str(), nullptr);
+            if (wcscmp(docs, L"Documents") != 0) {
+                p = std::wstring(out) + L"\\SporeKit-" + g_profile + L"\\" + docs;
+                CreateDirectoryW(p.c_str(), nullptr);
+            }
+            wcsncpy(out, p.c_str(), MAX_PATH - 1);
+            out[MAX_PATH - 1] = 0;
+            static bool logged;
+            if (!logged) {
+                logged = true;
+                SKLOG(SK_INFO, "profile '%s': Documents in %s", narrow(g_profile).c_str(), narrow(p).c_str());
+            }
         }
+        return r;
+    }
+    HRESULT r = o_SHGetFolderPathW(h, csidl, tok, flags, out);
+    if (SUCCEEDED(r) && out && id == CSIDL_APPDATA && !g_profile.empty()) {
+        std::wstring p = std::wstring(out) + L"\\SporeKit-" + g_profile;
+        CreateDirectoryW(p.c_str(), nullptr);
         wcsncpy(out, p.c_str(), MAX_PATH - 1);
         out[MAX_PATH - 1] = 0;
     }
@@ -58,6 +92,8 @@ void instance_install()
         while (*p && *p != L' ' && *p != L'"')
             g_profile += *p++;
     }
+    if (wcsstr(GetCommandLineW(), L"-sporekit-profile-docs:0"))
+        g_redirect_docs = false;
     if (g_profile.empty() && instance_id() >= 2)
         g_profile = L"inst" + std::to_wstring(instance_id());
 

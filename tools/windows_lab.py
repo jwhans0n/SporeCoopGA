@@ -27,7 +27,7 @@ import zlib
 
 ROOT = Path(__file__).resolve().parents[1]
 LAB_ROOT = ROOT / 'out' / 'windows-lab'
-EXPECTED_EXE = 'dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37'
+from large_address_aware import SUPPORTED_EXES
 SOURCE_DEFAULT = Path(r'D:\GOG Galaxy\Games\SPORE')
 
 
@@ -141,7 +141,14 @@ class DesktopProcess:
 
     def terminate(self):
         if self.poll() is None and not self.kernel.TerminateProcess(self.handle, 1):
-            raise C.WinError(C.get_last_error())
+            error = C.get_last_error()
+            # Windows can deny TerminateProcess after the target exited between
+            # poll and terminate (seen after the rejected native fixture crash).
+            # Confirm this exact retained handle exited; a live denial is fatal.
+            if error == 5 and self.kernel.WaitForSingleObject(self.handle, 1000) == 0:
+                self.poll()
+                return
+            raise C.WinError(error)
 
     kill = terminate
 
@@ -371,13 +378,13 @@ class PrivateDesktop:
         self.close()
 
 
-def prepare(source, destination, build):
+def prepare(source, destination, build, symbols_source=None):
     source = source.resolve()
     destination = inside_lab(destination)
     if source == destination or source in destination.parents:
         raise RuntimeError('test installation must be separate from the source installation')
     exe = source / 'SporebinEP1' / 'SporeApp.exe'
-    if sha256(exe) != EXPECTED_EXE:
+    if sha256(exe) not in SUPPORTED_EXES:
         raise RuntimeError('unverified Spore executable')
     for name in ('steam_api.dll', 'sporekit.dll', 'coop.dll', 'SporeCoop.package'):
         if not (build / name).is_file():
@@ -406,15 +413,26 @@ def prepare(source, destination, build):
     shutil.copy2(build / 'SporeCoop.package', destination / 'Data' / 'SporeCoop.package')
     symbols = mods / 'sporekit' / 'symbols'
     symbols.mkdir(parents=True, exist_ok=True)
-    for path in (ROOT / 'data' / 'symbols').glob('*.sym'):
+    symbols_source = Path(symbols_source or ROOT / 'data' / 'symbols').resolve()
+    if not list(symbols_source.glob('*.sym')):
+        raise RuntimeError('verified build symbol directory is empty')
+    expected_symbols = {path.name for path in symbols_source.glob('*.sym')}
+    # This is a private marked copy, and old source installations can retain
+    # maps removed by the integrated build. Do not let stale overrides survive.
+    for path in symbols.glob('*.sym'):
+        if path.name not in expected_symbols:
+            if symbols.resolve() not in path.resolve().parents:
+                raise RuntimeError('private symbol file traverses a link')
+            path.unlink()
+    for path in symbols_source.glob('*.sym'):
         shutil.copy2(path, symbols / path.name)
     (mods / 'sporekit.ini').write_text('[sporekit]\nlog_level=0\nconsole_port=47800\nbackground_mode=1\n[mods]\nload=coop\n', encoding='utf-8')
     shutil.copy2(ROOT / 'data' / 'config' / 'coop.ini', mods / 'coop.ini')
-    json_write(marker, dict(source=str(source), executable_sha256=EXPECTED_EXE, prepared_at=time.time()))
+    json_write(marker, dict(source=str(source), executable_sha256=sha256(exe), prepared_at=time.time()))
     return destination
 
 
-def prepare_profile(name):
+def prepare_profile(name, screen_size=12):
     if not re.fullmatch(r'winlab_[a-z0-9_]+', name):
         raise RuntimeError('invalid isolated profile name')
     root = Path(os.environ['APPDATA']) / ('SporeKit-' + name) / 'Spore'
@@ -423,7 +441,7 @@ def prepare_profile(name):
     # Missing OptionVersion makes this build replace every supplied setting with
     # defaults, including unmuting audio. Version9 is emitted by this verified build.
     want = dict(OptionVersion='9', OptionFullScreen='0', OptionTutorialsEnabled='0', OptionShowHints='0',
-                OptionEdgeScroll='0', OptionScreenSize='12', AudioMuteAll='true', AudioMasterVolume='0.000000',
+                OptionEdgeScroll='0', OptionScreenSize=str(screen_size), AudioMuteAll='true', AudioMasterVolume='0.000000',
                 AudioMusicVolume='0.000000', AudioVOXVolume='0.000000', AudioSFXVolume='0.000000')
     path = preferences / 'Preferences.prop'
     previous = path.read_text(encoding='utf-8', errors='replace').splitlines() if path.exists() else []
@@ -442,12 +460,17 @@ def prepare_profile(name):
 
 class WindowsLab:
     """Context manager for integration tests; `consoles` uses sporectl.Console."""
-    def __init__(self, installation, output=None, instances=2, first_instance=21, hidden=False):
+    def __init__(self, installation, output=None, instances=2, first_instance=21, hidden=False, screen_size=12,
+                 viewport=None):
         self.installation = inside_lab(installation)
         self.output = inside_lab(output or LAB_ROOT / ('run-' + uuid.uuid4().hex[:12]))
         self.instances = instances
         self.first_instance = first_instance
         self.hidden = hidden
+        self.screen_size = screen_size
+        if viewport is not None and tuple(viewport) not in ((1440, 1080), (1024, 768)):
+            raise RuntimeError('use an audited native test viewport')
+        self.viewport = tuple(viewport) if viewport is not None else None
         self.processes = []
         self.consoles = []
         self.desktop = None
@@ -457,7 +480,8 @@ class WindowsLab:
         if not 1 <= instances <= 4 or not 2 <= first_instance <= 100:
             raise RuntimeError('use 1..4 instances and first-instance2..100')
         marker = self.installation / 'sporecoop-test-copy.json'
-        if not marker.is_file() or sha256(self.installation / 'SporebinEP1' / 'SporeApp.exe') != EXPECTED_EXE:
+        self.executable_sha256 = sha256(self.installation / 'SporebinEP1' / 'SporeApp.exe')
+        if not marker.is_file() or self.executable_sha256 not in SUPPORTED_EXES:
             raise RuntimeError('prepare a verified private test copy first')
 
     def record(self):
@@ -488,11 +512,16 @@ class WindowsLab:
                     if probe.connect_ex(('127.0.0.1', 47800 + instance - 1)) == 0:
                         raise RuntimeError('instance console port is already occupied')
                 profile = 'winlab_' + self.output.name.replace('-', '_') + '_' + str(instance)
-                prepare_profile(profile)
+                prepare_profile(profile, self.screen_size)
                 exe = self.installation / 'SporebinEP1' / 'SporeApp.exe'
                 command = [str(exe), '-w', '-sporekit-instance:' + str(instance), '-sporekit-profile:' + profile]
+                if self.viewport:
+                    # Verified native Configure0x7E7430 reads switch r, scans
+                    # %dx%d, and creates the renderer at these dimensions before
+                    # native UI construction. A late renderer Reset leaves old UI.
+                    command.append('-r:%dx%d' % self.viewport)
                 if self.hidden:
-                    command.append('-sporekit-invisible')
+                    command.extend(('-sporekit-invisible', '-sporekit-exclusive-input'))
                 process = DesktopProcess(command, self.desktop.name, cwd=exe.parent)
                 self.processes.append((process, instance, profile))
                 self.record()
@@ -567,7 +596,7 @@ class WindowsLab:
         evidence = []
         for (process, instance, _), console in zip(self.processes, self.consoles):
             info = console.call('info')
-            if not info.get('ok') or EXPECTED_EXE not in info.get('out', ''):
+            if not info.get('ok') or self.executable_sha256 not in info.get('out', ''):
                 raise RuntimeError('test instance did not load the verified executable')
             out = info['out']
             if f'pid={process.pid}' not in out or ' coop' not in out or 'coop(unloaded)' in out:
@@ -651,7 +680,8 @@ def main():
         output = inside_lab(args.out)
         recorded = json.loads((output / 'processes.json').read_text(encoding='utf-8'))
         installation = inside_lab(Path(recorded['installation']))
-        if sha256(installation / 'SporebinEP1' / 'SporeApp.exe') != EXPECTED_EXE:
+        executable_sha256 = sha256(installation / 'SporebinEP1' / 'SporeApp.exe')
+        if executable_sha256 not in SUPPORTED_EXES:
             raise RuntimeError('status regression requires a verified lab copy')
         evidence = []
         for child in recorded['processes']:
@@ -659,7 +689,7 @@ def main():
             started_host = False
             try:
                 info = console.call('info')
-                if not info.get('ok') or f"pid={child['pid']}" not in info.get('out', '') or EXPECTED_EXE not in info['out']:
+                if not info.get('ok') or f"pid={child['pid']}" not in info.get('out', '') or executable_sha256 not in info['out']:
                     raise RuntimeError('recorded console does not belong to the expected lab child')
                 before = console.call('coop.status')
                 if not before.get('ok') or not before.get('out', '').startswith('offline\n'):
@@ -726,7 +756,7 @@ def main():
             if not kernel.QueryFullProcessImageNameW(handle, 0, path, C.byref(size)):
                 raise C.WinError(C.get_last_error())
             exe = inside_lab(Path(path.value))
-            if exe.name.lower() != 'sporeapp.exe' or sha256(exe) != EXPECTED_EXE:
+            if exe.name.lower() != 'sporeapp.exe' or sha256(exe) not in SUPPORTED_EXES:
                 raise RuntimeError('paint pump only accepts a verified lab game copy')
             user = winapi()
             deadline = time.monotonic() + args.seconds

@@ -1629,3 +1629,1693 @@ How the game finds, opens and rewards the core, and what the co-op finale builds
   (stack 0x847EFA, 0x84930F, 0x84935E) seconds later. `cPlayerInventory::GetTool` 0xFF3BF0 is the
   safe way; it also finds tools that are not owned yet (a second list at +0x4C..+0x50): check
   `HasTool` (vt 0x74) first.
+
+## Freed attackers and star ids past the table (2026-10-27, fix/w1-space)
+<a id="space-stale-lookups"></a>
+
+* ✔ A mirror freed through `DestroyInstance` (`game::destroy_creature`) leaves the UFO noun list at
+  once: `game::ufo_listed` is false in the same frame. A puppet freed the same way on the host is
+  gone from the list too; `drive_puppet` spawns a new one on the next tick. Hit messages are handled
+  before `squadron::tick`, so the handlers check the attacker themselves (BUG-0054).
+* ✔ The memory of such a freed ship stays mapped: the game's TakeDamage read it without a fault
+  in the test (`coop.fleet hitfix 0`). The bug is silent until the block is reused.
+* ✔ cStarManager +0xC8 sectors: `{begin, end, ...}` (20 bytes). The word right after a sector's
+  last record (sector 0x046 of the `space` fixture, 61 stars) was 0x00000131, not a pointer;
+  `IsBadReadPtr(0x131, 0x74)` raised a caught access violation in kernel32 under Wine. Always
+  check the index against `end` before reading (BUG-0092).
+* ✔ The rescue's repair timer: the first `down_tick` after a disable must start from a zero step;
+  the old function-local `last` kept the previous disable's time (repair=0.6 after 0.15 s on the
+  second disable, BUG-0147).
+
+## Ship state chunks, the posse, trade refunds, mirror empires (2026-10-28, fix/w2-space)
+<a id="space-ship-state-chunks"></a>
+
+* ✔ `cSimulatorSpaceGame::DestroyNPCUFOs(keepAmbush, keepPosse, bool)` 0x1009310 (GOG 2024: the
+  same address as GOG 2016) walks +0x78 and keeps exactly `mUFOType` 3 when keepPosse is set and
+  type 8 when keepAmbush is set (disassembly: `cmp eax,3 / je` to the keepPosse test, `cmp eax,8`).
+  So type 3 is the posse (escort) and the mod never removes it as a host NPC (BUG-0084).
+* ✔ A type 3 UFO made with `SpawnUFO(3, &ownPol, key)` (the player's own political id) is freed by
+  the game at once (not in the UFO list in the next call, its address reused); with pol -1 it stays.
+  The real posse is made another way (comm screen recruitment, not traced).
+* ✔ The host's ship state (MSG_UFO_STATE, 10 Hz) is 18 ships per unreliable chunk; with 20 host
+  ships and one chunk lost the old guest code exploded 18 mirrors and spawned them again. The guest
+  now needs every chunk of a cycle before it removes anything (BUG-0037, `coop.fleet list`:
+  `partial_cycles`, `stale_chunks`).
+* ✔ In the galaxy menu (GalaxyGameEntry) `cSimulatorSpaceGame +0x40` (the player's inventory) is
+  null: `coop.space trade spices` prints "free cargo slots -1". A refund there cannot be added
+  (BUG-0058: now owed until back in Space).
+* ✔ Each allies mirror made with `ensure_empire` (NextPoliticalID + CreateEmpire) advanced the
+  political id counter by 2 in the tests (mirrors 800021CD, 800021CF, ...).
+* ✔ Going to the menu with an applied mirror: the game saves on the way, the allies save hook
+  unmirrors (applied = 0), and after the load the mirror's cEmpire is no longer in the map; the old
+  code put the old object back at the old id (BUG-0038). After the load the counter
+  `cStarManager +0x1D4` was above the mirror's id (21CF before, 21D0 after), so the collision with
+  an NPC empire of the loaded galaxy was not seen on this path.
+* ✔ After a save (the allies save hook unmirrors first) the mirror's cEmpire is no longer in the
+  star manager's map (`GetEmpire(pol)` != the object) although the galaxy is the same; the player's
+  cEmpire pointer (`GetPlayerEmpire`) does change with a load, so the mod uses it to tell a reload.
+* ✔ `cStarManager::GetEmpire` does not return an unapplied mirror's cEmpire after `allies drop`
+  (the "no empire" answer); `allies detach` (tests) keeps the empire with its star instead.
+
+## Trips, clicks, Defenders, seeding threads, armada waves (2026-10-28, fix/w3-space)
+<a id="space-w3-trips-clicks-defenders"></a>
+
+Runtime findings of the wave 3 Space fixes (lane 6, GOG 2024):
+
+* ✔ `cRelationshipManager::ApplyRelationship` called as `void` leaves its ST0 result on the x87
+  stack: three `coop.space empire contact` calls moved TOP from 0 to 5 while the tag word still
+  read FFFF ("empty"). A check of the x87 state has to look at TOP (`coop.space fpu`), not only the
+  tag word (BUG-0126).
+* ~ `SpaceTeleportTo` in the galaxy view to the star next to a partner did not spend energy or
+  damage the ship with energy 0 (energy 0 -> 0, HP unchanged): the cost of section 7.3's
+  TravelToStar was not seen on this short path. The co-op teleport (`spacecoop::teleport_in_galaxy`)
+  still refunds as `travel_to` does, and refuses a disabled ship (BUG-0063).
+* ✔ Clicks: SporeKit's background mode (on for test runs) hooks GetForegroundWindow / GetActiveWindow
+  / GetFocus to return the game window, so a focus check in the mod proves nothing in the lab. The
+  mod takes primary clicks from the game window's WM_LBUTTONDOWN through a thread message hook
+  (WH_GETMESSAGE on the main thread, `mods/coop/mouse.cpp`): the logical primary button (swapped
+  mice), only for clicks on the game window; the tests' `click` posts the same message
+  (BUG-0090, BUG-0145).
+* ✔ A Defender the guest's own game makes (SpawnUFO type 6 with the player's political id, as a
+  colony's defence) in the host's place is now removed like the other local NPC ships. Our puppets
+  are told apart by what space_spawn gave them: model key +0x780, mbInvincible (combatant +0x80 =
+  ufo +0x588) = 1, no owner mission +0x800 (`modes::space_puppet_ok`, BUG-0111).
+* ✔ The planet generation's RNG redirection is per thread (`thread_local`, native TLS in the
+  llvm-mingw DLL works under Wine). With the old shared state, another thread "inside
+  GenerateRandomName" made the guest generate 5 planets of 00460024 where the host made 6, and 4 of
+  0046002F against 1 (BUG-0123). No off-main-thread call of GenerateRandomName or
+  RequirePlanetsForStar was logged in these runs; the mod warns once if it sees one.
+* ✔ Armada: the game keeps a raid active (state 3) while nobody is on the planet; a host who left
+  for the system view and landed again got a second raid on the same colony (the old wave start),
+  30 ships counted for the wave. The wave now keeps its mission and resumes it (`contracts raids`,
+  `resumed=`). During a wave the mouse wheel at the ship did not take the host off the planet
+  (`coop.space takeoff` in the test) (BUG-0046).
+
+## Object serial, the Space world epoch, disabled ships, gifts, puppets, armada returns (2026-10-28, fix/w5-space)
+<a id="space-object-serial"></a>
+
+* ✔ `cGameData::mID` (+0x24) is written in `cGameNounManager::CreateInstance` (GOG 2024 0xB20BF0):
+  `mov eax,[0x167BE28]; inc eax; mov [0x167BE28],eax; mov [esi+0x24],eax` (0xB20C83..0xB20C8E).
+  CreateInstance is the only writer of the counter 0x167BE28 in the code. `game::object_serial(u)`
+  reads +0x24 (only after `ufo_listed` / `object_alive` in the same frame). Seen at runtime: a
+  puppet's serial stays the same over a whole test; the identity tests below rely on it.
+* ? The counter's address is also stored as data in two static tables (0x131AD5A and 0x131B076:
+  `mov [esp+0x18],0x167BE28` next to other function pointers, then `rep movs` into a global): most
+  likely a serializer's field list, so a load may set the counter back and objects read from a save
+  may keep saved ids. Not measured. Until it is, an identity kept across frames also compares the
+  Space world epoch (below); serials are never compared across a load or between machines.
+* ✔ The Space world epoch (`spaceext::world_epoch`, a Space-only stand-in for the stage epoch of
+  BUG-0217 / #151): +1 on the first kSpace frame after a frame in any mode other than kSpace, kEdit,
+  kEditor or kScenario, and when the player's cEmpire changes between two non-null values in
+  kSpace. A load of the same game from the galaxy menu (`coop.menu`, `coop.load`) went 1 -> 2
+  (coop_space_down_away.py part b). Not verified: that the captain outfitter, the ship editor and an
+  adventure from Space show only kEdit / kEditor / kScenario frames (the log line "space: world
+  epoch N (Space entered)" shows a false change).
+* ✔ `coop.space away 1|0` (test hook, cleared at session end): spaceext::in_space() and spacecoop's
+  in_space() / inventory() act as outside Space while the Space world stays; trade's
+  `coop.space trade away` stays its own hook.
+* ✔ Disabled ship (BUG-0228, BUG-0229): the state records the ship (pointer, serial, world epoch).
+  Outside Space in the same world its 20 s stand still (25 s away: 19.0 -> 16.9 s left); another
+  world ends it without a death; its invincible byte is cleared at once in Space, or on the first
+  Space frame back on the same ship (`coop.space downstate`: `owed`, `owed_cleared`).
+* ✔ Spice gift (BUG-0226): K_GIFT has no id and only a failure is answered (K_GIFT_BACK). The
+  sender keeps its unanswered gifts (16 at most, cleared at session end); a K_GIFT_BACK matches
+  the oldest with the same receiver, key and count once. Outside Space it is owed until the first
+  Space frame of the same world (`coop.space gift`). `add_spice` refuses outside Space.
+* ✔ Puppet identity (BUG-0218): our puppet is the object with the serial recorded at its spawn
+  (and the model key). The invincible byte is not part of it any more: when it is found cleared it
+  is set back (`coop.fleet ident`: `flag_restored`). A puppet whose owner mission (+0x800) is set
+  is retired: held still, not sent to the guests, its shots dropped, destroyed through the deferred
+  path once +0x800 is null again, left to the game at session end. Whether the game ever sets
+  +0x800 or clears +0x588 on a Defender with our political id is still not known.
+* ✔ Armada returns (BUG-0227): the "HP raised once" set is keyed by serial; a resumed wave waits for
+  its ships again and, if none come in 30 s, its raid is aborted with `cMission::SetState(7)`
+  (spacecoop's raid hook sends no K_RAID and pays no bonus for 7) before a new one starts; a raid
+  that ended with 5 / 6 while the host was away counts.
+
+## The galaxy-menu reset and the player record (2026-10-29, fix/w8-planet)
+<a id="space-menu-player-reset"></a>
+
+* ✔ `0xB32C30` (GOG 2024) is the simulator's reset when the galaxy menu comes up: it resets many
+  managers, then calls `SpacePlayerData_Reset` 0x01022350 (at 0xB32CF0), SetCurrentContext(-1),
+  SetActiveStarAndPlanet(0, 0), and only then `cStarManager::ReadStarsFromSaveDB` (at 0xB32D3F).
+  At runtime (probe, lane 5) the menu's ReadStarsFromSaveDB is called from 0xB32D44.
+* ✔ `SpacePlayerData_Reset` 0x01022350 (same bytes and address in GOG 2016): cdecl void(), plain
+  `ret`: clears bytes 0x16DDA88/89, +0x04 planet, +0x08 star, releases the cached `cEmpire*` +0x1C,
+  empties +0x20 colonies, +0x18 player empire id = -1, +0x0C. Callers 0xB32CF0, 0xB32E90,
+  0xB33554, 0x102244C. ✔ In the galaxy menu the player empire id is -1 and +0x1C is 0 (sampled
+  every 0.5 s, lane 5); the load sets them again (0x10220E0 writes +0x18).
+* ✔ `ReadStarsFromSaveDB` 0xBB8C90 calls `0xBB61C0` (at 0xBB95D5), which tops up a star list from
+  the global RNG (tuning 0x156C518 / 0x156C508) and, when it added something and star manager
+  +0x64 is 0, writes the stars back: `0xBB4D40` = **cStarManager write of stars.db** (5 KB frame,
+  `stars.db.tmp` via SaveDb_OpenTmp; also called by SaveGame 0xB29543 and 0xBB5931, tail 0xBB6874
+  after setting +0x64). The symbolizer labels it `RequirePlanetsForStar+0xB0` (the GOG 2024
+  RequirePlanetsForStar ends at 0xBB4D39). At its end (0xBB4E85) it calls
+  `GetPlayerHomePlanetRecord` 0x1021220 -> `cEmpire::RequireHomePlanet` 0xC31890 ->
+  `cStarManager::GetPlanetRecord(empire +0xB4)` -> `cStarRecord::GetPlanetRecord`.
+* ✔ A planet id is `planet index << 24 | star index`; `cStarManager::GetPlanetRecord` 0xBA6F10
+  indexes the star table +0xC8 (pages of 0x1000) with no bounds or "has planets" check;
+  `cStarRecord::GetPlanetRecord` 0xBBABD0 reloads the records (0xBBA7B0, only up to the count
+  +0xAC) and reads `records[i]` with no check: a star without planets (count 0, +0x84 null) is a
+  null read at 0xBBABE2. That is BUG-0284's crash: the empire of the old world (home 0x00C9C01E in
+  the tribe fixture) met the stars of the civ_npc slot, whose star 0xC9C01E has count 0.
+* ~ A handled game fault while a stage is left (BUG-0285: CreatureHearsTarget in a citizen's
+  WalkTo, in the frame the mode changed) unwound past the player reset: the menu kept the old
+  empire. Inferred from the one campaign crash (the only logged leave with a fault before the
+  load, of ~100); the effect is reproduced by patching out the call at 0xB32CF0
+  (`coop_menu_stale_player.py`), identical crash and stack.
+## A share save in the first frame of the solar system (2026-10-29, fix/w8-stuck)
+<a id="space-share-save-at-context-change"></a>
+
+* ~ (logs, lab 20261029-174717 campaign#2, BUG-0287): the host's shares waited on the home planet
+  ("leave the planet to save") and posted the save 9 ms after the place changed to the solar system
+  (`SpacePlayerData +0x10` context 0 -> 1). The guests loaded it into the solar system and 2.2-2.4 s
+  later their ships were on the home planet (place 0x40...), nobody steering; the host stayed in the
+  system. Saves made 1.7 s or minutes into the system loaded in the system and stayed there.
+  Inferred: a save of the first frame after leaving a planet still holds the way down; not
+  reproduced (2 games with the fix off saved 1.8 s in).
+* The share's settle clock now restarts at a Space context change too
+  ([tribe.md](tribe.md#tribe-share-settle-reset), `world.share_settle_reset`).
+
+## Owed refunds by game identity, the save hook, a destroyed modal window (2026-10-30, fix/w9-space)
+<a id="space-owed-refund-identity"></a>
+
+* ✔ The galaxy's identity for owed refunds (BUG-0225, GitHub #159) is the Space world in memory
+  (`spaceext::world_epoch()`) plus the game's save file, `<slot dir>\<planet>.spo` in lower case
+  (`world::current_game_key()`: the save database location of resource DB 0x4729A47 and
+  CurrentGameName). Seen at runtime: `c:\users\<user>\appdata\roaming\sporekit-test\spore\games\game0\madas.spo`;
+  a copy of the slot as Game7 gives another key with the same planet name. The planet name alone
+  is not unique (co-op worlds alternate between two slots of one planet, BUG-0035).
+* ✔ The world epoch also rises when, in kSpace, the planet file changes (crc of CurrentGameName,
+  "SaveGame" and snapshot.spo ignored; `coop.fix space.world_file`), so a load of another game that
+  shows no other mode to a frame and reuses the old cEmpire's address is still seen.
+* ✔ `cGamePersistenceManager::SaveGame` (GOG 2024 0xB29000, thiscall(name, bool) ret 8) writes the
+  save synchronously (`<name>.tmp`, then its own commit 0x6891E0, the save messages 0x1A0219E before
+  and after) and returns nothing: success is not reported. The mod counts a save of the Space world
+  after the call returned with a non-empty name; a write error is not seen (? no case known).
+* ✔ The galaxy-menu quit (message 0x4715068, `coop.menu`) saves the game first: after a gift, a
+  trip to the menu and a load of the same game, its file already lacks the gift. A reload that
+  still has the items needs a game file not saved since (a crash, another slot's copy, a received
+  world).
+* ✔ Rule (space_logic.h `owed_action`, unit tested): the same world in memory: pay; the slot got a
+  received world since: drop; another game now (or unknown): keep owed (32 at most), paid when
+  that game is loaded again; the same file again: pay if that world was saved after the take,
+  else drop. Trade gifts and sales (space_trade.cpp) and spice gifts (spacecoop.cpp) use it with
+  `coop.fix space.owed_id`; off = the 0.7.3.0 trade rule (cEmpire pointer and a save counter of
+  every stage) and the 0.7.3.1 spice rule (the same world only).
+* ✔ The window manager's modal window (BUG-0270): `cWindowManager` +0x82C is the modal window,
+  +0x830 its handler, +0x81C the list of modal windows under it (PushModal 0x95AE80 vt 0x74,
+  PopModal 0x959410 vt 0x78, GetModal 0x957E80 vt 0x84). `UpdateHover` 0x958FB0 (mouse messages
+  6..9 through ProcessMessage 0x9596E0 and Update 0x95A9E0) calls the modal window's vt 0xC4 and
+  vt 0xF8 without checks. A guest had a destroyed window there (vtable 0x13EB92C, the refcounted
+  base its destructor 0x410D00 leaves; slot 0xF8 lies past that table's end and reads 0x65) and
+  faulted at 0x65 from 0x959049. Which window and why the game destroyed it without PopModal is
+  open (?): the guest had been taken from Space to the galaxy menu by the mod and loaded the world
+  from there. gamefixes.cpp drops such a window (both slots must lead into executable code) before
+  UpdateHover (`coop.fix game.dead_modal` (retired in 0.7.15)).
+
+## The captain screen and its game fault (2026-10-30, fix/w11-finale)
+<a id="space-captain-screen-fault"></a>
+
+* ✔ The rank badge over the ship's picture (bottom right, about 1390 890 at 1440x1080) opens the
+  captain screen (panels "Equipment" and "Crew", buttons "Enter Outfitter" and "OK"). In the lab's
+  Space saves its left panel is pink with the missing string `*UNKNOWN<ep1_captain_primary_title>*`.
+* ✔ While it is up the game ignores the mouse wheel: no zoom-out to the galaxy view (10 x 5 notches,
+  context stays 1). It is not a caption (`coop.space finale` busy=0). Esc does not close it (Esc
+  opens the pause menu over it); its OK button does. `coop.ui find Equipment` shows it (the "Enter
+  Outfitter" window has a hidden parent and does not count as shown). The co-op window's "Fly to"
+  still works under it (BUG-0303's guest jumped with it open).
+* ✔ Each opening logs one caught fault `0xC0000005 at 0x005971D4` (named LockPart+0x3C4 by the
+  symboliser; really the out-of-line block of the cCollectableItems method 0x5970D0, called with a
+  null `this` from the captain screen's update 0xF179E0), also with coop unloaded: the game's own,
+  handled (BUG-0304, `SporeCoop::CollectableItems_5970D0` in overrides_dc04aee5.sym).
+* Test bots: play_space.Player.targets skips points under the badge, `play_space.captain_open` /
+  `close_captain` detect and close the screen, `coop_space_finale.to_galaxy` closes it before the
+  wheel (BUG-0303). Test: `space_captain`.
+## A share save in the frame the ship leaves a planet (2026-10-30, fix/w11-space-join)
+<a id="space-share-save-stale-place"></a>
+
+* ✔ (lab 20261030-100130, BUG-0301) A Space save made in the frame the ship leaves a planet
+  (`takeoff`, as a zoom out does) loads on that planet: the guest that loaded it was in the solar
+  system for 2.5 s, then its ship was on the planet (Space 80xxxxxx -> 40xxxxxx), nobody steering.
+  Saves made 2 s into the system load in the system. Why the game goes back down is not known (?).
+  This confirms the inference of [the section above](#space-share-save-at-context-change).
+* ✔ The mod's place (`coop.cpp g_world`, `modes::current_place`, `SpacePlayerData +0x10`) is
+  updated after `world::tick` in the frame, so in that frame it is one frame old while
+  `Simulator::GetCurrentContext` already says "solar system": the settle clock of BUG-0287 did not
+  restart, the save went out "80 s in this place". `world.share_settle_context` restarts the clock
+  on a change of `GetCurrentContext` read in the same frame as the save.
+* Test knob: `coop.worldfix retry <ms>` (the retry of a share save the game refused; 0 = every
+  frame) makes the lab's one-frame race certain (`coop_space_share_takeoff.py`).
+
+## The species profile inside the planet generation, the wheel's landing conditions (2026-10-30, fix/w13-space)
+<a id="space-seed-profile"></a>
+
+* ✔ **What still made the planets differ (BUG-0185, runtime lanes 8 + 9, GOG 2024):**
+  `RequirePlanetsForStar` (0xBB4C90) calls `cStarRecord_GetSpeciesProfile` (0xBBA670) right before
+  `GeneratePlanetsForStar`. The profile is cached at star +0x80 (valid while its +0x504 equals the
+  species key at star +0x74); a first load goes through `cSpeciesManager::GetSpeciesProfile`
+  0x4DF5C0 and draws RandomInt from the **global** generator in 0x4D4B30 (return addresses 0x4D4E2F
+  and 0x4D4F34, results 0). Inside the hook of section 7.3 those draws went to the private, star-seeded
+  generator and shifted every later draw. Whether a game had loaded the profile before depended on
+  what it did earlier (the galaxy view, an empire's colour `UpdateAndGetColor`, GetEmpireForStar,
+  cEmpire::GetSpeciesProfile all call it). Seen with the same seed D34F3953 for 0046101B: one profile
+  draw -> 6 planets (170 seeded draws, hash EC90DBC9), two -> 10 planets (629 draws, hash
+  5499C009), the profile already cached (no draw) -> 8 planets (321 draws, hash 5FA0B667). 3 of 6
+  `coop_space_jump.py` runs on lanes 8/9 ended DIFFERENT (lab 20261030-135159).
+* ✔ Not the cause (logged in the same runs): the star's empire object (made in every run, also
+  the 10-planet ones), tech level +0x4C, flags +0x5C (0x1004), the "pending tech level" list
+  cStarManager +0xDC, the template argument (always null from TravelToStar's 0xBB5920, return
+  address 0xBB596B), another thread.
+* **Fix:** `spacecoop.cpp` hooks `cStarRecord_GetSpeciesProfile`; draws inside it stay on the global
+  generator (like the names'). With it every game makes the "cached" layout: 8 planets of 0046101B.
+  `coop.fix space.seed_profile off` restores the old routing. Each seeded generation logs one line
+  (`space: planets of star ... generated (seeded <seed>): <n> (... draws=<n> hash=<h> ...)`): two
+  games' logs with the same seed and a different hash generated differently; SK_DEBUG adds every
+  record (kind +0x28, flags +0x2C, scores +0xB0/+0xB4, tech +0x194) and the first 48 seeded draws
+  with their return addresses. `coop.space profile <StarID>` loads one star's profile (tests).
+* ✔ **The wheel's landing (system update 0x1009C90, GOG 2024, Ghidra + runtime, BUG-0182):** each
+  frame, unless the game time is paused (cGameTimeManager +0x48 bit 0) or cSimulatorSpaceGame +0x50
+  has bit 2 or 4, and no cSpaceGfx +0x8C job is busy: with the space camera (IGameModeManager vt 0x50
+  -> vt 0x38 -> vt 0xC(0x303154CC)) zoomed in (+0xD5 set) to its minimum (`SporeCoop::SpaceCam_MinZoom`,
+  5.0) and `SporeCoop::Space_ZoomLandReady` 0x10422F0 true (ship +0x74C at destination +
+  `cSimulatorPlayerUFO_CanLandOnActivePlanet` 0xC383D0: not a gas giant, HP +0x540 > 0 (or an own
+  colony), no comm screen, time running, space UI window 0x755F180 hidden) it lands (0xFDF5A0).
+  Otherwise, at a planet: the hint 0x9A16D07E for a gas giant, the event 0x9D507CCB when HP <= 0.
+  The zoom-out to the galaxy is the other branch (+0xD5 set, zoom at the maximum 0x1016F10(1)).
+* ✔ A landing pauses the game time and sets cSimulatorSpaceGame +0x50 bit 2 for about a second
+  while the planet loads (`coop.space landcheck`: `paused 1 sg50 2`), then context 0.
+* ~ The 50-80 s delay of known-issues BUG-0182 (lane 10, 2026-10-23) was not seen again: 3 direct
+  runs on lane 9 and 2 lab runs on lane 8 of `coop_space_land_early.py` landed 7-16 s after
+  `start('space')` returned (the camera's zoom animation takes ~4-7 s of wheel turns). The old
+  runs (lane 10, code of 2026-10-23, the intro of section 7.9 already ruled out) were not kept; what
+  changed since is not known. If it comes back, `landcheck` shows which condition holds it.
+
+## Host NPC ship models the guest lacks (2026-10-30, fix/w14-space)
+<a id="space-mirror-model"></a>
+
+* ✔ **The fault 0x00E98DD0 (BUG-0323, runtime lanes 8 + 9, GOG 2024).** The label
+  "cPlanetGfx_Create+0x8F0" is only the nearest symbol: the code is 0xE98D90 (thiscall(gfx, bool
+  visible), `ret 4`), the ship gfx's SetVisible. It calls the gfx's vt+0x2C (its model), writes
+  `[model+4]` bit 0 without a null check, tells the model world (vt+0xC4) and, when shown, starts the
+  engine sound of the owner (gfx +0xC, cast with vt+0xB8(0xB033B403) to the UFO; +0x714 the UFO
+  kind). A ship whose model resource does not exist has a null model there.
+* ✔ **How a guest gets such a ship:** the host sends every NPC ship with its model key
+  (cGameDataUFO +0x780, `squadron.cpp`), the guest spawns its mirror with `SpawnUFO(type, &pol, key)`.
+  An NPC empire's ships are creations of the host's Sporepedia cache `Pollination.package`
+  (per profile). On lane 8 the host profile's Pollination.package (grown by earlier tests, among
+  them a Civilization -> Space campaign) held creations the guest's did not: the guest logged the
+  key as unknown 24 ms before the fault. Swapping only that file between the lane 8 and lane 9 host
+  profiles moved the fault with it (bisection of the profile, labs 20261030-1536..1629).
+  `SpawnUFO` with a null key faulted the same way (its default model was missing too).
+* **Fix:** before spawning a mirror the guest checks the key with the resource manager
+  (`creations::key_known`, RM FindRecord vt+0x30); an unknown key is replaced with the model of a
+  live ship of the same empire that this game made itself (remembered per political id, since the
+  local ships are removed once the host's are mirrored), else the mirror is not made. Switch
+  `coop.fix fleet.model_check`; `coop.fleet list` prints `unknown_models=` (spawn attempts with
+  an unknown key); `coop.fleet fakemodel 1` (host, tests) sends made-up model instances.
+* Not done: sending the creation itself to the guest (creations.cpp does that for the players' own
+  ships, not for NPC empires' ones).
+
+## A share save written on a planet (2026-10-31, fix/w27-space-fault)
+<a id="space-share-save-on-planet"></a>
+
+* ✔ **A save is written frames after it is posted.** `world::save_game` posts the game's save
+  message (0x1CD20F0, MessagePost) after checking `Simulator::GetCurrentContext` (0 planet, 1 solar
+  system, 2 galaxy). The game writes the world later in its own message processing: in lab
+  20261031-185843 campaign_space#3 the host posted the share save in its solar system (place
+  0x80AE3044, settled 14.5 s), its ship was on a planet (0x40AE3044) 0.3 s later, and the world was
+  serialized 1.1 s after the post (`save: N objects of ours are kept out of it`). The check at the
+  post does not cover the write. `cAppModeSpace::LandOnActivePlanet` (0xFE0E00) switches the
+  context to 0 at once (it calls 0x1003530). ✔ Runtime (labs 20261031-204503/204700/204721): a
+  landing in the frame of the post makes the game drop the save (no box, nothing written; BUG-0276's
+  check saves again); a landing 0.3 s or 0.7 s after the post (0.9 s in the log under load) comes
+  before the write (the world was serialized 0.17 s after the landing) and the save is made on the
+  planet.
+* ✔ **What a planet-made Space save does to the game that loads it** (GOG 2024, both builds have the
+  same code here): the guest's ship starts on the planet with the host's ship values, and the
+  game faults at every frame at 0x00EBDD12 (thousands of caught faults, its console busy for
+  seconds). 0xEBDD12 is inside FUN_00EBDBB0 (thiscall, `ret 8`, 1984 bytes; the labels
+  "SporeApp.exe+0xABDD12" / "Herd_Update" are only nearest names): `mov eax,[esp+0x18]` (the saved
+  `this`) then `mov edi,[eax+8]`: `this` is null. It walks a list of area effects at this+8..+0xC,
+  tests each one's distance to the object it gets (vt+0x5C casts 0x1186577, 0xB033B403 (UFO, +0x714
+  its kind), 0xCE9F6639) and applies damage through vt+0x18 (type 8). Callers: 0xEF1850 (plain
+  forward) and 0xFF63D0 (passes object+0x508), called from 0x1060E00+0xDDC. Inferred: a planet
+  hazard manager that does not exist after such a load.
+  The second address, 0x00FD9420 (label "Movie::MovieSystem::Init+0x350" is a nearest name), is
+  `cCityData::GetSpiceProduction` (`fld [ecx+0x1C]; ret`, see 5.2 above) called with a null city
+  data from 0xC82B70+0x10C (only caller 0xC82EE0): a planet record of that save with tech level 5
+  and no cCityData. A few per minute.
+* This is the documented "forcing a save on a planet" failure (docs/07-modes.md, Space) reached
+  through a race instead of a forced save. BUG-0301 (a save in the frame the ship left a planet) is
+  the mirror case at the post; this one is after the post.
+* **Fix (BUG-0357):** savestrip's COMSerializer::Write hook calls a watch when a save starts
+  writing (once per serializer and frame, main thread, whether or not the strip is on); world.cpp
+  notes the time when the Space context is 0 then. A share whose save was written on a planet saves
+  again (`save_game` refuses until the ship is off the planet, the guest waits with "leave the
+  planet to save"). Switch `coop.fix world.share_planet_save` (retired in 0.7.15); test knob `coop.worldfix landsave <ms>`
+  (LandOnActivePlanet <ms> after the next Space share save is posted; -1 off); `coop.status`
+  world line "shares saved again (written on a planet) N".
+* Frequency: 1 of 182 Space share saves in the lab history up to 2026-10-31 (a test bot clicked a
+  planet in that second); the race is as old as the Space share saves (v0.5.0, commit 3989b34).
+
+## Where the game draws a pinned ship: the UFO controller after the mod's write (2026-11-01, fix/w31-space-gate)
+<a id="space-pinned-ship-drawn"></a>
+
+* ✔ **Frame order** (coop.cpp `on_frame`): the mod runs at Present: `support::tick`, then
+  `g_sess.update()` (every received message, the sync-check's digests among them), then the stage
+  ticks, then `drive_puppet` / `squadron::guest_tick` write the poses. The game's own update runs
+  between two Presents, so anything read in `g_sess.update()` (the sync-check digests) or at the top
+  of `on_frame` (`coop.fleet track`) is the pose the game's update made of our last write: what the
+  frame showed. `coop.sync` (a console command) reads after our write: our own target.
+* ✔ **The controller update** `UFOController_Update` 0x1062CF0 (GOG 2016 = GOG 2024 address, every
+  UFO, puppets and mirrors too): planet context -> `UFOController_Planet` 0x1060E00, else
+  `UFOController_System` 0x105F2E0; then it sets the loco velocity so the ship reaches
+  **`mNextPosition` +0x718 + `mOffsetFromPosition` +0x740** in this frame. So a ship pinned to
+  next = p is drawn at p + its own offset.
+* ✔ `UFOController_System`: in a star (or binary) system at its destination it calls
+  SnapToDestination (0xC37FC0 GOG 2024 / 0xC37FA0 GOG 2016): next = mDestination, mZoomAltitude =
+  |next|, SetPosition(next + offset). The offset is 0 there in the lab (`coop.fleet track`, puppets and
+  mirrors drawn within 0-3 m of the owner's path with or without the pin fix, lab 20261101-094339).
+* ✔ **The galactic core** (the active star is not a star): `UFOController_Core` 0x105E270 (returns
+  while the SPG_CenterOfGalaxy cinematic plays): pulls next to the orbit radius, turns it round z,
+  and lerps the offset to **(0, 0, 30 * min(1, r / 400))** (constants 0x15B9E04 = 30, 0x15B9E0C =
+  400, up axis 0x15B9DB4 = (0, 0, 1)) through `UFO_SetOffsetFromPosition` 0xC38340. A player at
+  r = 275.5 flies at z = 20.7 (trace `pos=(49.6 -271.0 20.7)`, `(-223.2 -161.5 20.7)`). A puppet pinned
+  to that position got the offset once more: drawn 20.7 m (r < 400) to 30 m (r >= 400) above the
+  partner's ship, the `p0 20.7` / `p1 29-31` of the sync-check (84 MISMATCH lines in Space 80820000 in
+  the recorded runs, every space_finale_wait run). BUG-0378.
+* ~ `UFOController_Planet` 0x1060E00: a ship at its destination whose mZoomAltitude differs from
+  |mDestination| by more than a tolerance leaves its destination and flies (0x1060160) at its own
+  zoom altitude. The pin now sets mZoomAltitude = |next| as SnapToDestination does. In the lab the
+  puppets' zoom followed |pos| already (`coop.fleet track` zoom column) and no offset was seen on
+  the planet: the zoom part is a precaution (inferred, not seen to matter).
+* **Fix** (`modes::space_pin`): mNextPosition = mDestination = p - the ship's own offset, mZoomAltitude
+  = their length; switches `space.puppet_pin` (partner puppets, BUG-0378) and `fleet.mirror_pin`
+  (host NPC ships' mirrors, BUG-0190).
+* **Measuring it**: `coop.fleet track on|off|dump [from] [n]` (rows `t kind id x y z ox oy oz zoom` on
+  the session clock: m = own ship, p = puppet, s = NPC ship / mirror; at most ~400 rows per console
+  call, the console answer is cut at ~32 KB); tools/tests/coop_space_drawn.py compares each game's
+  drawn rows with the owner's own rows at the same session time (`now`, lag included) and with its
+  path over the 0.5 s before (`path`, lag taken out).
+
+## A host ship's model: the parts inside it (2026-11-02, fix/w39-content-all)
+<a id="space-mirror-content"></a>
+
+BUG-0469, GOG 2024, lanes 4/5 (`tools/tests/coop_content_space.py`).
+
+* ✔ The ship snapshot carries the host ship's model key (cGameDataUFO +0x780); the guest's mirror is
+  spawned with `SpawnUFO(type, &pol, &key)`. BUG-0323 checked the key alone (`creations::key_known`).
+  Now the model's parts and paints are checked too (`creations::ensure_model`, kind UFO: the UFO model
+  names its parts in group 0x40646000, its three paint effect dwords at byte 26 of the bem header):
+  a model with ids this game lacks is built from our copy of the model records with base game substitutes
+  (under the model's own key, above the game's packages: no key of ours, BUG-0469 review), and a model
+  that cannot be built here is handled as an unknown model (the local model of a ship of that empire, else
+  no mirror yet).
+* ✔ A model key the guest's game *has* whose model names a part it does not have is the case BUG-0323 did
+  not cover: the guest faulted in the model bake at 0x0046C82A (`SporeCoop::ModelBake_PartProp_Null`),
+  not at 0xE98DD0. Runtime: `coop.fleet fakemodel 2 <instance>` makes the host send the test's ship model
+  (a base game UFO model with a part of `Spore_Pack_03`): with `SPORE_FIX_OFF=content.all_kinds` the guest
+  faults (`out/lab/20261102-202807`), with the fix on it builds a substitute copy and shows the mirror
+  (`substituted=1`, `content_checked=2`, `out/lab/20261102-202217`).
+
+## The size of a UFO (2026-11-03, fix/w40-scale)
+<a id="space-ufo-scale"></a>
+
+* ✔ Every ship is sized by the game every frame: `SporeCoop::UFO_UpdateScale` 0xC3B550 (callers 0xE9D2E0,
+  the UFO gfx update, and 0xFFC960) sets loco (+0x34) vt 0x40 `cModelObject_SetScale` 0xC88630 (scale at
+  loco +0x64 = ship +0x98, a copy at +0x7C) to the model's bounding box size clamped by the UFO tuning
+  (`[0x168DF68]` +0x28 / +0x2C) times `UFO_ViewScale` 0xC3AFD0 times 0xC3AEA0. A size the mod sets lasts
+  one frame (lane 6: 4.946 set on the partner's puppet, 3.297 again 2 s later), so a size can not be
+  replicated as a field; the setter itself is hooked (`squadron.cpp h_SetScale`).
+* ~ `UFO_ViewScale` takes the view (0x1020F30 result 1: a star system, 2: a planet, inferred), a cinematic,
+  the ship's +0x7DC bit 9, the camera distance (interpolated between two tuning values) and the type
+  (+0x714 == 0, the player's own ship, gets its own tuning entry).
+* ✔ Measured in the `space` fixture's star system: the own ship 4.946 on both games, each partner's puppet
+  (a Defender NPC UFO, modes.cpp space_spawn, type 6) 3.297: each player saw the other's ship at an NPC
+  ship's size, two thirds of its own (the detector's `Space:scale:ufo`, 97 % of the Space comparisons;
+  the 4.82 / 0.84 pair of the night report is the same on a planet, inferred).
+* Fix (BUG-0479, `space.puppet_scale`): when the game sizes a partner's puppet, the puppet gets the size
+  the game gave the own ship in this view (the own ship's loco +0x64). `coop.status` line `space puppet
+  scale:` (sized, replaced, the game's and the own value, the caller: 0xC3B61F inside UFO_UpdateScale).
+* The same hook logs once per caller who sets the scale 10 on any object (`scale 10 set on an object
+  with vtable ... from ...`): diagnostics for BUG-0485 (the commodity nodes, noun 0x0403DF5C, whose loco
+  vtable 0x1469A28 uses the same setter).
+
+## Life on a colony planet: citizens, vehicles, the cities' spice pickups (2026-11-04, fix/w42-space-planets)
+<a id="space-planet-life"></a>
+
+Measured on the `space` fixture's home planet (00460035, 9 cities, radius ~507 m at the cities; a landed ship
+flies ~270 m higher), lane 3, GOG 2024, both games on the planet (`coop.census all 3000 0 0 0`).
+
+* ✔ **Citizens** (cCreatureCitizen, noun 0x18EB4B7): a pool of **150** per planet on every game, put at the
+  cities **near the own camera** (two cities held 116 / 34; when only the guest's ship was put over city 0 with
+  `coop.space over`, the guest's game moved 42 of them there, the host's kept its own two cities). Most stand (0.0 m in
+  1 s for all 150 right after the landing); a few minutes later some run about at ~5 m/s (15 m in 3 s). Where both games populate the same city, 123-145 of 150 are within 3 m of a
+  partner, the rest elsewhere, each of its own random size (2.06 / 2.12 ...). So a city only the guest's camera
+  went to has citizens in the guest's game only: level of detail, not a desync (the detector skips citizens
+  there: worlddiff.py).
+* ✔ **Vehicles** (cVehicle, noun 0x18C6DE8, the same class as Civ's): 40 on both games (land 15 / sea 10 / air
+  15, all of the player's pol 0x800021CA, purpose 2), ~20 m/s, driven by each game's planner: 25 of 40 were more
+  than 15 m from any partner. Moving them as civ.cpp moves its mirrors (spatial +0x34 StopMovement vt 0xEC,
+  Teleport vt 0x44 (pos, quat)) every frame keeps 37-40 of 40 within 3 m; sea vehicles were 400+ m from the
+  nearest partner of their class.
+* ✔ **planetary_artifact** (cPlanetaryArtifact, noun 0x2DD8C42, vtable 0x1472B70, size > 0x660): an item of the
+  planet record's list (record **+0x134 / +0x138**, 0x2C bytes each: +0x00 key (u32 instance), +0x04 position,
+  +0x10 u16 count, +0x12 u8 item type, +0x14 u32 time (s), +0x18..+0x24, +0x28 u8 flags) made into an object
+  when the planet loads (cSimPlanetHighLOD load 0xFF96B0: every item without flag 1/4/0x40/0x80 goes through
+  `SporeCoop::Planet_SpawnArtifact` 0xFF5BD0, which calls `cPlanetaryArtifact::LoadFromItem` 0xC74ED0; items of
+  type 7 with flag 8, the loot of a destroyed ship or city 0x102BA40, expire after 300 s). On a colony the items
+  are of **type 4: the spice each city stores** (key = the planet's spice, e.g. 0x1CA01562 Red; one per city,
+  ~30 m from it). `SporeCoop::Colony_UpdateSpicePickups` 0xC82B70 (thiscall-compatible, `ret 4`, the planet
+  record on the stack; from 0xC82EE0, which the Space mode's update runs for the active planet when more than
+  6 s passed, also in the star system view): for every live city a type-4 pickup when the city's stored spice
+  (cCityData +0x1C, FUN_00fd9420) rounds above 0 (made by 0x103AD60), the pickup destroyed when it is 0, the
+  count (+0x638) set otherwise; then the record's type-4 items are rebuilt from the live pickups.
+* ✔ **Entering a star system collects the stored spice of the player's colonies there** into the hold (the
+  guest that jumped away and back had 10 Red spice in its hold and 0.0 in 8 of the 9 cities; the host that never
+  left kept 1.2 per city). The next pickup update in that game destroyed the pickups, so its planet showed none
+  while the host's showed 9: the detector's `Space:noun_only_host:planetary_artifact`. With the shared empire of
+  co-op every game could collect the same spice once (BUG-0537).
+* Citizens and vehicles fix (BUG-0490, worldobj.cpp kinds `space_citizen` / `space_vehicle`): a bound copy is put
+  where the host's is every frame (its last snapshot moved on with its velocity); a MoveTo hardly moved a Space
+  citizen (500 walks in 25 s, 4-10 of 19 still 3+ m off) and a put every 0.25 s lagged 4 m behind the runners.
+* Fix (`space_planets.cpp`, MSG_SPACE kinds 80..84): the host's colony cities' stored spice on every game (on a
+  change, else every 10 s); a guest's game that takes spice out of a city tells the host, which takes it out of
+  its city too; the game's own pickup update does the rest (the host's 9 pickups were gone 10 s after the
+  guest's arrival). Not in rivals mode (own empires).
+* Earlier guesses superseded: BUG-0479's ticket and the detector's KNOWN table had `planetary_artifact` as a
+  ship-scale finding; it is the colony spice.
+* The ship size remainder (`Space:scale:ufo` 4.95 host / 3.74 guest after BUG-0479's fix): each game sizes
+  every ship by its own camera (both ships 0.922 at zoom 200, 0.664 when the guest's zoom went to 135.8 with
+  one wheel notch, the host still 0.922); the partner's ship is always the own ship's size on that screen. Not a
+  desync: the detector compares a ship's size relative to the own ship of the game drawing it.
+## The mod's ships in a Space save (2026-11-04, fix/w42-space-life)
+<a id="space-save-strip"></a>
+
+* ✔ A Space save writes every UFO of the noun list, the mod's too: a guest (Carol, lane 5, GOG 2024) saved
+  in the `space` fixture's star system with the host's and Bob's puppets (Defenders of its empire,
+  `modes.cpp space_spawn`) and one mirror of a host Defender (`squadron.cpp guest_state`) next to it;
+  restarted alone, it loaded the save and had 3 type 6 ships of its own empire, two exactly where the
+  puppets stood (lab 20261104-094503). The invincible byte (+0x588) is not kept: they came back as
+  ordinary, vulnerable Defenders, each with the AI of a colony defender.
+* ✔ Null rule (BUG-0470): with the strip filter writing null references for the 3 ships (6 references:
+  base and the ISPSerializable cast), the reload ran 10 s without a fault and with no ship of ours
+  (lab 20261104-094827). ModAPI's `cSimulatorSpaceGame::mNPC_UFOs` (+0x78) read as an empty vector
+  {begin == end} in that system (3 NPC ships listed): not a list of the system's NPC ships here, so nothing
+  is taken out of a list while the save is written (~: not checked on a planet).
+* The host's share save (written for a joining guest) holds the other guests' puppets the same way:
+  the strip runs on both roles (`space: N ships of ours leave this save`, `save_stripped=` in
+  `coop.fleet list`).
+
+## A guest's colonies across a rejoin (2026-11-04, fix/w42-space-life)
+<a id="space-kept-colonies"></a>
+
+* ✔ A guest's record-level colony (tech 5, a cCivData of its empire) is gone after it leaves and joins again:
+  the rejoin loads the host's share save, which never has it (the allies mirror is undone before every save,
+  15.4). Seen: P01460035 tech 5 -> tech 1, no civilization (lab 20261104-095758).
+* ✔ The guest's first roster after a join is read in its own world, before the host's world arrives and loads
+  (lab 20261104-100007): anything applied from the host's answer to it is lost with the load. BUG-0195's
+  restore waits until the guest's Space world epoch moved on since the join.
+* ✔ The record-level colony path (`spaceext::colonize_own`, the `allies colonize` test command) applied in
+  the freshly loaded host world shows the planet as the guest's colony at once (tech 5, its pol); the host's
+  roster of the guest has it as the guest's own within one roster period.
+
+## The fast partner ship in the core: a measuring gap, not a drawing error (2026-11-04, fix/w42-space-life)
+<a id="space-fast-ship-track"></a>
+
+* ✔ BUG-0388's "guest ship drawn 20-30 m off its path for 0.2 s" (space_finale_wait, the guest orbiting the
+  core's gate at ~200 m/s) is not what the host drew. With the puppet rows carrying the pose the mod set (the
+  partner's interpolated state, `extrap`, `pin`): every off row was pinned, interpolated (extrap 0.000 s) and
+  drawn exactly where it was set (lab 20261104-100758 #1 and #2, 20261104-101851).
+* ✔ The track dumps had gaps: SporeKit cut every command answer at 8 KB (`out_printf`, an 8192-byte buffer):
+  of 300 rows asked per call the test got 97, so the guest's own path had a 1.5 s hole every ~0.7 s, and the
+  check measured the drawn ship against the straight chord across a hole of an orbit of radius 276 m. Where the
+  guest's path was recorded without a gap (98 rows of the same run, up to ~300 m/s by the rows) the drawn ship
+  was within 0.17 m of it (out/lane4/tracks of 20261104-101851, offline check).
+* Fixed in SporeKit (`kit.fix longout`): one printf may give up to 1 MB. Every other dump read in pages
+  (`coop.track`, `coop.npctrack`) lost rows the same way before.
+
+## Lane 5's Sporepedia cache and the host fault at 0xE98DD0 in space_diplomacy (2026-11-04, fix/w42-infra)
+<a id="space-lane5-pollination"></a>
+
+BUG-0546 (host fault `UfoGfx_SetVisible+0x40`, data 0x4, about 2 s after the jump to star 004A0014 of the NPC
+empire 8000216E "Plushio The 3rd Empire"; lane 5 only).
+
+* ✔ The lanes' game copies are the same: every file of `SPORE-lab/lane4` and `lane5` outside `mods/` and the
+  crash / exception reports has the same size (only the deployed sporekit.dll / coop.dll differ). What differs is
+  the host's test profile (`SporeKit-test/Spore`): `Pollination.package` (the Sporepedia cache: 2.1 MB on lane 5,
+  6.5 MB on lane 4), GraphicsCache, Planets.
+* ✔ A/B/A/B on lane 5, the same build (fix/w42-infra): lane 5's own Pollination.package FAILs (host fault 1,
+  out/lab/20261104-121214 and -121818, as the three runs of the ticket), lane 4's copy PASSes (-121357,
+  -122038). Nothing else changed. The two files are kept in the fix/w42-infra worktree's `out/bug0546/` (not in
+  git); lane 5 now has lane 4's copy.
+* ✔ Contents (DBBF index, group 0x40656200 = UFOs): both caches hold ~90 UFO records that are only a summary
+  (type 0x02D5C9AF); lane 4's also holds 32 complete UFOs 0x29132043-0x29132062 (types 0x02D5C9AF, 0x2F7D0004,
+  0x030BDEE3 and the model 0x476A98C7), lane 5's has no UFO with a model (no 0x476A98C7 entry at all).
+  (Index layout of the cache: `DBBF`, entry count at +0x24, index size u64 +0x28, index offset u64 +0x38;
+  index flags 4 = the third key word constant; an entry is type, group, instance, offset u64, sizes, flags:
+  32 bytes.)
+* ~ Inferred, not checked in the game: the NPC empire's ships take a UFO from the host's own Sporepedia cache;
+  with no complete UFO there the ship gets a null model and UfoGfx_SetVisible reads it (the same fault as
+  BUG-0323, there a guest mirror). Whether the game without the mod does the same with such a cache is not
+  checked; a player whose cache holds no complete UFO might hit it. A guard (BUG-0323's model check for the
+  host's own NPC ships) belongs to the Space packages.
+
+## The ship gfx's model and the game's own null model at 0xE98DD0 (2026-11-04, fix/w42-infra)
+<a id="space-ufo-null-model"></a>
+
+BUG-0546, follow-up of [lane 5's cache](#space-lane5-pollination).
+
+* ✔ The game's own bug, not the mod's: one game, no co-op session (`coop.status`: offline), the space_empire
+  fixture and lane 5's Sporepedia cache, `coop.space jumpto 4849684` (star 004A0014): fault at 0xE98DD0 (lab
+  test space_npc_model with game.ufo_model off failed (retired in 0.7.15, BUG-1138: FAIL run 20261104-130233:space_npc_model)).
+* ✔ The path (Ghidra, GOG 2024): `UfoGfx_InitFromUfo` 0xE9B180 (thiscall(gfx, ufo) ret 4) reads the ship's model
+  key (0xC37390 on the cGameDataUFO cast 0xB033B403). Only a key of all zeros gets the default
+  {0x9D5DB21A, 0x476A98C7, [0x015A8B3C] = 0x40656200}. Then `UfoGfx_SetModel` 0xE9A920 (thiscall(gfx, const
+  ResourceKey*, bool bake) ret 8, the bake request via IBakeManager vt 0x4C) asks the model world (vt 0xC) for the
+  model and stores it (gfx vt 0x30) only when one is made, and calls `UfoGfx_SetVisible` 0xE98D90, which writes
+  [gfx vt 0x2C (GetModel)]+4 without a null check. The gfx object: `Simulator/cUFOGfx`, 0xD8 bytes, made by
+  0xE994D0.
+* ✔ The keys seen: NPC ships of the empire 8000216E with 29133E22 / 2913505D (type 0x476A98C7, group 0x40656200):
+  in lane 5's cache only their summary record (type 0x02D5C9AF), no model record. The NPC empire picks its ships
+  from the cache's UFO list; which one varies between runs.
+* ✔ The game's default UFO 0x9D5DB21A/0x476A98C7/0x40656200 is not known to the resource manager on the lab's GOG
+  2024 install (giving it to SetModel made no model either; the game then crashed at 0xE99524, a later use of the
+  null model, and at 0xE9A908).
+* Fix (gamefixes, `game.ufo_model`): SetModel with a key the resource manager does not have (`creations::key_known`
+  with the model type) gets the default UFO when this game has it, else the last ship model key SetModel had that
+  was known (the player's own ship, set up first: 0675F7B2 in the test); SetVisible on a gfx whose GetModel is null
+  returns (backstop). Not covered: a ship set up before any known ship in a session (the key is kept, as before).
+## Space play: gifts at the session end, partner colonies in own systems, diplomacy while away (2026-11-04, fix/w42-space-play)
+<a id="space-play-w42"></a>
+
+* ✔ **A trade gift without its answer when the own session ends** (space_trade.cpp, BUG-0542 of BUG-0196): the receiver adds a
+  tool gift or a spice sale in the frame it arrives and answers at once; only a rival offer waits for a click. The
+  sender's net::Connection knows whether the partner's side acknowledged the reliable message that carried it
+  (`Connection::next_rel_id` before and after the send, `rel_acked(lo, hi)`: no message of that range is left in
+  `rel_out_`); checked every frame while connected (the session end frees the peers first). A guest's message goes
+  to the host (id 0), which relays it in order, so "acknowledged" there means "on its way to the target".
+  Seen (lab 20261104-112227): `hold 2` on the host (added, no answer), the guest leaves: the host has the 5 charges,
+  the guest keeps 7 of 12; with `trade.delivered` off the guest had 12 again (20261104-112321): doubled.
+* ✔ **Our empire's star systems hold the partner's new colonies too** (space_allies.cpp, BUG-0543 of BUG-0197): in the usual
+  session both players start as one empire, so the home system (the `space` fixture's star 4587573 'Fibucius',
+  planets 00460035 Madas tech 5 and four free ones) is "mine" in both games; a colony the guest founds on
+  01460035 after the join was skipped by the host ("your own star system"). Every loaded cPlanet of that star
+  carries the star's pol in its cGameData (vt+0x4C GetPoliticalID: 800021CA on all five, also on the free ones).
+* ✔ A record-level colony there without `cEmpire_AddPlanet` (tech 5 + FillPlanetDataForTechLevel only) made the HUD
+  update 0x10743D0 (GOG 2024) fault 4 times at 0x107453A (`cPlanet_GetEmpire(active planet)` returned null and
+  +0x84 was read; lab 20261104-112528, -112743); with AddPlanet (as the game's own colony and the `allies
+  colonize` test command do) no fault (20261104-113000). ~ inferred: the empire lookup for the active planet goes
+  through the player's colony list. `cEmpire_AddPlanet` 0xC34FD0 (GOG 2024) is `if player: 0x1022040(rec)` (the
+  SpacePlayerData colony list: `+0x20..+0x28` vector<cPlanet*>, found through `RecordToPlanet`, a reference each by
+  vt+0xBC / released by vt+0xC0; then `FUN_00fd9c50()+0x188 +0x48 = 0`), `AddStarOwnership(star)`, and message
+  0x43F2585 when the player is an ally. The undo before a save takes the planet out of that list again.
+* ✔ Restoring such a planet's pol to -1 (as the mirror's undo does for a free star) left the star itself
+  ownerless: after `allies remove` the host's home star read emp=FFFFFFFF ("a home star") and the next apply
+  skipped every planet (lab 20261104-112743). ~ inferred: SetPoliticalID on a planet of a star sets the star's
+  owner. The own-star undo gives the planet the star's pol back.
+* ✔ **Diplomacy while a game is out of Space** (space_diplomacy.cpp, BUG-0544 of BUG-0194): partners' events and state changes
+  arriving while `in_space()` is false (an editor or an adventure entered from Space: the Space world lives on)
+  were dropped by the inbox task. A guest asks for the host's table on its way back, so only the host lost them,
+  and the host's next periodic table then removed the change from the guest that made it too (its 8 s guard had
+  run out). They now wait in the Space world they arrived in (`spaceext::world_epoch`) and are replayed when the
+  game is back in Space; the host sends no periodic table while such changes wait.
+* ~ Inferred (2026-11-04): the trigger needs the profile's caches together. Lane 4 with lane 5's
+  Pollination.package copied over did not hit the case (no ship needed the guard, out/lab/20261104-130333);
+  probably its GraphicsCache.package holds those ships' baked models. Lane 5 hits it every run.
+
+## The guest's Space money in the detector (2026-11-05, fix/w44-world-state2)
+<a id="space-money-unsynced"></a>
+
+BUG-0595. ✔ (observed, rel/0.7.7 lab 20261105-015350 campaign_space) The detector's "money 100000 on the host, nan on
+the guest" was a parse: a guest's `coop.wstate` prints `st res money=100000(unsynced)` until the host's first total
+after its arrival in Space (shared::brief); the guest's game had 100000, the host's too (the guests' trace lines of
+the same second). worlddiff.State reads the number before the suffix (and keeps the unsynced names in
+`res_unsynced`). Not a desync of the game.
+
+## The cities' decorations differ per game (2026-11-06, fix/w45-world-objects)
+<a id="space-city-ornaments"></a>
+
+GOG 2024 addresses (dc04aee5). Kind `city_ornament` of mods/coop/worldobj.cpp (BUG-0541), switch `wobj.city_ornament`.
+
+* ✔ The "9 ornaments by one colony city" are a city's decorations: noun 0x18C88E4 with the model instance 0x2AE5BA7 at
+  obj +0x228 (its group at +0x22C). City_MakeDecorations 0xBE6A50 thiscall(city, bool effect) ret 4 makes 3 groups (the
+  keys at city +0x528, 0xC each) x property 0x6414D84 (3) = 9: CreateInstance(0x18C88E4), the model 0xC6F910
+  thiscall(obj, instance, type (city vt 0x4C(group)), group) ret 0xC (+0x228 / +0x22C, then obj vt 0x48(type)), pushed
+  to the city's vector +0x308..+0x310, placed by 0xBD97B0 thiscall(city, obj): a free layout slot (0xAFACF0,
+  cLayoutSlot::SetObject, slot +0xC, the planet's up there 0xB7F2E0) else the city hall. Callers: the city setup
+  0xBE7D40 and 0xB90DA0 (a callback whose address 0xB9D970 stores; it skips a city whose combatant vt 0x58 says so).
+* ✔ Which cities have their sets differs per game and per load: on the `space` home planet (9 cities) 5 to 86
+  ornaments of this noun per game (5 of model 0x65658D2 are other objects and always matched); stable for a minute;
+  the host's ship over a bare city for 25 s made none (not the camera's level of detail); the groups of one city
+  differ too (0x6F8212CA on the host, 0x6F8212C8 on the guest). Lab 20261106-044822 (9 on the guest only),
+  -045215 (9 at city 0 on the host only, 9 by another city on the guest only), -045654 / -050420 (3 landings, every one
+  different).
+* ✗ Not the planet record: the planet load 0xFF96B0 makes an ornament for record items with flag 0x80 (model
+  0x345BD5D, group 0x1A4F418E, CreateInstance then 0xC6F910, spatial +0x70 vt 0x38 / vt 0x3C with 0xB7F2E0), but no
+  ornament of that model was on the home planet in either game (lab 2026-11-06, `coop.wobj raw 18C88E4 3000 576`).
+* ✔ Remove like City_RemoveTurret 0xBE21C0: Layout_ClearObject 0xAFADD0 thiscall(city +0x4B4, obj), DestroyInstance,
+  VectorPtr_EraseValue 0xD5AA90 cdecl(&vector, &obj) (Release of the vector's reference).
+* ✔ Fix: the host sends its decorations (the 56 nearest the guest's ship, one packet); a guest's binds within 1.5 m,
+  else its nearest unbound one anywhere is moved there (position and the planet's up); a host city set the guest
+  lacks is made on the guest's nearest bare city (City_MakeDecorations, then moved); a guest's decoration left
+  without a partner is removed. PASS lab 20261106-050848 (3 landings: sets=2 removed=45 relocated=39, no fault), FAIL
+  with the switch off lab 20261106-050420. ~ The model variant (group) stays the guest's own.
+* ~ Civ cities run 0xBE6A50 too; the kind is Space only (no Civ detector row, not tested there).
+
+## A guest's own cargo hold across a rejoin (2026-11-07, fix/w46-space-items)
+<a id="space-kept-hold"></a>
+
+BUG-0678 (player report: "when players log back in, their items disappear and the host's items appear").
+GOG 2024 addresses (dc04aee5).
+* ✔ (code) The hold is the game's `cPlayerInventory` (`cSimulatorSpaceGame +0x40`, 7.7), saved with the world.
+  A joining guest always loads the host's share save (world.cpp `share_with`, one peer), so after a
+  rejoin (or any load of the host's world in a session) its hold is the host's: its own tools,
+  charges, spice and cargo are gone. Nothing in the mod synchronised or kept a hold before 0.7.10;
+  money is not affected (one shared budget, shared.cpp).
+* ✔ (objdump) GOG 2024 `cPlayerInventory` vtable is **0x1494D70** (ctor 0xFF5040; 7.7's 0x14958A0 is
+  GOG 2016). Slots: +0x5C 0xC873D0 count, +0x60 0xC873E0 GetItem, +0x64 0xC87400 FindItem, +0x7C
+  0xFF40B0 TakeItem, +0x80 0xFF4780 AddItem, **+0x88 0xC875B0 = number of type-3 items (all cargo
+  slots)**, +0x8C 0xC87560 free ones, **+0x94 0xFF39E0 AddCargoSlots(n)** `ret 4` (appends n new
+  type-3 items, posts 0x5E793B4), +0x98 0xC87630 IsSlotFree(slot) `ret 4`.
+* ✔ (objdump) Cargo slots are items of their own (type 3, +0x10 = 1); a cargo item's **+0x2C** points
+  at the slot item it fills (IsSlotFree compares it).
+* The fix (`space.keep_items`, space_trade.cpp K_INV 77 / K_INV_KEPT 78 / K_INV_DONE 79): the guest
+  sends its hold (type, key, count, charges; slot count) when it changes; the host keeps the last one
+  per player name for its Space world (memory only, like the kept colonies of
+  [space-kept-colonies](#space-kept-colonies)); the first hold of a world the guest loaded from the
+  host is the host's copy, so the host answers it with the kept one and the guest makes its hold that:
+  items it does not have leave (TakeItem whole or the surplus), slots it bought come back
+  (AddCargoSlots; never fewer), tools by AddItemByKey (a few passes: upgrades need their base tool)
+  with their charges (AddAmmo / ConsumeAmmo), spice by CreateTradingObject + AddItem, other cargo
+  stacks by their count +0x10. A first join keeps the save's hold, as before.
+
+## The ship gfx factory and a ship without a model outside Space (2026-11-07, fix/w46-advance-reg)
+<a id="space-ufo-gfx-null"></a>
+
+BUG-0686, a follow-up of [the null model](#space-ufo-null-model) (BUG-0546). The campaign's Creature -> Tribe
+advance faulted the host at 0xE99524 (data 0x4) on lab lanes 2 and 3 (lab 20261107-171750, -175737-2).
+
+* ✔ 0xE99524 is in `SporeCoop::UfoGfx_Create` 0xE994D0 (93 bytes; slot 2 of the ship gfx vtable 0x1486F6C, entry
+  at .rdata 0x1486F74; thiscall(any, cUFO*) ret 4, ecx not used): `GeneralAllocator::new_(0xD8, "Simulator/cUFOGfx")`,
+  `UfoGfx_ctor` 0xE993A0 (thiscall(mem) -> this; vtables at +0 0x1486F6C, +0x34 0x1486F5C, +0x3C the message
+  listener 0x1486F4C), vt 0x24 (`UfoGfx_InitFromUfo` 0xE9B180) with the ship, then `if (GetCurrentGameMode() !=
+  0x1654C10) GetModel()->+4 |= 0x20`: no null check. Crash reports label it `UfoGfx_SetVisible+0x794`.
+* ✔ `UfoGfx_HandleMessage` 0xE9A7A0 (thiscall(listener = gfx + 0x3C, id, data) ret 8): message 0x604C6F4 writes
+  the ship's scale into GetModel()+0x18 without a check (the later fault 0xE9A908 data 0x18 of 20261107-175737-2,
+  86 s after the first, during the evolution cinematic); 0x6834927 plays an effect at the ship.
+* ✔ When a model is made: the model world (vt 0xC) makes one for a ship whose Pollination record is only a summary
+  (type 0x02D5C9AF) when GraphicsCache.package holds its bake (group 0x40656200, types 0xE6BCE5 / 0xB1B104 /
+  0x2F4E681C): no model and the fault when it has none. Lane 2's host profile on 2026-11-07: 123 UFO summaries,
+  no complete UFO, 20 baked; the two crash keys 290FD328 and 290F9F22 not baked, 290F6D76 (no fault in two other
+  runs) baked. Lanes 4 and 5 hold 32 / 34 complete UFOs (no "not in this game" line there: inferred, the visit
+  picks a complete one when the cache has any). Lane 3: 92 summaries, 0 complete, 2 baked.
+* ✔ game.ufo_model (BUG-0546) does not help here: it substitutes the default UFO (not in the GOG 2024 lab install)
+  or the last known ship key, and a Creature game has none ("none known, kept").
+* ✔ Reproduced: `coop.drama start 2` (the Creature Drama Manager's UFO visit) on a host with lane 5's BUG-0546
+  cache faults at 0xE99524 on the first visit with the campaign's call stack (lab 20261107-185421,
+  `SPORE_FIX_OFF=game.ufo_gfx`).
+* ~ The campaign's visits start a second after the evolution vote opens (4 of 4 campaign_tribe runs with a visit):
+  inferred, the stage's end (the brain bar full) is what starts it. The vote itself is not needed: the test starts
+  the visit with no vote.
+* Fix (gamefixes, `game.ufo_gfx`): the factory is done the game's way by the mod (new, ctor, InitFromUfo, the flag
+  only on a model); the listener skips 0x604C6F4 on a gfx without a model. Such a ship is not drawn. Counters in
+  `coop.status` ("ship gfx made without a model N (their messages skipped N)").
+
+## A ship's copy lies on its path, not where its speed at the read puts it (2026-11-07, fix/w46-v2-civ-space)
+<a id="space-copy-on-path"></a>
+
+BUG-0547 (the sync-check's `p0 46.2` / `p0 50.0` MISMATCHes). Lab lane 9, `tools/tests/coop_space_fast_sync.py`.
+* ✔ (runtime) The ship's velocity the state carries is the locomotive's +0x1C8 (modes.cpp space_fill). On the home
+  planet of the `space` fixture W pulses with turns reach 300-340 m/s (`drawn_v` of the guest's trace).
+* ✔ (runtime, lab 20261107-205734, -210209, -211254, -212524) On a local lane (rtt ~25 ms) long full-thrust pulses,
+  S braking, zooms (the ship's height, 7.10 above) and a disabled guest gave no difference at all in ~600 checks at
+  1 s: at a steady speed the copy is where `speed x (0.2 s + rtt)` puts it (BUG-0378's slack holds).
+* ✔ (runtime) The copy was off that place only while the ship's speed changed within the moment, or the state came
+  late: during play_space's rescue flight (`Player.rescue`, lab 20261107-211833: 35.5 m from the ship, 0.0 m from
+  its path 0.29 s back, slack 15.5 m) and over a player's network with latency spikes (lab 20261107-213732,
+  -214244: 49-270 m from the ship, 0.0-9.9 m from its path 0.41-0.81 s back, slack 24-191 m). In every case the
+  copy lay on the path the ship flew: what the guest saw was the host's flight a moment late, not a desync.
+* The sync-check now keeps the host's own path (every frame, 2.5 s) and takes a p0 difference back when the guest's
+  copy is within the player limit (10 m) of the path's last 1 s plus the guest's round trip (`sync.own_path`). The
+  guests' own keys keep the speed slack: the host's copy of a guest is older than the guest's own position, the
+  host has no path of where the guest is now.
+## The partner's ship health on the other game (2026-11-07, fix/w46-k2a-state-b)
+<a id="space-partner-ship-health"></a>
+
+* ✔ BUG-0697 (class BUG-0419): space_fill sends the ship's cCombatant health (+0x540 = combatant +0x38) and max
+  (+0x534 = combatant +0x2C); space_drive wrote the puppet's own max into its health every frame, so the partner's ship
+  was always drawn at full health. Now the partner's share of its max on the puppet's max (another design: another
+  max), at least 2 %: this game never kills the puppet, the partner's game decides its ship's fate (disabled, rescued,
+  destroyed). `coop.fix drive.space_hp off`: full health. Lab: a 40 % hit on either ship shows 0.60 on the other game's
+  puppet (`coop.puppet hp`), 1.00 with the switch off.
+* Contracts: see docs/re/host-centric.md#host-centric-away-credits (rewards owed outside Space, the contract clock).
+
+## The host's NPC ship shots on a guest (2026-11-08, fix/w46-k56-space)
+<a id="space-ship-shots"></a>
+
+BUG-0677 (detector: `Space:host_only:default_beam_projectile`). GOG 2024 addresses (dc04aee5).
+* ✔ (runtime, lab 20261108-020128) In a star system the host's ambush pirates (type 8) spawned next to the ships and
+  shot once by the host (coop.fleet shoot) made no FireTool call in 45 s: no fight there. On a planet (space_empire's
+  colony 01460035) the same pirates and raiders fought at once: the host's FireTool hook saw 770 shots that left in
+  45 s, from the ships the host lists (none untracked).
+* ✔ (code) A guest's mirrors never fired: h_FireTool returned 0 for every mirror owner (by design since 0.6: the host
+  decides the fights). Only the hits came over (MSG_UFO_DAMAGE).
+* ✔ (runtime) A mirror spawned with SpawnUFO has the NPC weapons of its type: the weapon the host's ship fired is found
+  by its slot (ufo +0x790 mpNPCWeapon .. +0x7A4 abduct, six pointers) in the mirror, and the game's FireTool (owner =
+  mirror +0x34, the target's +0x34) made the projectile in the guest's game: 761 of 770 shots fired, none refused.
+* ✔ (runtime) The copies' projectiles hit things in the guest's game (760 hits seen in 45 s, mostly the host's ship's
+  puppet, the pirates' target): the attacker the projectile passes to TakeDamage is the mirror's combatant (+0x508).
+* Fix (`space.shots`, squadron.cpp): the host counts its listed NPC ships' shots that left (FireTool true: weapon
+  slot, aim, target kind: a listed ship, a player's ship, a noun near a place, or one the guest cannot find) and sends
+  the last second's list every 0.2 s (at once after a new shot, at most every 0.05 s) in MSG_UFO_STATE with chunk 0xFE,
+  chunks 0 (an older guest drops it: chunks 0 fails the cycle check). The guest fires the mirror's own weapon of that
+  slot that many times, at the same target (aim moved by the target's offset in its game), never at a target it does
+  not have (BUG-0534: the weapon update reads a shot's target without a check), and stops the weapon (OnMouseUp) when
+  the list no longer has the ship. A mirror's hit on anything (the own ship, puppets, posse, mirrors; civ.cpp
+  cosmetic_hit: buildings) is dropped; a hit without an attacker on the own ship within 1.5 s of a copied shot at it is
+  dropped too (an area's tick). Counters: `coop.fleet list`, line `space shots:`.
+
+## The limits of the kept hold: local record, slots, plant / animal / artifact cargo (2026-11-08, fix/w46-k56-space)
+<a id="space-kept-hold-limits"></a>
+
+BUG-0679, after [the kept hold](#space-kept-hold). GOG 2024 addresses (dc04aee5), objdump.
+* ✔ `cSpaceInventoryItem` (0x7C bytes, ctor 0xC877F0, vtable 0x14734D8, "Simulator/cSpaceInventoryItem"): +0x10
+  count, +0x14 type (the ctor sets 2), +0x18 price, +0x2C the slot it fills, +0x30 its property list, +0x5C..+0x64 the
+  item key (vt+0x14 0xAC0A80 SetItemID copies 12 bytes there, vt+0x18 0xB1F900 returns &+0x5C), vt+0x24 Clone.
+  0xC87980 thiscall(item, props) ret 4 sets the property list and reads it.
+* ✔ CreateTradingObject 0x103A490: new item, the property list (instance, group 0x34D97FA) through the resource
+  manager 0x67DDF0 vt+0x2C, SetItemID, type 4, count, price, 0xC87980.
+* ✔ The mission reward code (0xC534E0..0xC53680, kinds 0x23DA98FF animals, 0x19EC2C8B artifacts, 0x69412983 /
+  0x3E994B2B animals of the other kind) shows the game's own factory per cargo type, each followed by
+  `cSimulatorSpaceGame::Get()` 0x1002A70 -> 0xA1ACE0 (the inventory) vt+0x80 AddItem(item, 0, 1) and Release:
+  * animals (type 1, or 6 with the flag): `AnimalCargo_Create` 0xAC0C00 thiscall(ecx unused, out, &species key,
+    count, flag) ret 0x10: cSpeciesManager (0x401090) GetSpeciesProfile 0x4DF5C0 (none: out untouched), a
+    cAnimalCargoInfo (0x80 bytes, vtable 0x1459C20, the profile at +0x7C), key = profile +0x504;
+  * plants (type 0): `PlantCargo_Template` 0xB90560 thiscall(cache 0xB3D520(), &species key) ret 4 returns a cached
+    cPlantCargoInfo (0xA4 bytes, vtable 0x1465728; built by 0xB901F0 from the species profile), then its Clone
+    (vt+0x24) ~ (the template's vt+0x24 not disassembled);
+  * artifacts (type 5): `ArtifactCargo_Create` 0xC87A60 cdecl(out, key by value): type 5, property list (instance,
+    group 0x37D494E; the game's packages hold 11 of them, e.g. 0x10D5D4D3).
+* ✔ `RemoveItem` 0xFF3FD0 (vt+0x78, thiscall(item) ret 4 -> bool): 0xC87F10 erases the item pointer from +0x34,
+  releases its +0x2C slot reference, clears the selection, posts 0x5E793AD / 0x57F3749. A free cargo slot (type 3, no
+  item points at it: IsSlotFree vt+0x98) goes with it as a plain erase.
+* Fixes: `space.keep_items_slots` (the free slots beyond the own count go), `space.keep_items_cargo` (the factories
+  above), `space.keep_items_local` (the guest's own record per host world: `<AppData>\Spore\SporeCoop\holds\<crc32 of
+  "host name|planet file">.txt`, written at most once a second when the hold of a world that is its own changes, also
+  after the session ended while that world is open; read 2 s after a world loaded from the host appears and applied
+  at once; the host's kept copy is then not used). Tests start without a record (twoinst forget_holds, `coop.space
+  trade forget`).
+* Not covered: a guest that joins under another name, or plays the same host world from another PC (the record is
+  per profile; the host's kept copy still helps while the host runs).
+## The sky of a planet between the players (2026-11-08, fix/w46-k8-open)
+<a id="space-planet-sky"></a>
+
+BUG-0712. GOG 2024, lanes 4 / 5.
+
+* ✔ (runtime) on a Space planet each game has its own time of day object (TimeOfDay_GetObject, the orientation at
+  +0x10, as in the other stages); on space_empire's colony planet the two games' skies stood 166.5 deg apart and did
+  not move in 30 s. wsync's sky row (SetOrientation + TimeOfDay_Apply) applied on a guest in Space brings it to the
+  host's within a second (`wsync.space_tod`, only while both are on that planet).
+
+
+## Mirror models: a key of zeros, the host's own ship designs (2026-11-08, fix/w46-k2b-content-b)
+<a id="space-k2b-mirror-models"></a>
+
+BUG-0723 / BUG-0724, children of the content class BUG-0424 (`squadron.cpp`, guest side of the ship mirrors).
+
+* ✔ (runtime, lab 20261108-031320) A mirror spawned with `SpawnUFO(type, &pol, {0, 0, 0})` gets the gfx default UFO
+  9D5DB21A/476A98C7/40656200 (UfoGfx_InitFromUfo 0xE9B180), which the GOG 2024 install does not have: the BUG-0546 guard
+  (`game.ufo_model`) then draws it with the last ship model it had, the guest's own ship 0675F7B2 (two pirates as the
+  guest's ship); without the guard the fault at 0xE98DD0.
+* ✔ (runtime) The model the game itself gives a raid without an attacker empire, cPlayer +0x1280 (cGameNounManager +0x74,
+  see #space-npc-model above, 0xC5C8F3): 067256EA/476A98C7/40656200 on the space fixture, a model this game has. A key of
+  zeros now takes a local ship model of that empire, else this one, else no mirror (`fleet.zero_key`).
+* ✔ (runtime, lab 20261108-032213) The host's empire's ships name the host's own ship creations by My Creations ids; with
+  a creation of the same id the guest's game drew the guest's (BUG-0647's class). Every non-zero key now goes through
+  `creations::host_design(key, kMkUfo)` first (`fleet.host_designs`): the host's records under a key of ours (the mirror
+  waits for the answer, `design_waits=`), "not mine" for a premade or Sporepedia key. Mirrors never reach a save
+  (#space-save-strip, BUG-0522).
+* Test hooks: `coop.fleet fakemodel zero` (the host sends keys of zeros), `fakemodel 2 <inst>` (one instance for all).
+* CORRECTION? (2026-11-08, fix/w46-k2b-content-b, to check): #space-city-ornaments reads "the 3 keys at city +0x528,
+  0xC bytes each"; `coop.creations objmodels` read city +0x528 + 0xC * i on the Civ fixture civ_npc (lab
+  20261108-033541) and found pointer-like values (102F9F24/102F9F26/0, 41524103/C3815C41/0), no resource keys. Not
+  checked on a Space colony city; not used by any code of this branch.
+* ✔ (runtime, lab 20261108-043549 / 044742 / 044523) A host ship whose model key the guest lacks and whose empire has no
+  ship on the guest (a pirate) had no mirror at all (BUG-0323's "no mirror yet"): the lab's sync-check gate found the
+  host's ship missing on the guest. It takes the raid model as its last fallback too (`fleet.zero_key`).
+## The tutorial lock and how it ends (2026-11-08, fix/w46-g4-tests)
+<a id="space-tutorial-lock"></a>
+
+BUG-0181. GOG 2024, Ghidra:
+* ✔ cMissionManager (Get 0xFEB880 = [0x16DAC64]) serializer table 0x1396A80: +0x16 mbFirstCommunication,
+  +0x17 mbFlightSchoolFinished (get 0xFEB900, set 0xFEB8F0), **+0x18 mbMission201Finished** (get 0xFEB920, set
+  0xFEB910; the getter is code-folded, ~90 callers of other classes), +0x5C mTutorialMissionStates,
+  +0x80 mTutorialTargetPlanetKeys, +0x94 mTutorialSpeciesIDs, +0xA8 mTrackedMissions, +0xC8 mRecentNPCMissions,
+  +0xD4 mRecentColonyMissions.
+* ~ The galaxy travel check 0xFFC780 (thiscall(player UFO, star) ret 4 -> bool): while +0x18 is 0 only the home
+  star and the target star of mission 0x7BDBB97D (Story201, Cast 0x422227E) pass, so the red "Distance" refusal
+  of space_empire (docs/06-testing.md 6.15) is this lock, not the drive range; afterwards the range (0xFFC6A0).
+* ~ The Story201 mission class (vtable 0x146FDE0, ctor 0xC5F340): OnCompleted (vt +0x94) 0xC5F780 clears star
+  flag 0x40000, calls 0xBB9DA0 and sets +0x18 = 1. The galaxy-entry handler 0xFDABE0 plays SPG_EnteredGalaxy_201
+  while +0x18 is 0.
+* ~ The release cheat `spaceCreate` ("unlocks and recharges creation tools while playing in space",
+  App/cToolChargeCommand, ParseLine 0xB5FF40, registered at 0xB63115 next to moreMoney): needs the
+  interplanetary drive 0x4133FE05 ("Advance further in the game..." otherwise), clears
+  [cAppModeSpace+0x188]+0x48/+0x49 (?), sets +0x17 and +0x18 to 1, adds or recharges (AddAmmo 5) the tools
+  of prop 0x68C20E1 (prop file 0x30608F0B / 0x59252EE9). The `tool` developer cheat (0x10234D0) also sets +0x18.
+
+## The tutorial lock at runtime: spaceCreate and galaxy clicks (2026-11-08, fix/w46-g4b-coverage)
+<a id="space-tutorial-lock-runtime"></a>
+
+BUG-0181, lane 3 (GOG 2024), runtime of docs/re/space.md#space-tutorial-lock:
+* ✔ `coop.space tutorial` on `space_empire`: `first_comm=0 flight_school=1 m201=0`, the Story201 mission object
+  (GetMissionByID 0x7BDBB97D) found, state 3 (active). The guest's game (it loads the host's save) has the same.
+* ✔ The release cheat `cheat spaceCreate` sets m201=1 at once (flight_school stays 1); the Story201 mission object
+  keeps state 3 (the game never completes it). m201=1 survives a save and a load (fixture `space_free`).
+* ✔ `spaceCreate` **removes the interstellar drive** (tool 2569FAE8) from the inventory while it adds or recharges
+  the other tools (37 tools afterwards, the drive upgrade 4, energy upgrade 5 and the colony tool stay):
+  `coop.space empire` says `drive=0`. The galaxy view and galaxy flights to nearby stars still work without it.
+  `space_free` adds the drive back (`coop.space tool add interstellardrive`).
+* ✔ With m201=1 a real galaxy click on an unowned star 0.7-1.2 units away flies the ship there (galaxy position
+  at the star within ~10 s, both host and guest); with m201=0 (`space_empire`) the same click leaves the ship at
+  home (the red "Distance" refusal), on the host and on the guest: each game checks its own mission manager.
+  So the refusal of docs/06-testing.md 6.15 is the tutorial lock, not the drive range (`space_free`, lab
+  20261108-060412 locked, 20261108-060655 free).
+
+## Selling spice to an NPC store at runtime (2026-11-08, fix/w46-g4b-coverage)
+<a id="space-npc-store-runtime"></a>
+
+BUG-0199, lane 3 (GOG 2024), `space_empire` (contact with 80001FCC, home star 0046102D):
+* ✔ Recipe by clicks (1440x1080) in the empire's system (`coop.space jumpto 0x0046102D`): the comm tab above the
+  empire's card (288, 914) opens its greeting; the first answer (720, 725, "Salutations! There is something I'd like
+  to discuss...") opens the menu Trade (420, 744) / Repair / Recharge / Missions (838, 754) / Diplomacy (838, 814);
+  Trade shows the store's items on top and the cargo below (first cargo slot 327, 760 with count and the store's
+  price); a click on the cargo slot selects it (amount 1/20, price), Sell Item (1063, 884) sells one unit; Goodbye
+  (424, 882).
+* ✔ The sale is the game's own: the seller's cargo count falls by one and its money rises by the price at once; the
+  other game's shared money follows within a second (shared.cpp; a guest's earning through MSG_RES_ADD).
+* ✔ Each game has its own store for the same empire: the guest's paid 281 and the host's 4,779 for one Red Spice in
+  the same session (another session: 6,747 on the host). BUG-0747.
+* ✔ Missions by clicks: in the same menu, Missions (838, 754) answers "You want to work for us?" with one answer
+  ("I yearn to feel the solar wind at my back. Any missions?", 720, 725); the empire then offers one mission (a
+  mission noun of state 0 appears at once: `coop.space allies missions`, e.g. id 2AB57FAC giver 80001FCC reward 0
+  flags 88) with "Tell me more..." (720, 725) / "I'm not interested right now" (720, 756). In the run of
+  2026-11-08 the offer was a Galactic Adventures mission ("Beam Down?" after "Tell me more"); declining it removed
+  the mission noun, and asking again gave "Check us later" (no new offer for a while).
+
+## The NPC store's random wants and prices, seeded per planet (2026-11-08, fix/w46-b1-space)
+<a id="space-npc-store-seed"></a>
+
+BUG-0747, Ghidra on GOG 2024 (both functions at the same addresses as GOG 2016):
+* ✔ `cSpaceTrading::GenerateNPCStore` 0x103E8F0 (thiscall, ret 8) keeps the stores in a vector at trading +0x48 (at most
+  5: the oldest is dropped), one per planet (store +0xC = the PlanetID); a store older than 1,800,000 ms of game time
+  (0xBC3300) is dropped and made again. A new cNPCStore (0xC0 bytes, ctor 0x103CF30) gets +0x9C of the trading object =
+  its index, then `SporeCoop::cSpaceTrading_FillNPCStore` 0x103CD10 (thiscall(trading, own spice key) ret 4).
+* ✔ The fill: `BuildSpiceCommodities` 0x103C950 (fills the spice list +0x20 only when it is empty), a Fisher-Yates
+  shuffle 0x103B3F0 of that list **in place** with RandomInt on the global generator 0x1601760 (so the order depends
+  on every store made before), then the first 3 spices that are not the planet's own go to store +0x60 (keys) with
+  price store +0x9C = value x difficulty x {0.6 .. 3.0}[RandomInt(10)]. Only caller: GenerateNPCStore at 0x103EB08.
+* ✔ So two games made different stores for the same empire. The mod (`space.store_seed`, spacecoop.cpp h_StoreFill)
+  sorts the spice list by key and runs the fill on the private generator of the planet seeding (BUG-0123) seeded from
+  the PlanetID, in a session only; log line `space: the NPC store of planet <id> seeded (<seed>, <n> draws): wants
+  <key> <price>, ...`, counter `stores_seeded=` in `coop.space`.
+* ~ Limit: a store made again after 30 min of game time is the same store (the seed is only the planet); a store the
+  host's game made before the session (a load does not keep the stores: not checked) is not the guests'.
+
+## A guest's own ship on the host: no lag on its path in two-player runs (2026-11-08, fix/w46-b1-space)
+<a id="space-guest-ship-path"></a>
+
+BUG-0758, lane 6 (GOG 2024), `coop_space_fast_sync_guest.py` on `space` (the guest flies, the host checks):
+* ✔ The host's copy of a guest's own ship (key p<guest>) and the guest's digest travel the same link: the host
+  compares its copy when the guest's digest arrives, and the states that put the copy there came over the same
+  connection at the same time. So the copy is only the interpolation delay (0.1 s) and a send interval behind, unlike
+  the guest's copy of the host's ship (a round trip more: BUG-0547, docs/re/space.md#space-copy-on-path).
+* ✔ Measured: 0 differences of p1 in 79 + 104 + 93 + 246 checks (lab 20261108-142942, -143539, -144036, -144435):
+  pulses at 350-840 m/s drawn speed, full reversals with a check asked for at 0.05-0.6 s into the turn, a 300 ms
+  latency spike pattern on the guest's link, the host at 12 fps (SPORE_FPS host:12), the guest's ship disabled at
+  full speed with checks right after. The forced 100 m shift on the guest's digest is still a MISMATCH every time.
+* ~ So the campaign's `p1 79.8` / `p3 30.2` (4 players, 0.7.11 final check) are not this lag: both persisted over the
+  recheck 3 s later, the second with the guest's ship at 1.5 m/s; both came while the host waited to share its world
+  with a player who had just joined (`share_wait=planet`). Not explained.
+* `sync.own_path_guests` (diag_sync.cpp guest_path_check): the host keeps each partner's path from the states it
+  received (every new state by sender time, the last 2.5 s) and takes a p<guest> difference back only when its copy
+  lies within the player limit of that path's last 1 s + rtt and the guest's own position within the limit plus its
+  speed slack. It logs a detail line for every p<guest> difference: `sync-check: p<id> <d> m from the guest's ship,
+  the host's copy <d> m from its path of the last <s> s (nearest <s> s ago), the ship <d> m from it, slack <d> m:
+  on its path, no difference (BUG-0758) | off its path`; counter `guest_path_saved=` in `coop.diag sync`.
+
+## Terraforming deltas need the planet's terraforming flag (2026-11-08, fix/w46-b1-space)
+<a id="space-terraform-flag"></a>
+
+BUG-0749, Ghidra GOG 2024 + runtime lane 6 (`space_free`, planet 01460035):
+* ✔ `cTerraformingManager::AddAtmosphereDelta` 0xBBC4B0 (thiscall, ecx unused, args planet, float; ret 8) adds to
+  `[planet +0x154] +0x1FD4` (the planet's terrain data; temperature pending +0x1FD8). Its only caller is
+  `cToolStrategy::OnHit` 0x10593B0 (0x1059586, then AddWaterDelta and AddTemperatureDelta).
+* ✔ The terrain tick 0xC83280 integrates the pending deltas into the planet record (0xC7FC50: record +0xB0 atmosphere,
+  +0xB4, and +0xB8 follows) only while the data's flag **+0x2030** is on, in Space; when the change is done
+  (0xC7EFF0) it clears the flag and the pending deltas. `SporeCoop::PlanetTerrain_SetTerraforming` 0xC7E490(data, on)
+  sets it; the tool path 0x1050BC0 (at 0x1051035) switches it on for the active planet.
+* ✔ So a partner's relayed deltas (spacecoop.cpp apply_terra) waited in +0x1FD4 and the partner's planet never
+  changed: with `space.terra_apply` off, the host's Atmosphere Generator moved its record b0 0 -> 0.103 while the
+  guest stayed at 0.000 with terra_got=1 (lab 20261108-151748). The mod now switches the flag on with the received
+  deltas (`terra_enabled=` in `coop.space`); the guest then follows the host within a few hundredths (0.040 / 0.042
+  after 8 s, lab 20261108-152042). The same for `coop.space terra` on the guest itself: a delta without the flag
+  does nothing.
+* ✔ Tools: `space_free`'s inventory (`spaceCreate`) has no atmosphere tool (the atmosphere tab W-266 is empty);
+  `coop.space tool add 0x931426A0` (Atmosphere Generator) / `0xA1C9D86E` (Ice Comet) add one charge each, shown after
+  another tab is opened. Palette open: tabs at y = H-151 (main W-426 ... atmosphere W-266, sculpting W-226, colouring
+  W-186, cargo W-146); the added tools sit in the second row (first slot 1014, 1011). Sculpting (9 tools) and
+  colouring (8 + reset) are not relayed at all: BUG-0763.
+
+## A colony's city planner in Space, by a guest (2026-11-08, fix/w46-b1-space)
+<a id="space-colony-planner"></a>
+
+BUG-0751, lane 6 (GOG 2024), `space_empire`, home planet 00460035 (9 cities of the player's empire, 12 plots each, all
+taken):
+* ✔ The planner opens by a click on a city once the ship is over it (`coop.space allies cities` dist under ~300 m,
+  the city's screen point): the same cCommunityEditor as in Civ (`coop.civ planner`: editor and city set). The palette
+  is the Civ one: the house tile at (123, 385), the green check at (1412, 1054); the camera is at ground level.
+* ✔ A house dragged onto a free plot (screen point from `coop.civ slots s<i>`) is built and paid at once: the shared
+  money fell by $1,600 on both games (shared.cpp). AddBuilding is called from the planner's return address
+  `SporeCoop::CityPlanner_AddBuilding_Ret` as in Civ, but **the new building's position reads (0 0 0) at that call**
+  (the slot places it afterwards).
+* ✔ Before BUG-0751 nothing reached the host: civ.cpp is off outside Civ (`active()`) and a Space city has no host
+  index. Now (`civ.space_planner_send`) the guest sends `CMD_SPACE_BUILD {place, noun, city position, position}` in
+  MSG_CIV_CMD; the host, on the same planet, finds its city within 60 m of that position and builds the same noun into
+  a free slot (`build_in_city`, not paid again). Another planet on the host: logged and counted (`space_planner:
+  away=` in `coop.civ`), not built (the planet's cities exist only while it is the active planet).
+* Test commands: `coop.civ scities` (every city of this game as s<i> with its position and building count; the order
+  matched between host and guest on 00460035), `coop.civ buildings s<i>`, `coop.civ slots s<i>`, `coop.civ unbuild
+  s<i> <k>` (cCity::DestroyBuilding 0xBE3530: a free plot for tests).
+
+## NPC missions by the comm screen: the Galactic Adventures intro first (2026-11-08, fix/w46-b1-space)
+<a id="space-npc-mission-offer"></a>
+
+BUG-0750, Ghidra GOG 2024 + runtime lane 6 (`space_empire`, `space_free`):
+* ✔ `cMissionManager::ChooseMission` 0xFEEBC0 (thiscall(mgr, cEmpire* giver, cPlanetRecord*) ret 8): for an NPC
+  empire it first offers the Galactic Adventures intro mission **0x2AB57FAC** ("Tell me more..." -> "Beam Down?",
+  reward 0, flags 0x88) while that mission's entry in the manager's map is not in state 2/3, then a weighted pick of
+  the NPC mission table (mgr +0x34, 0x38-byte rows, first dword the mission id); mgr +0x1C overrides the pick.
+  `HasMissionsAvailable` 0xFEE260 gates it: fewer missions than mgr +0xE0, the planet not in the cooldown list
+  mgr +0xC8 (0xFEC730: "Check us later"), the relationship over a threshold. Declining an offer puts that planet on
+  cooldown and does not end the intro: every empire offers 2AB57FAC again.
+* ✔ The intro completed by its own SetState(5) (`coop.space allies missions done <ptr>`) ends it: the next empire
+  asked (80001F53 at 00460038 on `space_free`) offered a regular mission (id 478C8F3D, reward 30,000, flags 0x80).
+  Its answers by clicks: "Tell me more..." (720, 725), then the accept answer (720, 725): state 3. Completed by
+  SetState(5): the guest's money +30,000 and the host's shared money +30,000 (shared.cpp).
+
+## Fork notes: adventures (2026-11-10, plan/w47-pr196)
+<a id="space-fork-adventure-notes"></a>
+
+From the fork PandizeLive/SporeCoop-Lineages PR #196 (docs/re/space.md#space-duo-adventure there, BUG-9003 / 9004),
+not verified by us:
+
+* ~ Two captains that joined at the galaxy menu and both started the tutorial (mission 6666E0D1): the host, which had
+  added the guest's Creature-stage puppet, faulted at SporeApp+0x80714E (Steam 2024) in
+  cScenarioPlayMode::SetCurrentAct from Initialize. The fork infers the scenario rebuilds its cast on act changes and
+  draws the partner as a name marker only. Our Adventure adapter spawns creature puppets: BUG-0845.
+* ~ The save path and the quit message 0x4715068 inside a standalone adventure (from the galaxy menu, no home planet)
+  fault at cStarManager::GetPlanetRecord+0x2D: BUG-0854.
+* ~ Play controller: cScenarioMode +0x78; play state +0x90 (3 playing, 5 / 6 summary), current act +0xB8, completed
+  goals +0x0C+0x1C, active goal vector +0x64 / +0x68 with entries of 0x1AC bytes (type +0x24, required count +0x30,
+  target +0x28). Agrees with ModAPI cScenarioPlayMode.h. The goal credit at 0xF1ACF0 is thiscall(play, goal, spatial,
+  spatial) ret 0xC (a null first spatial = the captain): it increments the count and runs the normal completion.
+* ~ The Steam 3010a413 executable on disk is packed: its static bytes do not decode to the runtime code (the fork's
+  static dump gave invalid instruction boundaries); read code from a running game.
+
+## Colony buildings for a planet a game is not on (2026-11-10, fix/w47-b2)
+<a id="space-colony-build-hold"></a>
+
+BUG-0766 / BUG-0884, lane 4 (GOG 2024), `space_empire`, home planet 00460035:
+* ✔ A planet's cities are made again when it becomes the active planet, from what the game keeps for it (the planet
+  record's city data, presumably cCityData; not traced): a house the test destroyed with `coop.civ unbuild`
+  (cCity::DestroyBuilding) while the host's ship was there was back after the ship left (zoom out to the system) and
+  landed again 1-2 min later (lab 20261110-185810: the host's city 11 buildings after the destroy, 12 with 6 houses
+  after the return, with civ.space_build_hold off, so not the kept building). So a building destroyed at run time is
+  not written into that data; whether one made by the mod's build_in_city (BUG-0751 and the relays here) is kept when
+  the ship leaves and comes back is open: BUG-0901.
+* ✔ So the kept building of BUG-0766 found the city full on the host's return ("no free slot", lab 20261110-184846)
+  until a plot was free again: civ.cpp space_tick tries a kept building again every 2 s for 60 s.
+* ✔ 5 s after a game's place became the planet its cities are listed (`all_cities()`; local_city_near finds the city
+  by the buyer's city position within 60 m).
+* ✔ In Space the host's own planner AddBuilding (return address a_PlannerAddBuildingRet) reads the building's position
+  (0 0 0), as the guest's does (BUG-0751); a frame or two later the planner has placed it: space_tick sends it then
+  (or after 3 s) with the placed position, so the receiver's SnapToSlot takes the slot nearest the host's.
+* Limit: a building kept for a planet the game never visits in that session is lost at the session end (the hold is
+  session state).
+## Terrain sculpting and planet colouring tools, and terraforming records between players (2026-11-10, fix/w47-b2-space)
+<a id="space-sculpt-colour"></a>
+
+BUG-0763 / BUG-0883, Ghidra GOG 2024 + runtime lane 5 (`space_free`, planet 01460035):
+* ✔ Palette (open, 1440x1080): sculpting tab W-226, its tools in two rows at y 966 / 1009, first slot x 1108 then
+  +37 per slot (5 + 4 tools); colouring tab W-186, three sub-categories on the left (x 1006: y 960 cloud, 985
+  mountains, 1011 water), 8 colours at x 1121 / 1158 / 1195 / 1232 in the same two rows, the reset at (1308, 987).
+* ✔ A sculpting tool's hit posts message **0x4A32D09** to the Space tool listener
+  (`SporeCoop::SpaceToolListener_HandleMessage` 0x1051860, thiscall(listener, msg, data) ret 8): data[0] the terrain
+  effect's id (the first raise tool: 0x05AC7EE3), data[10] -> a Transform (0x38 bytes: flags, +4 position, +0x10
+  scale, +0x14 3x3 rotation). The listener calls the active terrain's vt 0x64
+  (`Terrain::cTerrainSphere::StartTerrainEffect` 0xFA71D0: the Swarm terrain effect at that transform, kept in the
+  sphere's list +0x798, 50 at most). It is the listener's only message for a raise tool (a probe on all its messages
+  and on ApplyStamp saw nothing else); `this` is not read in that branch, so a partner can repeat it with the same data.
+  The raise at the same screen spot twice: the ground there rose ~10 m, then +3.5 to +5.2 m (coop.ground =
+  GetHeightAt; visible within 3 s).
+* ✔ Message 0x5E667A2 (the listener's other terrain branch) is ApplyStamp with prop list data[0] in group 0x40828100
+  and the same Transform; not posted by the sculpting tools (not seen in the run).
+* ✔ Colouring: `cToolStrategy::OnHit` 0x10593B0 (after the terraforming deltas) reads the active terrain
+  (`SporeCoop::Terrain_GetActive` 0xF48A60, [0x16C8EBC]) colours (GetColors vt 0x78) and calls SetColors (vt 0x74,
+  0xF9B3A0) with the tool's +0x248 (terrain ramp 1..64, 0 = reset), +0x250, +0x24C (indices < 16) where they differ,
+  -1 = keep. The first colour of the cloud sub-category moved GetColors from (0, 0, 0) to (0, 11, 0).
+* ✔ The tool's owner (cSpaceToolData +0x114) is the firing ship's cGameDataUFO **+0x34**, not the cGameDataUFO itself.
+* ✔ Relay (spacecoop.cpp K_SCULPT / K_COLOUR, `space.terra_sculpt`): only after a hit of the player's own tool
+  (OnHit with that owner, the message within 5 s), to partners on the same planet, repeated with g_applying set: lab
+  20261110-184527 (heights equal to 0.00 m, colours equal); off: the guest's terrain and colours stay (lab
+  20261110-184850, 14 m apart).
+* ✔ Terraforming records (BUG-0883): the terrain tick does not add a delta to the record as it is (0xC7FC50: the
+  pending deltas decay and are integrated over seconds, records +0xB0 / +0xB4 clamped to 0..1, +0xB8 clamped to the
+  range 0xFC20A0 gives and only when >= 0), so a partner elsewhere cannot add the sent sums. The mod sends the record
+  values after the own terraforming instead (K_TERRA_REC, `space.terra_elsewhere`); a partner off the planet sets
+  `cStarManager::GetPlanetRecord(id)` +0xB0 / +0xB4 / +0xB8. A planet the host never visited had +0xB8 = -1.0 in its
+  record (0.0 in the terraformer's): -1 looks like "water not computed yet".
+* ? Not checked: whether the sculpted terrain effects and the colours stay after leaving and landing again (in either
+  game), and sculpting / colouring done while no partner is on the planet (not sent: BUG-0900).
+
+## A colony city's kept data, planner sends after the close, partner sculpts while away (2026-11-10, fix/w47-colony)
+<a id="space-city-data"></a>
+
+BUG-0901 / BUG-0902 / BUG-0900, Ghidra GOG 2024 + runtime lanes 4 / 5:
+* ✔ What the game keeps of a colony city (answers "presumably cCityData; not traced" in
+  docs/re/space.md#space-colony-build-hold): `cCity` +0x2F0 is its `cCityData` (the planet record's cCivData city
+  data). The planet's city maker 0xFF6900 (from 0xFF96B0, the planet becoming active) builds each city from it: an
+  empty building list (+0x7C..+0x80) makes a generated layout (FUN_00be87d0) and writes it back (0xFF26C0); otherwise
+  one building per 0x38-byte entry (+0 position, +0xC rotation (4 floats), +0x1C health, +0x20 state (2 = ruined
+  path 0xBC32A0), +0x24 / +0x25 flags, +0x28 -> building +0x28C, +0x2C, +0x34 noun; the City Hall noun 0x18EA1EB
+  updates the existing hall) through CreateInstance + cCity::AddBuilding + a layout slot; turrets from +0x90 (0x34
+  bytes, noun +0x30).
+* ✔ The game writes a live city into its data only through `SporeCoop::City_WriteCityData` 0xBD9FA0 (fastcall city:
+  `data->0xFF26C0(city, active planet's record)`, buildings from layout slots 0..13). Callers: the planner's exit
+  0xD100B0 (every city of the civilization, also stage paths), cBuilding::TakeDamage, City_RemoveTurret, 0xFF55D0,
+  0xBE74C0 (cCity::CreateBuilding + write). cCity::AddBuilding and cCity::DestroyBuilding do not write: that is why a
+  house destroyed by `coop.civ unbuild` came back, and why a building the mod made with build_in_city was gone after
+  the game's ship left the planet and landed again (lab 20261110-201410: both games' cities back at 4 factories / 6
+  houses after the mod's factory). Fix `civ.space_city_data`: space_build_here (every Space relay path) calls
+  City_WriteCityData after build_in_city; lab 20261110-202314: both cities keep the factory (5) after leaving and
+  landing.
+* ✔ A planner drop on a taken plot (Space colony, real drag) runs the planner's AddBuilding (return address
+  CityPlanner_AddBuilding_Ret) and takes the building away again, no money taken (lab 20261110-201036, the guest's
+  city stays at 5 houses). So a building seen at AddBuilding must not be sent before the planner closed with it
+  (BUG-0884 host side, BUG-0902 guest side: `civ.space_planner_closed`).
+* ✔ Partner sculpts / colours (K_SCULPT / K_COLOUR) received while this game is not on that planet are kept and
+  repeated 5 s after landing there (`space.sculpt_hold`): lab 20261110-201800, the guest away during two raises and a
+  colour: after its landing its terrain at the spot equal to the host's (0.00 m), colours (0, 11, 0) on both.
+* ? Not checked: whether a game keeps its own sculpts and colours when its ship leaves and lands again (the sphere's
+  effect list +0x798 is runtime state; the planet's stored terrain is not traced), and whether the effects reach the
+  save. A partner who joins (or rejoins) after the hits does not get them (the hold is per running game).
+
+## The allies mirror's planet records over a reload of the world (2026-11-12, fix/w48-freed)
+<a id="space-allies-record-reload"></a>
+
+BUG-0838. GOG 2024, runtime on lanes 6/7 (`coop.space allies civ <PlanetID>`, coop_space_allies_snap.py).
+
+* ✔ A cPlanetRecord the mirror holds a reference to comes back as the **same object** after the host goes to the
+  galaxy menu and loads the same world again (rec 104F47C0 before and after, lab 20261112-011341): our reference keeps
+  it in the game's resource cache and the load takes it from there. Its cCivData vector (+0x15C) is what the unapply
+  left (the mirror's cities taken out).
+* ✔ The mirror unmirrored before the reload (a save on the way to the menu; `allies remove`) kept the cCivData it had
+  added, and the first apply in the new world put that old object back into the record (lab 20261112-011823:
+  15EE6CE8 again); with the snapshots dropped on the galaxy's change it builds new ones (FillPlanet). No crash was
+  seen in either run (no landing on that planet was tried).
+## A guest's own Space save: no co-op hold, no host rows (2026-11-12, fix/w48-own-world)
+<a id="space-own-save-hold"></a>
+
+* ✔ BUG-0816: inv_tick (space_trade.cpp) took every Space world after the join one as "loaded from the host": a
+  connected guest that loaded a save of its own sent that hold as fresh, the host answered with the kept co-op hold
+  (K_INV_KEPT) and apply_inv put it into the own save; the host also stored the own save's hold as the guest's. With
+  space.hold_own_save the guest sends no hold and applies none while own_world::space_other() (and waits while its
+  save is not known yet); a K_INV_KEPT that arrives there is acknowledged (K_INV_DONE) so the host stops resending.
+* ✔ BUG-0818: MSG_WSTATE is not dropped in Space (not a gated stage), so the wsync "stages" row (cPlayer
+  +0x10FC..+0x110C) wrote the host's stage history into a guest's own Space save. wsync's guest tick applies no row in
+  Space while own_world::space_other() (wsync.space_own). Lab: the host's stage 0 trait set to A5656E84, the guest's
+  own save kept 00000000 for 10 s (20261112-025609).
+
+## Space S1 of 0.7.13: rejoins, away trips, the colony spice, gifts and loads (2026-11-12, fix/w48-space)
+<a id="space-s1-0713"></a>
+
+GOG 2024, lanes 2 and 3. Each finding has its FAIL / PASS runs in its ticket.
+
+* ✔ A crash rejoin by the token (BUG-0235) keeps the player id: the guest's game killed with SIGKILL, started again and
+  joined 9-10 s later got id 1 again; the host's session drops the old entry (PLAYER_LEAVE) and accepts the new HELLO
+  in the same message. State kept per id that only a per-frame "is the id still in players()" check clears is never
+  cleared then: use the leave event (player_life, PLAYER_STATE). BUG-0810: the host's kept colonies of that guest.
+* ✔ `spaceext::world_epoch` does not change over `coop.space away 1|0`, and the money pointer of the player's empire
+  is null while away: "back in Space" is not "another world". BUG-0813 (rivals budget asked for again on every return).
+* ✔ A partner who entered the galactic core keeps F_ENTERED in its state (kFlagEnteredCore is saved with its game)
+  after it flies away (zone 2 at a star in the Grox zone). BUG-0820.
+* ✔ The space fixture's home colony 00460035 has 9 cities with 1.2 spice each; a guest's arrival in the home system
+  collects them into its hold (0.7 left). With the host `away`, the guest's K_SPICE_TAKEN reached the host but was
+  dropped; the host's next K_SPICE (on its return) wrote 10.8 back into the guest's cities. BUG-0822.
+* ✔ The host's mirror of a guest's own colony in the home system (`allies colonize` -> 01460035, add_planet_own:
+  FillPlanet) has 2 cities with 0.0 spice, the same city count as the guest's real colony, which is why the colony
+  spice sync wrote 0.0 into it. BUG-0840.
+* ✔ The space_empire fixture's colony list order is 00460035 (9 cities), 01460035 (2), 00460014 (1) on both games:
+  SpacePlayerData +0x20 keeps the order of the save. BUG-0834 (the old 48-colony cap, shown with a test cap of 1).
+* ✔ A plant cargo item of an unknown key (type 0, 0DEC0826) in a guest's hold record: the plant factory finds no
+  template, apply_inv counts it as failed (no fault). BUG-0826.
+* ✔ A co-op spice gift that arrives is never answered; its entry stays in the sender's list across a load of another
+  game (game B, a copy of the slot), and a later "no room" answer of the same amount took that old entry. BUG-0828.
+* ✔ A delivered sale (`trade hold 2`: the receiver adds, no answer) is `delivered=1` on the seller within a second; a
+  sale of 10 Yellow Spice to the host's home colony in the space fixture is 149 940 (price 14 994). BUG-0832.
+* ✔ A survey contract's crew can grow while it is active (Carol accepted late: crew 0,1,2, needed 2). BUG-0830.
+* ✔ Space effects relay (`effects.space`): the game's last created effect in Space in the lab's fixture is DC08F952
+  (pool 5, made at the ship); relayed host -> guest and guest -> guest it is created active 0.05-0.06 m from the actor's
+  ship, no fault. BUG-0895.
+* ✔ A host's load of another Space save from the galaxy menu: the mode goes Space -> galaxy menu (0x02CCD1D2) ->
+  loading -> Space, the stage and the place (star) are the same, so nothing in the state tells the guests; the save
+  file does (`world::current_game_key`, e.g. `...\games\game0\madas.spo` -> `...\games\game9\madas.spo`). The guest
+  that gets the world goes to its galaxy menu and loads it into another of its slots (game1 -> game2). BUG-0941.
+* ✔ The player's UFO is the same object (pointer and object serial) over every trip inside one Space world: landing
+  and taking off, a jump and back, the galaxy view and back, and a death with the respawn at the colony ("We've built
+  you a new ship" keeps the old object, 0ECE8FB8 / serial 212, lab 20261112-035944). The captain screen's "Enter
+  Outfitter" did not open in the lab saves (hidden parent). ? An adventure from Space and a working outfitter not
+  tried. BUG-0836 (not reproduced).
+## Badges and the rank (2026-11-12, fix/w48-reports)
+<a id="space-badges"></a>
+
+BUG-0786 (a guest's badges and captain rank are the host's after every (re)join). GOG 2024 (dc04aee5), Ghidra
+(static only, not yet seen at runtime); the symbols are in overrides_dc04aee5.sym (`SporeCoop::BadgeManager_*`).
+Layout from the ModAPI SDK (cBadgeManager.h, cSimulatorSpaceGame.h), checked against the code below.
+
+* ✔ The badge manager (`cBadgeManager`, TYPE 0x2CB0EDE, size 0xC0) is `cSimulatorSpaceGame +0x70` (next to the
+  cargo hold `+0x40`): `cSimulatorSpaceGame::Get` 0x1002A70, then the shared getter 0xBFC730 `mov eax,[ecx+0x70]`
+  (the .sym calls it GetPlayerTribe: identical-code folding). Primary vtable 0x14942A4 (+0x10 Update 0xFE6320, +0x14
+  the name "Badge Manager"), the serializable interface at +8 with vtable 0x1494280 (+0x10 Write 0xFE3C30, +0x14 Read
+  0xFE4090). Constructor 0xFE4E30.
+* ✔ Fields (eastl::map = 0x1C bytes: +0 compare, +4 anchor {right, left = begin, parent = root, colour}, +0x14
+  size; a node: +0 right / +4 left / +8 parent, +0x10 key, +0x14 value; in-order next 0x921810):
+  * +0x10 `mBadges` map<badge id, PropertyList> (the `space_badges~` files, group 0x2CB089D), built by the ctor;
+    static data, never saved.
+  * +0x2C `mBadgeMap` map<badge id, state>: absent = locked (a badge whose prerequisite, property 0x36C4148, is not
+    earned), **1 = earned** (GiveBadge), 2 = available (the ctor for badges without a prerequisite, GiveBadge for
+    the ones this badge unlocks), 3 = available with the property 0x4A310D1 set (? hidden). States < 2 count as
+    earned (GetRank, GetBadgeProgress); ? a state 0 was not seen written.
+  * +0x48 `mStageMap` map<badge id, int>: the rank + 1 at which a non-rank badge was earned (GiveBadge).
+  * +0x64 `mEventCounts` map<BadgeManagerEvent, int>: the counters the requirements read (ModAPI enum: 0 planets
+    colonized, 2 stars explored, 0xB rares, 0xC badge points, 0x1D Joker, ...); AddToBadgeProgress adds to them.
+  * +0x80 a hash_map (? 0xFE45E0 reads its buckets +0x84 / +0x88), +0xA0 byte: Update gives no badge while set
+    (? who sets it), +0xA4 `mCurrentBadgeCard` (the tracked badge, SetCurrentCard 0xFE3CB0), +0xA8 time summed by
+    Update (not saved), +0xAC a LocalizedString ("badge points").
+* ✔ The **captain rank** is not stored: GetRank 0xFE4290 = 1 + the index of the highest rank badge (table
+  0x149421C: 0x58B78701..0x58B78709, 0xA9E986A3 = ranks 1..10) whose mBadgeMap state is < 2; 0 without one. Its
+  rewards come with the rank badge itself in GiveBadge: the tools of the badge's property 0x2CB2281 go into the cargo
+  hold (LoadTool + inventory AddItem), the SPG_MasterBadge cinematic, the badge points (0x43333DD) into event 0xC.
+  So keeping mBadgeMap keeps the rank; the reward tools are hold items (space.keep_items keeps those).
+* ✔ Badges are earned by Update 0xFE6320 (the manager's vt +0x10, every frame of Space; nothing while a comm
+  screen, a cinematic or the pause is up): an available badge (2 / 3) whose requirements (property 0x2CC641B, each
+  a key read by GetEventCount 0xFE5440: mEventCounts, or the empire's colony count 0x6F7F0ED) are all met is given.
+* ✔ **Saved with the Space world**: Write 0xFE3C30 / Read 0xFE4090 with the attribute table 0x15B42F8 (filled by
+  0x1394F40): `mBadgeMap` 0x361B61B, `mEventCounts` 0x361B697, `mStageMap` 0x5EE5002, `mCurrentBadgeCard` 0x63A6AB5.
+  Read frees mBadgeMap and mEventCounts first (RbTree_FreeNodes 0x10212D0 + the anchor reset, below) and then reads
+  them; mStageMap is read on top of what is there. A guest loading the host's share save therefore gets the host's
+  badges, counters and rank, exactly like the hold (#space-kept-hold).
+* ✔ Writing a map as the game does: `RbTree_FreeNodes(map, root)` (thiscall, ret 4) then `map+4 = map+8 = map+4`
+  (anchor), `map+0xC = 0`, byte `map+0x10 = 0`, `map+0x14 = 0` (the Read's own steps, 0xFE40C6..0xFE40E9), then
+  operator[] per key: 0xBAE030 on +0x2C, 0x643A00 on +0x48, 0xDE75E0 on +0x64 (thiscall(map, const key*) ret 4 ->
+  int* value, inserts 0 when absent, GeneralAllocator nodes). `AddToBadgeProgress(mgr, any event, 0)` afterwards
+  posts 0x38CF2FB (badge progress changed) and refreshes the badge card: a refresh by the game's own path.
+* ~ The cheat note 0xC77E30 (cPlayer block, once per game: byte +0x11F0) adds 1 to event 0x1D (Joker) and calls the
+  manager's Update(1, 0) with the text "Hey, you just cheated! ... no longer earn any badges". ? Whether anything else
+  blocks badges after a cheat was not found (Update checks only +0xA0). Tests that need a badge call GiveBadge.
+* ? A developer badge cheat (ArgScript 0x1024A10 with the help text "Debug cheats for Badge ... colonize <num> ...")
+  calls GiveBadge and 0xFE45E0; like `space` and `raid` (9.3) it is probably not registered in the release build.
+
+Fix design (BUG-0786, as space.keep_items, BUG-0678 / 0679): the guest sends its three maps and the card (a new
+module, kinds 85..87: BADGES / BADGES_KEPT / BADGES_DONE, the hold's protocol) when they change; the host keeps them per
+player name for its Space world; a fresh table of a player it kept one for is the host's copy and the kept one goes
+back; the guest writes it with the steps above (outside the frame, before the 2 s the hold waits, so Update does not
+give badges from the host's counters meanwhile) and keeps its own record next to the hold record. Switch
+`space.keep_badges`.
+
+Runtime (2026-11-12, fix/w48-reports, lane 4/5, GOG 2024):
+* ✔ The `space` fixture has 144 entries in mBadgeMap and 29 counters; states 0, 1, 2 and 4 seen (4 on badges of a
+  chain not reached yet, for example B8E0B054 while B8E0B056 is earned). `event 2 += 60` made Update give B8E0B056
+  (state 1) within 2 s; after a restore of the tables the game went on with the chain by itself (B8E0B055 earned,
+  B8E0B056 state 0, B8E0B054 state 2): state 0 = earned and followed by the next badge of its chain (GetRank counts
+  states < 2 as earned).
+* ✔ Writing the three maps the Read's way (free, reset the anchor, operator[] per key, then AddToBadgeProgress(0xC, 0))
+  works: the rejoined guest's earned badges and counters are its own again (space.keep_badges); the host's copy is
+  untouched.
+* ✔ A host that earned a badge and loads its own save again: no fault. A guest that earned one and loads the host's
+  world from the same game at a rejoin: a fault in 9 of 10 runs (BUG-0956, docs/archive/known-issues-2026.md#issue-space-badge-rejoin-fault).
+
+## The modal window list and the badge rejoin crash (2026-11-12, fix/w48-new)
+<a id="space-modal-list-crash"></a>
+
+BUG-0956. GOG 2024 (dc04aee5), runtime (lane 4, space_badges_rejoin with `BADGES_RESTART=0`) and Ghidra.
+* ✔ (runtime) The crash: after the guest's load of the host's world (`world: loading Madas.spo`), the mode switch from
+  the galaxy menu (cGameModeManager::SetActiveModeAt 0x7D8D40 -> 0x7D8670: old mode vt 0x1C, MessageSend 0x212D3E7,
+  new mode vt 0x18) runs from the message queue 4 ms later. The thread's real stack (logged by SporeKit's off-stack
+  report, docs/02-modkit.md#modkit-offstack-report) holds MessageSend+0x1EC (0x88568C, a listener's call) under
+  0x7D8741; deeper ones are cWindowManager code (PopModal+0x51, ProcessMessage, UpdateHover).
+* ✔ (Ghidra + registers) PopModal 0x959410 (WM vt 0x78) of the top modal window makes the first window of the list
+  `+0x81C` (eastl list, node {next, prev, IWindow*, handler}) the modal one and calls its vt 0x10 at once (0x95945A).
+  At every fault `edi = esi + 0x81C` (esi = the window manager), `edx = 0x00420065`: the slot 0x10 of the vtable
+  0x13EB92C (the refcounted base a destroyed object is left with, as in the BUG-0270 notes above; slot 0x10 holds
+  0x00420065, UTF-16 text past the table's end). 0x420065 is the tail of 0x420050: `mov eax,[ebp-4]; mov esp,ebp;
+  pop ebp; ret 4`, with ebp = the popped window (+4, its secondary vtable 0x1414BA0), so esp moves into the heap,
+  eax = 0x1440D0C (the UI::Window base vtable of the window being disposed) and the game runs heap bytes until an
+  illegal / privileged instruction or an access violation at a changing address. Wine then cannot dispatch the fault
+  ("err:seh:NtRaiseException Exception frame is not in stack limits") and ends the process.
+* ~ (inferred) The destroyed window in the list is one the badge's earning put up as a modal window (the caption /
+  card of the badge) and the Space UI destroyed at the stage exit without PopModal; a restarted game has no such
+  entry. Which window it is was not identified (the listener list of 0x212D3E7 was intact before and after the load,
+  `coop.msglisteners`).
+* Fix `game.dead_modal_list` (gamefixes.cpp): before every PopModal and UpdateHover the list's entries whose window
+  is not alive (its vtable slots 0xC4 / 0xF8 not code, the BUG-0270 check) are unlinked.
+* `coop.msglisteners [hex id]` lists the game's listeners of a message (App::MessageManager_ptr 0x16514CC: hash map
+  +0x74 buckets, +0x78 count, node {id, list*, next}, list node {next, prev, object, priority, flag, fn, user});
+  0x212D3E7 had 9 listeners in the galaxy menu (audio 0xEA9DA0, simulator 0xB63650, achievements 0x677100, ...).
+
+## Stored colony spice over the cap is clamped at runtime too (2026-11-12, fix/w48-fmisc)
+<a id="space-spice-runtime-clamp"></a>
+
+* ✔ (runtime, lab, GOG 2024) CORRECTION (2026-11-12, fix/w48-fmisc) to "set higher is clamped at the next load" in
+  section 9 above: the game clamps a city's stored spice (`cCityData` +0x1C) back to the colony's cap while it runs,
+  within seconds and with no load. `coop.space colonyspice set 00460014 30` on the host (colony of one city, cap 5):
+  in rel/0.7.13 lab 20261112-175447 the host's value went 30 -> 5 and its sync sent 5 (guest `written=2`); in
+  20261112-205503 (#1) the guest's game clamped its copy 30 -> 5 first, which colonyspice read as a collection of 25
+  (`this game collected spice of colony 00460014`) and took from the host too. In 1 of 3 runs the guest read 30
+  before either clamp. Which function clamps is not known (`?`); the production / pickup update (0xC82B70, every
+  ~6 s on the active planet) is the likely place. Tests set values under the cap (BUG-0979).
+
+## Rivals merge with an unknown budget, colony spice per world (2026-11-13, fix/w49-money)
+<a id="space-rival-merge-known"></a>
+
+Mod-side mechanics (space_rivalry.cpp, space_planets.cpp), no new game addresses:
+* ✔ (code) A guest's Rivals budget is "known" only after the split (`g_split_pending` applied) or the host's K_SET
+  answer to its K_ASK; a rejoin or any load of the host's save (`coop.share`) makes it unknown again (a new
+  `spaceext::world_epoch`; an editor or an adventure does not, BUG-0813). Until then the guest's game money is the
+  save's money (the host's budget at the save), not its own.
+* ✔ (code) The host keeps a player's last K_MONEY by id (`g_budget`, erased when the player leaves) and by name
+  (`g_budget_name`, a rejoiner's kept budget). BUG-1029: the Allies merge credited only `g_budget`, so a rejoiner
+  inside its load had no credit and sent its whole game money as K_MERGE_FIX. Now every roster guest is credited (id
+  report, else the name's kept budget, else 0) and a guest whose budget is not known in the current world sends no
+  correction. `coop.space rivalry` shows `newcomers=` and `merge_fix_skipped=`; `rivalry holdset <s>` (tests) makes
+  the host answer no K_ASK for s seconds.
+* ✔ (decision 2026-11-13) A newcomer to a Rivals session (its name has no kept budget) gets K_SET `have=2, v=0`: its
+  own empire starts with 0, not with the host's save money.
+* ✔ (code) BUG-1039: the guest's last-known colony spice (`g_gc`) is of one Space world and one Allies period (a
+  Rivals period clears it): the first host K_SPICE after either only writes, no K_SPICE_TAKEN of older values.
+
+## War hits, NPC shot counts, the finale's galaxy jump, far terraform records (2026-11-13, fix/w49-space)
+<a id="space-war-npc-hits"></a>
+
+0.7.14 package S1 (BUG-1032, 1046, 1045, 1042, 1050, 0991). GOG 2024 (dc04aee5), lab runs on lanes 2 and 3.
+* ✔ (runtime, lab 20261113-012657) In a co-op session the guest's game has the host's empire id as its own
+  (PlayerEmpireID 800021CA on both games: the guest plays the host's save). A mirror of the host's escort therefore
+  carried the guest's own empire id in the guest's game.
+* ✔ (runtime, labs 20261113-012657 / 013833) cGameDataUFO TakeDamage drops a hit whose attacker political id (the
+  argument, not the attacker object's +0x30) equals the victim's: -1 against a pirate (-1) did nothing, the host's
+  empire id against the same pirate took 2 hp; -1 against the host's escort (800021CA) took 10.
+* ✔ (runtime) A War guest's hits now count both ways (`space.war_npc_hits`): the host's escort's hit on the War
+  puppet goes to the guest (MSG_UFO_DAMAGE, applied with -1), the guest's MSG_UFO_HIT on the host's empire's ships is
+  applied with -1, and the guest's mirrors of the host's empire's ships get -1 while at War (like the War puppets
+  on the host, space_rivalry.cpp puppets_tick).
+* ✔ (runtime, lab 20261113-012916-2) FireTool of an NPC escort's weapon (`coop.fleet fire`) in a star system was
+  refused every time (al = 0); on a planet (space_empire's colony 01460035) it fires. A host escort (type 2, own
+  empire) has weapons in slots 1 and 2 (+0x794, +0x798), none in slot 0 (+0x790 mpNPCWeapon); one weapon took no
+  second shot within 2.1 s (its reload), so `coop.fleet fire <id> <slot>` alternates slots.
+* ✔ (code) BUG-1046: the host's per-ship shot count (`g_shot_counts`) outlives the 1 s list of shooters (erased with
+  the ship); before, a shot 1.0-2.3 s after the last restarted the count and the guest fired 0 (or 4 after a burst).
+* ✔ (runtime, lab 20261113-013833-2) The finale's direct SpaceTeleportTo in the galaxy view with energy 0 took 200
+  of 1500 hp for a jump next to the core; with full energy (100) none was spent for that jump. teleport_in_galaxy
+  (BUG-0063) keeps both (`space.finale_fly_free`).
+* ✔ (runtime, lab 20261113-014106-2) A guest's star table has stars with planet count +0xAC = 0 within the first 60
+  records (00121000); a K_TERRA_REC for such a star or for 0x40FFFFFF is now skipped (`space.terra_rec_checked`:
+  star_record bounded, the index under +0xAC, in Space only). The FAIL run is in BUG-1042.
+* ✔ (code) BUG-1050: in Space "Give 10 to <player>" sends to coop's give target (`space.give_pick`); the ">" picker sits
+  right of the Give button (724..756 x 430..460: the jump button holds its Tribe / Civ place 520..560).
+* Tests: `coop.space nogen` (a star without generated planets), `coop.space terrarec <place> a t w` (send a
+  K_TERRA_REC), `coop.space heal` (the ship's hp to its max), `coop.space finale goto <star> delay <s>`.
+
+## Restore window trades, allies pending end, owed tools, empty armada raids (2026-11-13, fix/w49-space2)
+<a id="space-restore-window"></a>
+
+* ✔ (code) BUG-1034: a rejoined guest's hold is the host's copy until its own comes back (K_INV_KEPT or its own
+  record, BUG-0678 / BUG-0679; `inv_restore_pending()`: at most 20 s after its fresh hold went). A K_TOOL or K_SELL
+  in that window now waits in space_trade's `g_waiting` (the message body after `to` / `id`) and is handled, added
+  and answered, in the first trade tick after the restore (or after the session ended: the sender counts a delivered
+  gift as received, BUG-0542). Accepting an offer in the window keeps the offer and says "accept in a moment".
+  Switch `space.trade_wait_restore`. Test hook `coop.space trade restorehold 1`: the guest's own record is not used,
+  K_INV_KEPT is not taken (the host resends after 10 s) and the window stays open until `restorehold 0`. The `trade`
+  status line has `waiting= waited= offer_waits= restore_pending=`.
+* ✔ (code) BUG-1036: space_allies' tick outside Space forgets applied mirrors whose galaxy went; with a pending end
+  (the session ended on a mirror planet) and nothing applied left, the old mirrors are forgotten there too
+  (`end_pending_done` in `allies status`). Back in Space connected with a pending end, end_all runs (it waits again
+  while the ship is on a mirror planet) instead of dropping the pending end. Switch `space.allies_end_pending`.
+* ✔ (code) BUG-1037: spaceext::Feature has `tick_off` (every frame while the host's session settings switch the
+  feature off). space_contracts pays its owed rewards (BUG-0694, also K_MISSION tools) there; `coop.space contracts
+  owed` prints the counts (`paid_while_off`). Switch `space.owed_always`.
+* ✔ (code) BUG-1038: correction of the audit (SPC-12): with `contracts.wave_resume` on, a fresh wave's empty raid was
+  resumed once (30 s more), then aborted by the resumed-wave branch; not forever. The 30 s branch now aborts the empty
+  raid (SetState 7) for a fresh wave too (hardening, switch `space.armada_empty_wave`). ✔ (runtime, lab
+  20261113-022716 / 023145) the case was not reached: a raid whose ships the mod does not count (`contracts hideships
+  1`) leaves the game's running list (state 2/3) before 30 s, and a raid started with 0 bombers (StartRaid's last
+  argument) is completed by the game at once (state 5): the game keeps no empty raid running on the colony.
+* ✔ (code) BUG-1040: the roster scan's 250-colony cap now ends the scan over all stars (space_map.cpp).
+
+## A star's planet check at boot reads a null planet record (2026-11-13, fix/w49-fault)
+<a id="space-star-null-planet-record"></a>
+
+BUG-1075. GOG 2024, Ghidra (tools/ghidra/q.sh --build 2024) and the crash report of lab 20261113-074535 (fix/w49-tests).
+* ✔ (Ghidra) 0xFEFC03 is not in cMissionManager::ChooseMission (0xFEEBC0 ends before 0xFEFB80; the crash report's
+  nearest name is wrong): it is `SporeCoop::StarRecord_HasGoldilocksPlanet` 0xFEFB80 (cdecl(cStarRecord*,
+  cPlanetRecord** io, bool*, bool*), plain ret). For a single star it loops over GetPlanetRecords (0xBBA900) and
+  reads `[record]+0x28` (the planet's type) without a null check: `mov edx,[eax]; cmp [edx+0x28],2`. The crash had
+  edx = 0: a null pointer inside the star's planet record vector (eax = the vector's data).
+* ✔ The chain (stack scan): ReadStarsFromSaveDB 0xBB8C90 (u"stars.db") -> StarGenerationMessageHandler -> 0xBB2580
+  -> 0xBB2350 -> 0xFEFD20 -> 0xFEFB80, on the main thread at frame 2 of the boot, game mode none: the galaxy save of the
+  profile is read before the galaxy menu.
+* ✔ (Ghidra) GetPlanetRecords 0xBBA900 returns the star's record vector +0x84 as read from the save (or a filtered
+  copy +0x98 when flag 0x40 of +0x5C is set); it does not generate planets. A null entry is a planet record the read
+  did not resolve.
+* ✔ (runtime) The mod's hooks near it did not run: space's RequirePlanetsForStar / RandomInt / RandomFloat /
+  GenerateRandomName / cStarRecord_GetSpeciesProfile hooks (BUG-0185, BUG-1074) log every generation ("space: planets
+  of star ... generated") and the crashed game's log has none; no hook of ours is in the star manager's save read
+  or the resource reads; the mod had no session (offline, game mode none). The crashed game
+  was one of two copies of the same instance started 0.13 s apart with the same profile (pids 448 and 456 of instance
+  7, the second "console: cannot listen on 127.0.0.1:47806 (err 10013)"), both reading the profile's galaxy save
+  (docs/06-testing.md#testing-double-instance).
+* ? Whether a torn read of the shared save files gives the null record: inferred, not reproduced (lab boot loops
+  under load and with a deliberate double start, docs/06-testing.md#testing-double-instance).
+
+## The captain screen of an empire without a captain, "Name Your Captain" (2026-11-14, fix/w50-captain)
+<a id="space-captain-portrait-null"></a>
+
+BUG-1111 (GitHub #202). GOG 2024 (dc04aee5; Steam 3010a413 the same code), objdump, runtime probes on lane 2, the
+reporter's minidump.
+* ✔ The player empire's captain is a creature key at `cEmpire +0xC4` (`SporeCoop::cEmpire_GetCaptainKey` 0xC310F0,
+  setter `SporeCoop::cEmpire_SetCaptainKey` 0xC31100, which also applies the cPlayer stage traits +0x10FC..+0x110C
+  to it through 0xC75B40). It is set by: `cPlayer mInitCaptainKey` (+0x1290, from the game start info +0x58 in
+  0xB271D0) at a Space enter (0xC75BF0, from 0x1007225 / 0x1007606), the captain editors' result (0xFE2C7B), and the
+  "Name Your Captain" dialog (below). 0 = no captain. The lab's `space` fixture has captain 2905CC0C (the world's
+  species is the premade 065CBAB0).
+* ✔ "Name Your Captain": `cAppModeSpace` (`[0x16D9938]`, vtable 0x1493FC8) checks once per Space load in its update
+  0xFE0F30 (one-shot flag mode +0x131, not while `[0xB3D5D0()]+0x2C` is 1 or 2): a captain key with instance 0 opens
+  the dialog (`SporeCoop::NameCaptainDialog_Show` 0xE1DC50, a text field, a dice for a random name, a check button
+  that is greyed out while the name is empty). Its check (`SporeCoop::NameCaptainDialog_OnButton` 0xE1DC60, button 1)
+  copies the world's player species (`cSpeciesManager +0xA4`, 0x4DF470) into a new creature with that name
+  (0x6462E0, 0x5BF4A0) and sets it as the captain (0xE1DD8C). Runtime: a fresh name gives a new key (29224791 on the
+  guest, 29224792 on the host, ids from each profile's own sequence). **When the species cannot be copied the game
+  sets an all-zero captain** and does not ask again in that load: with the species manager pointed at 1BADBEEF the
+  setter got 0/0/0. A host creation the mod registered (29224792, 'the host's own creation ... is 7DF959ED here')
+  copies fine. A guest that loads a world without a captain is asked like the host.
+* ✔ The captain screen (`SporeCoop::SpaceGameUI_ShowCaptainScreen` 0x1072810, thiscall(SpaceGameUI, bool, editorId)
+  ret 8; `SporeCoop::SpaceGameUI_Get` 0x10666B0) copies the captain key first, then either builds the screen and calls
+  the equipment panel 0xFE7560(1) (a UI whose `[ui+0x694]+0x28` is 0: the Space update's opener 0xFDF5A0; runtime: this
+  path shows the Galactic Adventures mission screen, "Mission Name", Decline / Accept, with the captain's portrait on
+  the left; 0xFDF5A0 opens it when `GetActivePlanetRecord` has a planet, ~ the adventure offer of a planet) or, from the
+  rank badge (window 0x7BB7790, handler 0x1073678, which sets +0x28 = 1 first), the full panel 0xFE7560(0): 0xF179E0
+  (the captain's items, property list (instance, group | 0xE500), the BUG-0304 fault at 0x5971D4 when there is none)
+  and 0xFE7140 (`cSpeciesManager::GetSpeciesProfile(captain)` passed to 0xC02A10 without a check: a handled fault at
+  0xC02A14 for captain 0). A fault there ends the call (the game's handler): the rest is skipped. Then the tail shows
+  the portrait: `SporeCoop::CreatureDisplay_Show` 0xAE8C80 (thiscall(display, &key, 0x4D594C50, &scale, name, slot,
+  window) ret 0x18) -> Anim::IAnimWorld::LoadCreature 0xA0B1C0 (by key, by name "%s.blocks" when the instance is 0;
+  null when nothing loads) -> the anim world's vt 0x40 (`SporeCoop::AnimWorld_vt40` 0xA055A0) writes
+  `[creature+0x54]`: **the crash at 0xA055B5 (write of 0x54) for a captain that cannot be loaded**.
+* ✔ With a real named captain (the host's 29224792) the badge path has no fault and reaches the portrait (probes:
+  0xF179E0, 0xAE8C80 from 0x1072C75). This corrects the inference of
+  [the captain screen section](#space-captain-screen-fault) (BUG-0304): the 0x5971D4 fault comes from a captain
+  without captain items (the fixture's 2905CC0C, or none), not from every Space game.
+* ✔ The reporter's dump (0.7.13, a guest 6.5 min into the host's Space world, 0.6 s after landing): the portrait's key
+  (the screen's local copy of the captain) was 0/0/0, the call chain 0xAE8D88 <- 0x1072C75 <- the badge handler
+  0x107367D, no other fault in the session. ? Why the reporter's badge path did not stop at 0xF179E0 / 0xFE7140 first
+  (they fault for captain 0 in the lab) is not known; the Space update's opener reaches the portrait without them.
+* ? Why the reporter's captain was 0: inferred, "Name Your Captain" could not copy the world's species (the host's
+  creation) on the guest's PC; the log has no line on it (docs/archive/known-issues-2026.md#issue-captain-uncopyable-species).
+* Fix `game.captain_portrait` (gamefixes.cpp): a portrait whose creature cannot load (no key and no name, or a key no
+  database has) gets the world's species when this game has it, else is skipped (0xAE7D90 checks the slot).
+  `coop.captain [open | species <hex> | species restore]` prints the captain and the species; tests open the screen as
+  the Space update does and emulate an uncopyable species. Test `space_captain_none`.
+
+## Whose kept state: the rejoin token, not the session name (2026-11-15, fix/w51-net)
+<a id="space-kept-key"></a>
+
+BUG-1107 (plan 0.7.15 A10, audit NET-2). The host keeps four kinds of a guest's own Space state across its rejoin:
+its colonies ([space-kept-colonies](#space-kept-colonies), space_map.cpp `g_kept`), its cargo hold
+([space-kept-hold](#space-kept-hold), space_trade.cpp `g_kept_inv`), its badges (space_badges.cpp `g_kept`) and its
+Rivals budget (space_rivalry.cpp `g_budget_name`, K_ASK / K_SET). Up to 0.7.14 all four were keyed by the session
+name. That name is the HELLO name made unique in join order ("Player", "Player 2", BUG-0141), so two players of the
+same name who left and came back in the other order got each other's state.
+
+* Now every store is keyed by `spaceext::kept_key(id)` = `net::Session::player_key(id)`: `t:` + a 64-bit mix of the
+  player's HELLO rejoin token (rejoin.h, BUG-0235 / BUG-1001) when it had one, else `n:` + the session name (an
+  older SporeCoop without a token). The key is never printed or sent; status lines show the name kept beside it
+  (`kept '<name>'`, as before). `coop.space keptkey` lists how each player is keyed (token / name).
+* Who gets the state back: the same game after a crash (the token file) or after a leave or a lost connection (the
+  token kept in memory for the same host address and name, BUG-1001). Not: another game under the same name, the same
+  game under another name, and a game that was closed and started again (a new token): for the kept state these
+  are new players, the same rule as the join rule of BUG-1001 while late join is off.
+  CORRECTION (2026-11-15, fix/w51-space2): a game that was closed and started again gets its state back since
+  BUG-1135: the token of its clean leave is kept on disk for that host address and name
+  ([netcode-rejoin-restart](../04-netcode.md#netcode-rejoin-restart)); another game under the same name still does not.
+* Not changed: the allies mirror (space_allies.cpp `g_m`) is still by name; it is each machine's picture of the other
+  players' empires, rebuilt from their rosters, not state handed back to a player.
+* Switch `space.kept_token` (space_ext.cpp): off = the name, the 0.7.14 behaviour. Test seam `coop.space keptkey other
+  on|off` (rejoin::test_other): the next joins of this game send a fresh token that is neither written to the slot nor
+  kept, as a second game of the same name would. Test `space_kept_key` (Rivals budget), unit `test_player_key`.
+
+## The game's list of owned stars nearby and the allies mirror (2026-11-15, fix/w51-space2)
+<a id="space-near-stars"></a>
+
+BUG-1144 (space_allies, lab 20261115-030136 of feat/w51-space: a caught fault at 0x00C32817, reported as
+"cEmpire_MakeContact+0x3C7"; the real function is 0xC32810, MakeContact ends at 0xC32745).
+
+* ✔ `[cSimulatorSpaceGame+0x30]` points at an object embedded at sim+0xF8 (vtable 0x1494398, ctor 0xFE6730). Its
+  +0x68 vector holds the stars in range of the active star and **+0x7C the ones with star flag 0x10 or 0x20** (owned
+  by an empire; AddRef'd star records). Both are rebuilt only by **0xFE6A50** (`SpaceNearStars_Rebuild`), which its
+  message handler 0xFE6E40 calls (with 0xFE6CD0) on messages 0x43F2583 and 0x55BD8F7 (seen after a jump into a system).
+  Runtime (lane 6): at home only the home star; after a visit to the mirror's star system and back, both.
+* ✔ **The NPC visitor spawn 0x1009070** (thiscall(sim, float dt) ret 4, from the system update 0x1009C90): when no NPC
+  UFO is in state 6, with a chance of 1 - 2^(-0.0869 dt) per call (about 6 % a second), picks a random star of +0x7C
+  (needs 2 or more), skips the player's own (+0x54 == GetPlayerEmpireID), then calls 0xC32810 on
+  `cStarManager::GetEmpire(star +0x54)` **without a null check**: the game never lists a star nobody owns.
+* ✔ Cause: `space_allies.cpp unapply()` (before every save for 3 s, `allies remove`, the session's end) gives the
+  mirror's star back to nobody (+0x54 = -1, flags without 0x10 / 0x20) while the list still holds it: GetEmpire(-1)
+  is null and 0xC32810 faults at its first instruction (`cmp [edi+0xB8],0`, data 0xB8). Reproduced on purpose: visit
+  the mirror's star, go home, `coop.space allies remove`: a fault after 10 s (the stack holds the star record).
+* Fix (`allies.near_rebuild`): after unapply() restored stars, call 0xFE6A50 on the near object (vtable checked) the
+  way the game's handler does; the list then holds no star of nobody. `coop.space allies near` prints the list
+  (owner, flags, `NO EMPIRE` for a stale entry, `stale=<n>`). Test `space_allies_near`.
+
+## A guest colony's cities and an NPC's star at the colony's restore (2026-11-15, feat/w51-store)
+<a id="space-colony-cities"></a>
+
+BUG-1151 (E1 of 0.7.15). GOG 2024, objdump of SporeApp.exe and lab lanes 9 / 10.
+
+* ✔ The cCityData field table (0xC4 bytes, no vtable; the save's serializer: field table built by 0x1397890 into
+  0x15B5510, Read 0xFF0380, Write 0xFF0300): +0x00 position (vec3), +0x0C orientation (quat), +0x1C mSpiceProduction
+  (the stored spice), +0x20 mMaxSize, +0x24 mSize, +0x28 mTurretLocations (a byte of bits), +0x2C mFinalIncome,
+  +0x30 mHappiness, +0x34 mVehicleSpecialty, +0x38 mCaptureID, +0x3C mCapturePercent, +0x40 mName / +0x50
+  mDescription (string16), +0x60..+0x7A 14 u16 (meaning not traced), +0x7C mBuilding (vector of 0x38-byte plain
+  entries), +0x90 mOrnament, +0xA4 mWall, +0xB8 mWallStyle, +0xBC / +0xC0 handles.
+  CORRECTION (2026-11-15, feat/w51-store): docs/re/space.md#space-city-data says "turrets from +0x90": the serializer
+  names +0x90 mOrnament; the turrets are the bits of +0x28. Section 15.2's "cCityData of type 0xFD701F6F" is the
+  mWallStyle value (+0xB8, written by 0xFF0230) FillPlanet gives a city of another empire (0x280852F1: the player's).
+* ✔ cCivData (0x50): +0x14 pol, +0x18 colour, +0x1C wealth, +0x20 turrets, +0x24 buildings, +0x3C the cities.
+  `AddCityData` 0xFF2B20 adds popcount(city +0x28) to +0x20 and (city +0x24 minus that) to +0x24, then the push_back.
+* ✔ FillPlanetDataForTechLevel level 5 (0xB96E90) = GameAlloc(0x50, ...) + cCivData ctor 0xFF32F0 + pol, the species,
+  then per city GameAlloc(0xC4, 0x1465A70, 0, 0, 0, 0) + cCityData ctor 0xFF1B60 (reserves 10 building entries),
+  size 2 or 4 (+ income 150), the wall style, AddCityData; then cPlanetRecord_AddCivData.
+* ✔ 0xFF1500 (the building vector's insert, thiscall(vector, pos, const entry*) ret 8) is an insert before a position:
+  with pos == end it copies downwards from end - 0x38 and runs past the vector's start (lab crash 20261115-132419 at
+  0xFF1550 on an empty list). An append is the game's reserve 0xFF13E0 (thiscall(vector, n) ret 4) and a copy of the
+  plain entry at the end.
+* ✔ The mod writes a guest's own colony cities back into a restored record (space_allies.cpp cities_apply): into the
+  civilization FillPlanet made, a missing city made as FillPlanet makes one; not into the active planet's record (its
+  live cCity objects point at the cCityData, +0x2F0). A planet of the system the ship is in has a cPlanet in the star
+  manager's list (+0x50) but no cities: its record is written.
+* ✔ `TransferStarOwnership` 0xC353A0 (cdecl(star, newPol), plain ret) is the game's change of a star's owner: the old
+  empire's RemoveStarOwnership 0xC35040, the new one's AddStarOwnership 0xC34300 (every tech-5 planet of the star
+  converted, ConvertPlanetOwner 0xC73940), then per planet record 0xCE6AD0 / 0xAEAAC0 / 0xAEA6A0 (not traced). Its
+  callers: 0xAEA092 (a comm event), 0xC8D1E3, 0x1059D2D. The old owner must be an empire (a star of nobody: `this`
+  null). Lab (space_empire fixture, lane 9): the guest's game took an NPC's only star (its home star): the empire was
+  gone from that game (GetEmpire of its pol null), no fault, the planet's 10 cities became the guest's empire's.
+* Restore rule (space.npc_star_colonies): a guest's own colony whose star belongs to an NPC empire in the host's world
+  (bought or conquered in the guest's game) gets the star taken in the guest's copy with TransferStarOwnership; never
+  on the host, never a partner's mirror empire. The host's world keeps the NPC's star: the allies mirror does not show
+  that colony (BUG-0197) and the NPC's AI goes on there in the host's game.
+* ✔ FillPlanetDataForTechLevel's number of cities for a record-level colony is not fixed: 2 in the space fixture's
+  home system before the merge of E3 (BUG-1148, the ecosystem sync), 0 after it (lab 20261115-140828: the colony a
+  civilization of the guest without a city); 0xBBE5E0, the colony city count of a planet, reads the ecosystem level
+  (docs/re/space.md#space-ecosystem, PlanetRecord_EcoLevel). The restore makes every city the guest had, any count.
+* ? Not done: the ornaments (+0x90), walls (+0xA4), the 14 u16 and the two handles are not carried (the city maker
+  makes walls and ornaments of its own); a generated city beyond the guest's count stays; a guest colony made from
+  a planet only partly the guest's (some cities captured, the star still the NPC's) is taken whole.
+## A planet's ecosystem: placed plants and animals, the food web, the stabilized level (2026-11-15, fix/w51-eco)
+<a id="space-ecosystem"></a>
+
+BUG-1148 (a guest's populated, stabilized T1 planet was empty and not stabilized on the host). Ghidra GOG 2024
+(`tools/ghidra/q.sh`) and runtime lane 6 (`space_free`). ✔ = runtime or decompile checked, ~ = inferred.
+
+**Where the game keeps it.**
+* ✔ `cPlanetRecord` **+0xBC** plant species, **+0xD0** animal species: eastl `vector<ResourceKey>` (begin, end,
+  capacity; 12-byte keys: plants `{inst, 0x438F6347 flr, 0x40666200}`, animals `{inst, 0x2B978C46 crt, 0x40626200}`).
+  Runtime `space_free`: the home planet 00460035 (type 5, b0 = b4 = 0.5, T score 3) holds 9 plants and 9 animals;
+  02460035 (type 3, b0 0.63, b4 0.27, T score 1) 2 plants, 0 animals; 01460035 (type 2, T score 0) none. The planet
+  generation 0xBAD5D0 (from 0xBADEA0 <- GeneratePlanetsForStar) fills both lists with `cStarManager::PickPlantSpecies`
+  0xBAC9C0 / `PickAnimalSpecies` 0xBACE60 from the terrain's default flora 0xBAD210.
+* ✔ The record's **type +0x28** (PlanetType: 2 T0 .. 5 T3) follows the T score, not the ecosystem: the terrain tick
+  0xC83280 calls 0xC716F0 (`record +0x28 = 2 + CalculateTScore(+0xB0, +0xB4)`) when the score changes.
+* ✔ The **food web** is read from the lists' order (0xBBC9E0 / 0xBBCAC0 / 0xBBCBA0): row n (T level n) = the n-th
+  plant of each of the three size classes (`SporeCoop::PlantCargo_SizeClass` 0xB8F9B0 on the plant's cargo template:
+  0x6D60A1CC, 0x029C388A, 0x3A8BE428; the home planet has 3 of each), the (2n-1)-th and 2n-th herbivore and the n-th
+  carnivore (species profile +0x608 != 0; the home planet: 6 herbivores, 3 carnivores). A sanctuary (record +0x2C &
+  0x800) counts its plants instead.
+* ✔ **The stabilized level** is `SporeCoop::PlanetRecord_EcoLevel` 0xBBCFB0 (record, ret 4): the highest n up to the T
+  score with at least 3n animal species; it decides the planet's colony city count (0xBBE5E0, the colony tool's
+  Update 0x1058B30) and the tooltips. Runtime: 02460035 is 0 with its 2 plants; after one plant of the missing class,
+  two herbivores and a carnivore it is 1 (both games, lab lane 6).
+* ✔ The game removes species by its rules (0xBBF420, 0xBBCD00 -> 0xBBC6B0 / 0xBBCC80 -> 0xC74770
+  `PlanetRecord_RemoveSpecies` erases from the list): every row above the T score dies out, and a row with fewer than 3
+  plants loses its animals. So a T0 planet holds no species, and a T1 planet's animals need their plant row.
+* ✔ A per-planet entry of a map in the noun manager's window object (+0x11C0, 0xBA4FB0(&PlanetID)) keeps +0xA0 the
+  highest T score reached (the "planets terraformed" badge, AddToBadgeProgress 3 in 0xC83280) and +0xA1 the food webs
+  completed (animals / 3; the "food webs" badge 10 in the landing 0x1032BD0). Local progress, not synced.
+
+**How a placement adds a species.**
+* ✔ `cDropCargoToolStrategy::WhileFiring` 0x105AA10: cargo type 1 (animal) makes the creature at the beam point
+  (0xAD0450: `CreateHerd` 0xB23920 + `cCreatureAnimal::Create`), type 0 (plant) a plant through `cGamePlantManager`
+  (0xB2B570), type 6 an animal of the abduct kind, 4/5 artifacts (planet objects through 0xC73340). No T-score check
+  (Update 0x1056B80 / WhileAiming 0x1054030 only test the tool and the selected item).
+* ✔ The drop's landing (the cDropToGroundLocomotion handler 0x1032BD0) calls **`SporeCoop::PlanetEco_AddAnimal`
+  0xC82590** (at 0x1033300) / **`SporeCoop::PlanetEco_AddPlant` 0xC81C50** (0x1032FE7, 0x103349D): thiscall on the
+  planet's terrain data (planet +0x154; data +0x4C is the planet), `(const ResourceKey* species, const Vector3* pos,
+  bool player)`, ret 0xC. They put the species into the terrain's grid cell of `pos` (6 faces x 4 x 4 cells of 0x54 at
+  data +0x50; a position of 0,0,0 divides by zero there) and append it to the record list when it is new and the list
+  holds fewer than 9 (0xC82340 -> 0xC73460 push_back, 0xC81A30 -> 0xC80B70); the plant one also regrows that size
+  class (0xB2BD20 / 0xB2A890). With `player` set: the third, sixth, ninth new animal shows the food web event
+  0x739DC1E3, a plant row sets data +0x2031 and shows 0x398341C. The planet fill 0xFF73E0 calls them with player 0.
+  This is the hook point: both are hooked by space_eco.cpp (the player flag = the own placement).
+* ✔ `SporeCoop::KeyVector_InsertValue` 0x4E3E80 is eastl DoInsertValue: with room it copies end[-1] up first, so it
+  is only for a full vector (the game's push_back 0xC73460 writes in place while there is room). Called with
+  position == end on an empty vector with room it read before the buffer and faulted at 0x4E3F4D (lane 6, the first
+  version of the sync).
+
+**How the planet's creatures come back when a player arrives.**
+* ~ superseded (2026-11-17): see [space-eco-spots](#space-eco-spots) (a species new to the record gets a herd of
+  its own at every landing). The planet entry 0xFF96B0 (from 0xFDF9E0 <- `cAppModeSpace_LandOnActivePlanet` 0xFE0E00) walks the record's
+  planet objects +0x134 (`cPlanetObjectData`, 0x2C bytes: +0x28 flags): flag 4 with a key that is in +0xD0 gets a
+  herd through `SporeCoop::PlanetEco_SpawnHerd` 0xACF320 (thiscall on `PlanetEco_HerdSpawner()` = [0x167EB3C],
+  `(const ResourceKey*, const Vector3*)`, ret 8: CreateHerd, enabled, the members put on the ground by 0xACEB10);
+  then, with 2 % chance, one herd of a random species of +0xD0. Flag 0x40 objects go to the sanctuary 0x1043FE0.
+* ✔ Runtime: 02460035 has no planet objects; after the host's record got the guest's 3 animal species while away, the
+  host landed and saw no creature of them in 15 s (`coop.space eco`, `#0`). A dropped animal is no planet object
+  (only the sanctuary path 0x1043FE0 writes flag-0x40 ones); ~ where the game keeps a player's dropped herds between
+  visits was not found (not in the record; ~ the profile's planet cache `Planets.package`, local to each game).
+* Plants: ~ the plant manager grows the planet's flora from +0xBC when the planet loads (the regrow calls above); not
+  checked on the screen.
+
+**What the sync does** (space_eco.cpp, `space.eco_sync`): after the own placement (the two hooks, player flag) the
+lists of that planet go to everyone while they change (K_ECO 90, with each species' drop position, at most once a
+second, 30 s after the last placement). A game on that planet adds the missing species through the same two
+functions (player 0) and a herd of each new animal species (PlanetEco_SpawnHerd at the sender's position); a game
+elsewhere writes its record's lists (push_back as the game does, the grow through KeyVector_InsertValue) and owes a
+herd of each new animal species for its next landing there (3 s after it); a planet not generated here (or outside
+Space) waits until it is. The host keeps the latest lists per planet and sends a star system's to a partner entering
+it, all of them to one who joins. Test `space_eco` (`coop.space eco place`, the game's own function with the player
+flag; the real cargo drop is not driven: 02460035 runs its story scene "a crashed spacecraft" on landing, which
+hides the palette).
+
+## Terraforming records for a game outside Space or without that star, and for later players (2026-11-15, fix/w51-eco)
+<a id="space-terraform-late"></a>
+
+BUG-1155 (audit of 0.7.15 wave E, Space item 4), after [the far records](#space-terraform-flag) of BUG-0883 / BUG-1042.
+* ✔ (code) K_TERRA_REC was applied only when the receiver was in Space and its game had generated that star's planets
+  (`planet_record_checked`: star +0xAC count, BUG-1042); otherwise it was dropped, and the sender sends only while the
+  record changes (30 s after the last change). So an editor visit, an adventure, or a star the receiver never came
+  near lost the terraforming for good; when the host was that receiver, it never reached the host's record nor its
+  save. A player who joined later got only what the host's share save held.
+* Now (`space.terra_rec_late`, spacecoop.cpp): a skipped record waits per PlanetID (at most 128) and is applied in the
+  first Space second its planet exists here (a jump into the system generates it: RequirePlanetsForStar); the host keeps
+  the latest values of every planet it sent or received (at most 64) and sends a star system's to a partner whose
+  place enters that star, all of them to a partner it sees for the first time (a join). Both reset with the Space world
+  (world epoch) and the session. The same holds for the ecosystem lists ([space-ecosystem](#space-ecosystem)). Test
+  `space_terra_late` (`coop.space away`, `coop.space nogen`, `coop.space terrarec`, `coop.space jumpto`).
+
+## A star's planet list is empty for a moment after a save (2026-11-16, fix/w51-t3)
+<a id="space-save-planet-gap"></a>
+
+BUG-1203 (0.7.15 final check: the host's game saved itself every 8 s).
+* ✔ (runtime, diagnostic build, lab 20261116-085747 lane 6, space_allies_near): right after each save of the game
+  (`space: saved world`, the save hook of space_allies), the first read of the player empire's stars (cEmpire +0x88)
+  found the star of a colony in another star system (0046000C) with its planet list +0x84 empty while its planet count
+  +0xAC still said 3 (flags 00021038); one second later the list was back with the colony. Seen after every save of
+  the session (4 of 4), the same with the colonies 01460035 / 00460014 of the `space_free` fixture (lab 20261116-084330).
+* ? Who empties and refills the list (the save writing the planet records, or the star manager releasing the planets
+  of a star system other than the current one and the next RequirePlanetsForStar making them) is not checked.
+* Consequence for the mod: space_map.cpp's read of the own colonies (read_local) lost that colony for one read, so the
+  roster went 2 -> 1 -> 2 after every save: the guests' allies mirror of it went and came back, and the E2 autosave
+  took the count increase for "a colony founded" (a save, another gap, another save). Now a star whose planet list is
+  empty while its count is not keeps the colonies the last read found there (`space.roster_planet_gap`), and the
+  autosave's milestone is a colony id never seen in the world (`world.autosave_colony_ids`, autosave::NewIds).
+
+## Why only lane 5 had NPC ships without a model (2026-11-16, fix/w51-t3)
+<a id="space-gfx-cache-models"></a>
+
+Follow-up of [lane 5's cache](#space-lane5-pollination) (its last point was inferred), BUG-1213.
+* ✔ With BUG-0546's Sporepedia cache, lane 6's host had no ship without its model in 4 arrivals at star 004A0014 (lab
+  20261116-090823); with its GraphicsCache.package and GraphicsCache.001.package moved aside (the game makes empty ones)
+  the first arrival had two (`ship models defaulted 2`, manual run 2026-11-16). The baked models in a profile's
+  GraphicsCache make those UFO keys known to the resource manager (vt 0x30 lookup, creations::key_known), so the game
+  builds the ship. A player whose GraphicsCache never baked those ships is in lane 5's case (the guard of BUG-0546).
+
+## Where placed plants and animals stand: the terrain grid, the herd homes (2026-11-17, fix/w51-space3)
+<a id="space-eco-spots"></a>
+
+BUG-1224 (key frames of [the ecosystem sync](#space-ecosystem): a tree the guest planted stood only in the guest's
+game; the host's herd and the guest's were at other places). GOG 2024, Ghidra and runtime lane 7 (`space_free`, planet
+02460035), 2026-11-17.
+
+**Plants.**
+* ✔ (Ghidra) `PlanetEco_AddPlant` 0xC81C50 puts the species into the terrain's **grid cell** of the point: the face of
+  the largest coordinate (+z 0, -z 1, +x 2, -x 3, +y 4, -y 5), i = (int)((a / b + 1) * 2), j = (int)((c / |b| + 1) * 2)
+  clamped to 3 (a, c the other two coordinates in the order of the code), cell n = i + (j + face * 4) * 4, at terrain
+  data **+0x50 + n * 0x54**. A cell: +0 a count, **+4 + class * 0x10 one plant species per size class** (class 0
+  3A8BE428, 1 029C388A, 2 6D60A1CC: key, amount; 0xC81A30 replaces the slot), +0x34 the animal slot(s) (key, amount).
+  The plant manager's 9 models (0xB2BD20, `cGamePlantManager`) come from the record's +0xBC; which of them grow where
+  is the cells'. `coop.space eco cell <x> <y> <z>` prints a point's cell.
+* ✔ (runtime) The flora of a cell is the same in every game whose cell holds the same species: the host's game,
+  given the guest's plant through AddPlant at the guest's point (player 0), showed the same trees at the same place
+  (same camera, lane 7 manual and lab 20261117-124504 frames space_eco/02_eco_landed_spot_*). The record's list alone
+  (what a game away from the planet got from K_ECO) left the host's cell without it: the trees stood only in the guest's
+  game (manual lane 7: the host landed, the same camera showed bare ground).
+* ✔ (runtime) The placing game keeps its cells while the session runs: the guest took off and landed again and its
+  trees stood where it planted them. ? Across a save and a load of the world: not checked.
+
+**Animals.**
+* ✔ (Ghidra) `SporeCoop::PlanetEco_DropAnimal` 0xAD0450 is the cargo drop's creature (thiscall on the herd spawner,
+  `(cSpeciesProfile*, const Vector3* pos)`): a herd of one, `cCreatureAnimal::Create(pos, profile, 1, herd, 0, 1)`.
+* ✔ (runtime) `PlanetEco_SpawnHerd` 0xACF320, which the ecosystem sync used for a partner's animal, makes **one
+  epic-size creature** (hp 3500, census scale 13..17, a giant on the screen, frame out/lane7/shots/w51space3/epic_g.png
+  of the manual run), not a herd of normal animals: it is the planet entry's spawn of its epic planet objects. The
+  drop's function makes one normal adult (hp 14, scale ~2.1) at the point, on the ground.
+* ✔ (runtime) **A herd's place is each game's own choice, on every landing**: after its record had the species, each
+  game's planet entry made a herd of 7 of it (hp 14, one young hp 7) and a planet object `[t0 f24 <species>]` in the
+  record's +0x134, at a spot of its own: the host (-37 159 453), after landing again (-125 107 480); the guest, after
+  landing again (-112 -117 479). So not even the placing game shows a dropped animal where it was dropped on its next
+  visit; another game cannot either. What every game agrees on is the species list, the stabilized level and (while
+  both are there) the drop's own creature at the drop point.
+* CORRECTION (2026-11-17, fix/w51-space3): "the planet entry 0xFF96B0 makes herds only of the record's planet objects of
+  flag 4 ... plus, with 2 % chance, one random species" ([space-ecosystem](#space-ecosystem)) does not hold for a
+  species new to the record: the entry made a herd of 7 of the one new animal species (0654E276) at every landing of
+  both games in the manual run above (and a flag 0x24 planet object for it). The BUG-1148 observation "the host landed
+  with the guest's 3 species and saw no creature of them in 15 s" was not reproduced here (lab 20261117-124504: the
+  spot herds were made 3 s after the landing because none of the 3 species had a creature yet).
+
+**What the sync does now** (space_eco.cpp, `space.eco_spots`): each species keeps the spot the sender placed it at
+(already in K_ECO; a known species placed at a new spot is sent too). A game on that planet puts each spot's species
+into the cell of the spot through the game's own AddPlant / AddAnimal (player 0), also a game that arrives later (3 s
+after its landing; once per spot and terrain: a planet loaded again is put again), and makes the drop's own creature
+(PlanetEco_DropAnimal, on the ground under the point) where it has none of that species. Off: the record's lists only,
+the old herd spawn (an epic).

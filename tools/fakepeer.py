@@ -5,7 +5,7 @@ Joins a host (a game running `coop.host`), then walks around the host's avatar s
 the host sees a remote player's puppet without a second copy of the game.
 
 usage: fakepeer.py [host[:port]] [--name Bot] [--mode circle|follow|static]
-                   [--radius 8] [--period 12] [--seconds 60] [--build HEX]
+                   [--radius 8] [--period 12] [--seconds 60] [--build HEX] [--protocol N]
 Mirrors mods/coop/net (protocol.h, connection.cpp). Run with python3 -I.
 """
 import argparse
@@ -17,7 +17,8 @@ import sys
 import time
 
 MAGIC = 0x4F435053
-PROTO = 6  # 5: 128-packet acks; 6: connection id in the header, unreliable BYE
+# Default to the current protocol. Check the wire format before adding versions.
+PROTO = 30
 HEADER = '<IHIHHQQB'  # magic, proto, conn, seq, ack, ackbits (2 x u64), count
 HEADER_SIZE = struct.calcsize(HEADER)
 HELLO, WELCOME, REJECT, JOIN, LEAVE, STATE, CHAT, PING, PONG, BYE = range(1, 11)
@@ -31,10 +32,11 @@ def seq_greater(a, b):
 class Conn:
     """Minimal port of net::Connection (seq/ack/ackbits + reliable ordered)."""
 
-    def __init__(self, sock, addr):
+    def __init__(self, sock, addr, protocol=None):
         self.sock, self.addr = sock, addr
+        self.protocol = PROTO if protocol is None else protocol
         self.conn = int.from_bytes(os.urandom(4), 'little') or 1  # a new id for every join
-        self.local_seq = 0
+        self.local_seq = 1  # like net::Connection (BUG-0030): ack 0 of a peer that got nothing acks nothing
         self.remote_seq = 0
         self.recv_bits = 0
         self.have_remote = False
@@ -74,7 +76,7 @@ class Conn:
             ids.append(m[0])
             count += 1
         bits = self.recv_bits if self.have_remote else 0
-        hdr = struct.pack(HEADER, MAGIC, PROTO, self.conn, seq, self.remote_seq, bits & (2**64 - 1), bits >> 64, count)
+        hdr = struct.pack(HEADER, MAGIC, self.protocol, self.conn, seq, self.remote_seq, bits & (2**64 - 1), bits >> 64, count)
         self.sent[seq] = ids
         if len(self.sent) > 256:
             self.sent.pop(next(iter(self.sent)))
@@ -90,7 +92,7 @@ class Conn:
         if len(data) < HEADER_SIZE:
             return
         magic, proto, conn, seq, ack, lo, hi, count = struct.unpack_from(HEADER, data)
-        if magic != MAGIC or proto != PROTO or conn != self.conn:
+        if magic != MAGIC or proto != self.protocol or conn != self.conn:
             return
         ackbits = lo | hi << 64
         self.last_recv = time.time()
@@ -131,9 +133,30 @@ class Conn:
                 self.rel_in.setdefault(rid, (typ, p))
 
 
-def pack_state(pid, t_ms, pos, rot, vel, flags, hp, mhp, species, mode=0, world=0):
-    return struct.pack('<BI3f4f3fBBffIII', pid, t_ms & 0xFFFFFFFF, *pos, *rot, *vel, flags, 0, hp, mhp, species,
+# Mirrors messages.def; fakepeer_check compares this table against the real manifest.
+FAMILIES = ((1, 2, 0), (2, 1, 0), (3, 1, 0), (4, 1, 0), (5, 1, 0), (6, 1, 1),
+            (7, 1, 0), (8, 1, 2), (9, 1, 0), (10, 1, 0), (11, 1, 0), (12, 1, 0))
+
+
+def pack_hello(protocol, build, name):
+    encoded = name.encode()[:255]
+    base = struct.pack('<HIB', protocol, build, len(encoded)) + encoded
+    if protocol < 30:
+        return base
+    # CAP_FAMILIES only: this small bot does not implement reliable fragmentation.
+    return base + struct.pack('<IB', 8, len(FAMILIES)) + b''.join(struct.pack('<BHH', *f) for f in FAMILIES)
+
+
+def pack_state(pid, t_ms, pos, rot, vel, flags, hp, mhp, species, mode=0, world=0, protocol=PROTO):
+    base = struct.pack('<BI3f4f3fBBffIII', pid, t_ms & 0xFFFFFFFF, *pos, *rot, *vel, flags, 0, hp, mhp, species,
                        mode, world)
+    # A generic network bot has scale1 and no authored captain/run identity.
+    # Protocols27/28 include upstream AGL before the three GA identity words.
+    if protocol >= 29:
+        return base + struct.pack('<fffQQQ', 1.0, -1e6, 0.0, 0, 0, 0)
+    if protocol >= 27:
+        return base + struct.pack('<ffQQQ', 1.0, -1e6, 0, 0, 0)
+    return base + struct.pack('<fQQQ', 1.0, 0, 0, 0) if protocol >= 23 else base
 
 
 def unpack_state(p):
@@ -158,16 +181,17 @@ def main():
     ap.add_argument('--radius', type=float, default=8.0)
     ap.add_argument('--period', type=float, default=12.0)
     ap.add_argument('--seconds', type=float, default=60.0)
-    ap.add_argument('--build', default='922af7c7', help='first 8 hex digits of the exe sha256')
+    ap.add_argument('--build', default='dc04aee5', help='first 8 hex digits of the host game build ID')
+    ap.add_argument('--protocol', type=int, choices=(6, 7, 23, 24, 25, 26, 27, 28, 29, 30), default=PROTO, help='host protocol version (default: 30)')
     ap.add_argument('--say', default='hello from fakepeer')
     a = ap.parse_args()
     h, _, port = a.host.partition(':')
     addr = (socket.gethostbyname(h), int(port or 47810))
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.bind(('0.0.0.0', 0))
     sock.setblocking(False)
-    c = Conn(sock, addr)
-    name = a.name.encode()[:255]
-    c.send_reliable(HELLO, struct.pack('<HIB', PROTO, int(a.build, 16), len(name)) + name)
+    c = Conn(sock, addr, a.protocol)
+    c.send_reliable(HELLO, pack_hello(c.protocol, int(a.build, 16), a.name))
     st = {'my_id': None, 'host': None, 'said': False}
 
     def deliver(typ, p):
@@ -190,7 +214,7 @@ def main():
             print('leave', p[0])
         elif typ == BYE:
             print('host closed the session')
-            sys.exit(0)
+            sys.exit(0 if st['my_id'] is not None else 1)
 
     t0 = time.time()
     last_state = 0.0
@@ -227,7 +251,7 @@ def main():
             speed = math.sqrt(sum(v * v for v in vel))
             flags = PF_IN_WORLD | (PF_MOVING if speed > 0.3 else 0)
             c.send_unreliable(STATE, pack_state(st['my_id'], int(now * 1000), p, st['host']['rot'], vel,
-                                                flags, 10.0, 10.0, 0, st['host']['mode'], st['host']['world']))
+                                                flags, 10.0, 10.0, 0, st['host']['mode'], st['host']['world'], c.protocol))
             if not st['said'] and now - t0 > 2:
                 txt = a.say.encode()
                 c.send_reliable(CHAT, struct.pack('<BH', st['my_id'], len(txt)) + txt)
@@ -237,7 +261,10 @@ def main():
             return 1
         c.flush(now)
         time.sleep(0.01)
-    for _ in range(3):  # unreliable, a few copies (protocol 6)
+    if st['my_id'] is None:
+        print('no welcome received')
+        return 1
+    for _ in range(3):  # unreliable, a few copies
         c.send_unreliable(BYE, b'\0')
         c.flush(time.time() + 1)
     print('done')

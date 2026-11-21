@@ -1,0 +1,5 @@
+# Exact GOG native history retirement ABI.
+# exe_sha256=dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37
+# evidence=tools/addrport/verify_editor_history_dc04.py; docs/re/adventure-editor-history.md
+SporeCoop::Editor::EraseHistoryRange=0x00E25BB0 ; verified static: thiscall(history vector*,entry** first,entry** last),ret8; native owning-vector erase releases removed entries via primary vt4 and updates end4; does not reset cursor14 or history serial18
+SporeCoop::Editor::DiscardHistoryEntry=0x00F322B0 ; verified static: cdecl(),ret; clears global owned editing entry24 before primary vt4 Release and sets notEditing20 true; does not restore a scenario or remove committed history

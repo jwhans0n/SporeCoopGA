@@ -1,4 +1,5 @@
 #include "sui.h"
+#include "sui_tree_root.h"
 
 #include <cctype>
 #include <cstdio>
@@ -6,6 +7,7 @@
 #include <cstring>
 #include <set>
 
+#include "fixes.h"
 #include "sporekit_game.hpp"
 
 using skg::thiscall;
@@ -106,6 +108,23 @@ Win main_window()
     return wm ? vcall<Win>(wm, 0x04 / 4) : nullptr;
 }
 
+Win layout_container(void* layout)
+{
+    if (!a_layout_container || !skg::readable(layout, 0x18))
+        return nullptr;
+    void* backing = skg::field<void*>(layout, 0x14);
+    if (!skg::readable(backing, 0x8C))
+        return nullptr;
+    // Verified 810610 is a leaf getter: [layout+14], then [backing+88].
+    // Never dispatch an IWindow virtual method on the UILayout itself.
+    Win root = thiscall<Win>(a_layout_container, layout);
+    if (!skg::readable(layout, 0x18) || !skg::readable(backing, 0x8C) ||
+        skg::field<void*>(layout, 0x14) != backing ||
+        skg::field<Win>(backing, 0x88) != root || !skg::readable(root, 0x40) || !valid(root))
+        return nullptr;
+    return root;
+}
+
 // Window::mChildrenWindows: intrusive list anchor at IWindow+0x38 in this build (ModAPI: +0x3C);
 // a child's list node is at child+4
 std::vector<Win> children(Win w)
@@ -149,6 +168,11 @@ Rect screen_rect(Win w)
     return r;
 }
 bool visible(Win w) { return w && (flags(w) & kFlagVisible); }
+bool cursor_position(float& x,float& y){
+    POINT point{};auto window=H?static_cast<HWND>(H->game_window()):nullptr;
+    if(!window||!GetCursorPos(&point)||!ScreenToClient(window,&point))return false;
+    x=float(point.x);y=float(point.y);return true;
+}
 uint32_t font(Win w) { return w ? vcall<uint32_t>(w, 0x40 / 4) : 0; }
 
 Win find(Win root, uint32_t id)
@@ -203,6 +227,25 @@ std::string dump(Win root, int max_depth, bool only_visible)
 // ---------------- changing ----------------
 void add_ref(Win w) { if (w) vcall<int>(w, 0); }
 void release(Win w) { if (w) vcall<int>(w, 1); }
+// the object's reference count now (AddRef's answer minus the one it added, given back at once): the game's own
+// count of a live window, image or drawable (Object: AddRef slot 0, Release slot 1)
+int refs(void* o)
+{
+    if (!o)
+        return 0;
+    int n = vcall<int>(o, 0) - 1;
+    vcall<int>(o, 1);
+    return n;
+}
+
+// BUG-1025: every window the mod made kept the mod's own reference for good (new_button / text_edit take one more
+// on top of the creation's, the keep-alive of the mod's tables), a handler's creation reference was never given
+// back and a layout object of a failed load leaked. With the switch the mod gives back what it holds when it drops
+// a window (the notification panels' labels, the main menu's item and its version line, an older pause menu
+// button), the handler's own reference once the window took one, the menu icon's image reference after the
+// drawable took its own, and a failed layout object is used again. Off (`coop.fix core.ui_release off`): 0.7.13.
+bool g_release_fix = true;
+COOP_FIX("core.ui_release", "BUG-1025", g_release_fix, "ui: windows, handlers and images the mod drops are given back to the game (no leak per notification)");
 void set_caption(Win w, const std::string& t)
 {
     std::u16string u = utf16(t);
@@ -222,6 +265,8 @@ void add_child(Win p, Win c) { vcall<void>(p, 0xD8 / 4, c); }
 void remove_child(Win p, Win c) { vcall<void>(p, 0xDC / 4, c); }
 void bring_to_front(Win p, Win c) { vcall<void>(p, 0xE8 / 4, c); }
 void set_drawable(Win w, void* d) { vcall<void>(w, 0xB0 / 4, d); }
+void set_fill_color(Win w, uint32_t argb) { vcall<void>(w, 0xAC / 4, argb); }
+void set_shade_color(Win w, uint32_t argb) { vcall<void>(w, 0x5C / 4, argb); }
 
 // ---------------- layouts ----------------
 Win load_layout(uint32_t instance, uint32_t group)
@@ -234,13 +279,21 @@ Win load_layout(uint32_t instance, uint32_t group)
         if (control_id(c) == 0x05B598FA)
             layer = c;
     std::vector<Win> before = children(layer);
-    // the UILayout object stays alive for the whole session (the windows belong to it)
-    void* l = calloc(1, 0x40);
-    thiscall<void*>(a_layout_ctor, l);
-    vcall<int>(l, 1); // AddRef (DefaultRefCounted: [0] is the destructor)
+    // the UILayout object stays alive for the whole session (the windows belong to it). BUG-1025: one whose load
+    // failed is used for the next load (it was calloc'd: never given to the game's allocator to free)
+    static void* s_spare;
+    void* l = g_release_fix && s_spare ? s_spare : nullptr;
+    s_spare = nullptr;
+    if (!l) {
+        l = calloc(1, 0x40);
+        thiscall<void*>(a_layout_ctor, l);
+        vcall<int>(l, 1); // AddRef (DefaultRefCounted: [0] is the destructor)
+    }
     uint32_t key[3] = {instance, 0x0510A95B, group};
-    if (!o_LayoutLoad(l, key, true, 0x5B598FA))
+    if (!o_LayoutLoad(l, key, true, 0x5B598FA)) {
+        s_spare = l;
         return nullptr;
+    }
     if (!layer)
         layer = thiscall<Win>(a_layout_container, l);
     for (Win c : children(layer)) {
@@ -486,10 +539,18 @@ static int tramp(void* user, void* window, const void* msg)
 
 void* add_handler(Win w, std::function<bool(Win, const Msg&)> fn)
 {
+    return add_handler(w,std::move(fn),0);
+}
+void* add_handler(Win w, std::function<bool(Win, const Msg&)> fn, int event_flags)
+{
     // the box is never freed: after a hot reload the old handler is disabled, not deleted
     auto* box = new HandlerBox{std::move(fn)};
-    void* p = H->ui_winproc(M, tramp, box, 0);
+    void* p = H->ui_winproc(M, tramp, box, event_flags);
     vcall<void>(w, 0x104 / 4, p);
+    if (g_release_fix && refs(p) >= 2) { // the window holds its own (AddWinProc): ours is not needed (BUG-1025)
+        vcall<int>(p, 1);
+        return nullptr; // (no caller keeps it; remove_handler would give back a reference not ours)
+    }
     return p;
 }
 
@@ -503,11 +564,115 @@ void remove_handler(Win w, void* h)
     obj_release(h);
 }
 
+void tooltip_text(void* tooltip,const std::string& text){
+    const auto setter=H->sym("SporeCoop::Editor::TooltipText");
+    if(!tooltip || !setter)return;
+    const auto value=utf16(text);
+    thiscall<void>(setter,tooltip,value.c_str(),int32_t(-1),true);
+}
+std::string tooltip_caption(Win window){
+    if(!window)return {};
+    const auto type=H->sym("SporeCoop::Editor::TooltipVTable");void* procedure=nullptr;
+    for(unsigned i=0;i<64;++i){
+        procedure=vcall<void*>(window,0x10C/4,procedure);if(!procedure)return {};
+        if(!skg::readable(procedure,0x30) || skg::field<uintptr_t>(procedure,0)!=type)continue;
+        auto* begin=skg::field<const char16_t*>(procedure,0x24);
+        auto* end=skg::field<const char16_t*>(procedure,0x28);
+        const auto first=reinterpret_cast<uintptr_t>(begin),last=reinterpret_cast<uintptr_t>(end);
+        if(last<first || (last-first)%2 || last-first>4096 || !skg::readable(begin,last-first))return {};
+        const std::u16string value(begin,end);return utf8(value.c_str());
+    }
+    return {};
+}
+void* tooltip(Win window,const std::string& text){
+    const auto ctor=H->sym("SporeCoop::Editor::TooltipCtor");
+    if(!window || !ctor || !H->sym("SporeCoop::Editor::TooltipText"))return nullptr;
+    auto* object=utf_new(0x68);if(!object)return nullptr;
+    thiscall<void*>(ctor,object);obj_addref(object);
+    tooltip_text(object,text);vcall<void>(window,0x104/4,object);return object;
+}
+void remove_tooltip(Win window,void* object){
+    if(!object)return;
+    if(window)vcall<void>(window,0x108/4,object);
+    obj_release(object);
+}
+
 // ---------------- devkit ----------------
 namespace {
+// Read only owning native child references. The command's supplied value is
+// never passed here unless it was reached through the fresh main-window tree.
+bool tree_child_refs(uintptr_t address, uintptr_t image_base, std::vector<uintptr_t>& out)
+{
+    auto window_ok=[image_base](uintptr_t window) {
+        if (!window || !skg::readable(reinterpret_cast<void*>(window),0x40)) return false;
+        uintptr_t vt=0; std::memcpy(&vt,reinterpret_cast<void*>(window),sizeof vt);
+        return vt>image_base && vt-image_base<0x2000000 &&
+            skg::readable(reinterpret_cast<void*>(vt),0x11C);
+    };
+    if (!window_ok(address)) return false;
+    const auto anchor=address+0x38;
+    uintptr_t original=0;
+    std::memcpy(&original,reinterpret_cast<void*>(anchor),sizeof original);
+    auto node=original;
+    std::set<uintptr_t> visited;
+    for (size_t count=0;node!=anchor;++count) {
+        if (!node || node<4 || count>=4096 || !visited.insert(node).second ||
+            !skg::readable(reinterpret_cast<void*>(node),sizeof(uintptr_t)) || !window_ok(node-4)) return false;
+        uintptr_t next=0;
+        std::memcpy(&next,reinterpret_cast<void*>(node),sizeof next);
+        out.push_back(node-4);
+        node=next;
+    }
+    uintptr_t final=0;
+    std::memcpy(&final,reinterpret_cast<void*>(anchor),sizeof final);
+    return original==final;
+}
+
+// BUG-0812: `coop.ui show|btn|font|caption|area|align|tree <hex>` took the number as a window and called its
+// vtable: a control id (06318E78) or any other number was a wild pointer and the game faulted. The number is
+// a window only when the live UI tree has a window at that address; else the first window with that control
+// id; else nothing ("no window"). `coop.fix core.ui_window_arg off`: the number as it is (before).
+static bool g_ui_arg_fix = true;
+COOP_FIX("core.ui_window_arg", "BUG-0812", g_ui_arg_fix, "ui: coop.ui takes a window by its address or control id only when the UI tree has it (a wrong number faulted the game)");
+Win arg_win(const char* text, SkOut* out)
+{
+    uintptr_t v = strtoul(text, nullptr, 16);
+    if (!g_ui_arg_fix)
+        return (Win)v;
+    Win by_id = nullptr;
+    std::vector<Win> stack{main_window()};
+    for (int n = 0; !stack.empty() && n < 50000; n++) {
+        Win w = stack.back();
+        stack.pop_back();
+        if (!w)
+            continue;
+        if ((uintptr_t)w == v)
+            return w;
+        if (!by_id && control_id(w) == (uint32_t)v)
+            by_id = w;
+        for (Win c : children(w))
+            stack.push_back(c);
+    }
+    if (!by_id)
+        H->out_printf(out, "no window %08X (no window of the UI tree has that address or control id)\n", (unsigned)v);
+    return by_id;
+}
+
 int c_ui(void*, int argc, const char* const* argv, SkOut* out)
 {
     std::string sub = argc > 1 ? argv[1] : "tree";
+    const auto checked_window=[&](const char* argument)->Win{
+        uintptr_t candidate=0,accepted=0;
+        if(!argument||!sui_tree_root::parse(argument,candidate))return nullptr;
+        const auto resolved = arg_win(argument,out);if(!resolved)return nullptr;
+        candidate=reinterpret_cast<uintptr_t>(resolved);
+        const auto image_base=H->image_base();
+        const auto result=sui_tree_root::resolve(candidate,
+            []{return reinterpret_cast<uintptr_t>(main_window());},
+            [image_base](uintptr_t window,std::vector<uintptr_t>& refs){return tree_child_refs(window,image_base,refs);},accepted);
+        if(result!=sui_tree_root::Result::Found){H->out_printf(out,"window rejected: not owned by the current native UI\n");return nullptr;}
+        return reinterpret_cast<Win>(accepted);
+    };
     if (sub == "findall" && argc > 2) {
         std::string text = argv[2];
         for (int i = 3; i < argc; i++) text += std::string(" ") + argv[i];
@@ -607,6 +772,33 @@ int c_ui(void*, int argc, const char* const* argv, SkOut* out)
             H->out_printf(out, "%08X.%08X group %08X\n", l.instance, l.type, l.group);
         return 0;
     }
+    if (sub == "refs" && argc > 2) { // the game's reference count of a window (BUG-1025)
+        Win w = arg_win(argv[2], out);
+        if (!w)
+            return 1;
+        H->out_printf(out, "refs %p %d\n", w, refs(w));
+        return 0;
+    }
+    if (sub == "reftest") { // RE (BUG-1025): the reference counts of a window the mod makes, step by step
+        Win parent = main_window();
+        Win l = label(nullptr, {0, 0, 10, 10}, "reftest", 0, 0xFFFFFFFF, kAlignLeft);
+        if (!l || !parent)
+            return 1;
+        int made = refs(l);
+        add_child(parent, l);
+        int added = refs(l);
+        void* p = H->ui_winproc(M, tramp, new HandlerBox{}, 0);
+        int proc0 = refs(p);
+        vcall<void>(l, 0x104 / 4, p);
+        int proc1 = refs(p);
+        remove_child(parent, l);
+        int removed = refs(l);
+        H->out_printf(out, "label: made %d (with ours), in a parent %d, taken out %d; handler: made %d, on the window %d\n",
+                      made, added, removed, proc0, proc1);
+        vcall<int>(p, 1); // ours
+        release(l);       // ours: the label and its handler go
+        return 0;
+    }
     if (sub == "load" && argc > 2) {
         Win w = load_layout((uint32_t)strtoul(argv[2], nullptr, 16),
                             argc > 3 ? (uint32_t)strtoul(argv[3], nullptr, 16) : 0x40464100u);
@@ -614,7 +806,7 @@ int c_ui(void*, int argc, const char* const* argv, SkOut* out)
         return w ? 0 : 1;
     }
     if (sub == "btn" && argc > 2) { // button properties
-        Win w = (Win)strtoul(argv[2], nullptr, 16);
+        Win w = checked_window(argv[2]);if(!w)return 1;
         void* b = as_button(w);
         if (!b) {
             H->out_printf(out, "not a button");
@@ -630,17 +822,61 @@ int c_ui(void*, int argc, const char* const* argv, SkOut* out)
             H->out_printf(out, " %08X", vcall<uint32_t>(b, 0x48 / 4, i));
         return 0;
     }
+    if (sub == "align" && argc > 3) { // experiments: a button's caption alignment (+0x3C) and type (+0x1C)
+        Win w = arg_win(argv[2], out);
+        void* b = w ? as_button(w) : nullptr;
+        if (!b)
+            return 1;
+        if (argc > 4)
+            vcall<void>(b, 0x1C / 4, atoi(argv[4]));
+        vcall<void>(b, 0x3C / 4, atoi(argv[3]));
+        return 0;
+    }
+    if (sub == "area" && argc > 6) { // experiments: a window's area (parent coordinates)
+        Win w = arg_win(argv[2], out);
+        if (!w)
+            return 1;
+        set_area(w, {(float)atof(argv[3]), (float)atof(argv[4]), (float)atof(argv[5]),
+                                                       (float)atof(argv[6])});
+        return 0;
+    }
+    if (sub == "caption" && argc > 3) { // experiments: a window's caption (glyph widths: docs/08-ui.md#ui-text-width)
+        Win w = arg_win(argv[2], out);
+        if (!w)
+            return 1;
+        set_caption(w, argv[3]);
+        return 0;
+    }
     if (sub == "font" && argc > 3) {
-        set_font((Win)strtoul(argv[2], nullptr, 16), (uint32_t)strtoul(argv[3], nullptr, 16));
+        auto w=checked_window(argv[2]);if(!w)return 1;
+        set_font(w, (uint32_t)strtoul(argv[3], nullptr, 16));
         return 0;
     }
     if (sub == "show" && argc > 2) {
-        set_visible((Win)strtoul(argv[2], nullptr, 16), argc < 4 || atoi(argv[3]));
+        auto w=checked_window(argv[2]);if(!w)return 1;
+        set_visible(w, argc < 4 || atoi(argv[3]));
         return 0;
     }
     int depth = argc > 2 ? atoi(argv[2]) : 4;
     bool all = argc > 3 && !strcmp(argv[3], "all");
-    Win root = argc > 4 ? (Win)strtoul(argv[4], nullptr, 16) : main_window();
+    Win root=nullptr;
+    if (argc>4) {
+        uint32_t candidate=0;
+        if (argc!=5 || !argv[4] || !sui_tree_root::parse(argv[4],candidate)) {
+            H->out_printf(out,"invalid tree root: expected a nonzero eight-hex-digit window address\n");
+            return 1;
+        }
+        const auto image_base=H->image_base();
+        uintptr_t accepted=0;
+        const auto result=sui_tree_root::resolve(candidate,
+            [] { return reinterpret_cast<uintptr_t>(main_window()); },
+            [image_base](uintptr_t window,std::vector<uintptr_t>& refs) { return tree_child_refs(window,image_base,refs); },accepted);
+        if (result!=sui_tree_root::Result::Found) {
+            H->out_printf(out,"tree root rejected: not in a complete current main-window tree (reason=%u)\n",unsigned(result));
+            return 1;
+        }
+        root=reinterpret_cast<Win>(accepted);
+    } else root=main_window();
     std::string s = dump(root, depth, !all);
     if (s.size() > 60000)
         s.resize(60000);

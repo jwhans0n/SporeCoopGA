@@ -181,6 +181,14 @@ static void slow_drift_and_stationary_anchor()
 
 int main()
 {
+    {
+        Follower follower;Local local;auto before=scope,after=scope;after.motion_generation=2;
+        CHECK(follower.admit(before,sample(1,0,0)));CHECK(follower.step(local,0).command==Command::Snap);
+        CHECK(follower.admit(after,sample(2,6.5f,.1)));
+        CHECK(follower.step(local,.1).command==Command::Snap); // below the ordinary severe-error threshold
+        CHECK(!follower.admit(before,sample(100,0,.2)));
+        CHECK(follower.latest().position.x==6.5f);
+    }
     walking_and_jitter(); stationary_and_stale(); corrections_and_scope(); holds_and_invalid(); full_3d_destination();
     slow_drift_and_stationary_anchor();
     std::printf("adventure actor motion: %d failures\n",failures); return failures?1:0;

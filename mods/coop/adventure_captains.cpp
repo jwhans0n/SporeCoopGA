@@ -1,4 +1,5 @@
 #include "adventure_captains.h"
+#include "sporekit_build.hpp"
 
 #include <algorithm>
 #include <array>
@@ -393,7 +394,7 @@ bool init(const SkHost* api, SkMod* mod, net::Session* session)
     a_BrowserShow = H->sym("SporeCoop::Adventure::AssetBrowserShow");
     a_Rm = H->sym("Resource::ResourceManager_ptr");
     g_available = S && H->run_outside_frame && a_FrontEnd && a_WizardVtable && a_Start && a_SelectAdventure && a_Next && a_Visibility && a_Reset && a_FrontMode && a_GalaxyView && a_GalaxyEffect && a_LayoutVisible && a_ModelType && a_Browser && a_BrowserShow && a_Rm &&
-        adventure_collect::available() && std::string(H->exe_sha256()) == "dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37";
+        adventure_collect::available() && skg::supported_gog2024(H->exe_sha256());
     return g_available;
 }
 

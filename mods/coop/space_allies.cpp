@@ -29,8 +29,13 @@
 #include "game.h"
 #include "modes.h"
 #include "space_ext.h"
+#include "store.h"
+#include "space_logic.h"
 #include "space_map.h"
 #include "sporekit_game.hpp"
+#include "wire/space_allies.h"
+#include "wire/space_map.h"
+#include "fixes.h"
 
 using skg::cdecl_call;
 using skg::thiscall;
@@ -55,7 +60,9 @@ static uintptr_t a_StarMgr, a_NextPol, a_GetEmpire, a_CreateEmpire, a_EmpireInit
     a_AddPlanet, a_SetSpecies, a_GetSpecies, a_PlanetTech, a_FillPlanet, a_MapErase, a_MapAt, a_HomeStarMap,
     a_RelMgr, a_RelMap, a_RelData, a_RelReset, a_AllyAdd, a_AllyRemove, a_EnemyAdd, a_EnemyRemove, a_StrAssign,
     a_Save, a_Expand, a_PlayerEmpire, a_Color, a_NounMgr, a_GetData, a_MissionCb[4], a_SetState, a_StartRaid,
-    a_Context, a_ActivePlanet, a_RequirePlanets, a_AllCities, a_GetPlanets, a_AddCivData, a_GetPlayer, a_FlagsAt, a_AllUFOs, a_TakeDamage, a_PlayerUFO;
+    a_Context, a_ActivePlanet, a_RequirePlanets, a_AllCities, a_GetPlanets, a_AddCivData, a_GetPlayer, a_FlagsAt, a_AllUFOs, a_TakeDamage, a_PlayerUFO, a_SpacePlayerData,
+    a_SpaceGame, a_NearRebuild, a_NearVt, a_TransferStar, a_GameAlloc, a_CityName, a_CityCtor, a_AddCityData,
+    a_BuildingReserve;
 
 // ---- what each mirror changed (to undo it exactly) ----
 struct StarSnap {
@@ -69,6 +76,7 @@ struct PlanetSnap {
     uint32_t tech, flags;
     size_t civ_before;            // cCivData vector size before the mirror
     std::vector<void*> civ;       // the cCivData the mirror added (kept for the next apply)
+    bool own = false;             // BUG-0543: a colony in my own star system: cities of my empire
 };
 
 struct Mirror {
@@ -83,6 +91,8 @@ struct Mirror {
     // applied state (valid while applied)
     bool applied = false;
     void* emp = nullptr;          // the cEmpire (kept alive by our reference, re-inserted on apply)
+    void* galaxy = nullptr;       // the player's cEmpire when emp was made: another one = a reload (BUG-0038)
+    uint32_t epoch = 0;           // spaceext::world_epoch() when emp was made: another one = a reload (BUG-0225)
     uint32_t pol = 0;
     std::map<uint32_t, StarSnap> stars;
     std::map<uint32_t, PlanetSnap> planets;
@@ -98,9 +108,30 @@ static std::vector<uint32_t> g_my_raids_sent;
 static std::set<uint32_t> g_my_raids_seen;
 static std::string g_last;
 static std::string hex(uint32_t v);
+static uint32_t g_npc_stars_taken, g_npc_stars_refused; // BUG-1151 (colonize)
+static uint32_t g_cities_read, g_cities_applied, g_cities_made; // BUG-1151 (cities_read / cities_apply)
 static std::set<void*> g_aborted; // my raids I aborted (pointers only compared)
+static bool g_aborted_fix = true;  // coop.space allies abortedfix 0: the set is never pruned (BUG-0136, tests)
+COOP_FIX("allies.aborted", "BUG-0136", g_aborted_fix, "space: a won raid on a partner's colony does not count as aborted");
 static bool g_end_pending;        // the session ended while I was on a mirror planet
+// BUG-1036 (BUG-0038 trigger 5): the session ended on a mirror planet (g_end_pending), then the player left Space (the
+// menu, a load): the tick returned outside Space before the pending end, so the old partners stayed in g_m; back in
+// Space in a new session the pending end was dropped ("the mirrors are wanted again") and the old partners' colonies
+// came back as frozen allies in the new galaxy. Now the pending end finishes outside Space once no mirror is applied
+// (the galaxy went: nothing to undo), and a new session in Space ends the old mirrors first. Off: as 0.7.13.
+static bool g_end_pending_fix = true;
+COOP_FIX("space.allies_end_pending", "BUG-1036", g_end_pending_fix,
+         "space: the old partners' mirrors go when a session ended on a mirror planet and the player left Space");
+static uint32_t g_end_pending_done;
+// BUG-0543: a partner's colony in a star system that is mine here (we start as one empire: the home
+// system and every colony both had at the join are shared) was not shown at all ("your own star
+// system"): in my game the planet stayed free, and I could found a colony of my own on it. Now it is
+// a record-level colony of my empire (the star has one owner), undone before every save like the
+// mirror. Off: skipped (before).
+static bool g_own_star_fix = true;
+COOP_FIX("allies.own_star", "BUG-0543", g_own_star_fix, "space: a partner's colony in a star system of mine is a colony here too");
 static void end_all();
+static void forget_all();
 static std::map<uint32_t, double> g_raid_quiet; // PlanetID -> no new raid of mine there before
 
 // ---------------- game helpers ----------------
@@ -295,6 +326,56 @@ static std::string empire_name(const Mirror& m)
     return m.name + spaceext::tr("'s empire", ": империя");
 }
 
+// BUG-0038: after a reload of the galaxy the mirror's cEmpire and political id belong to the old
+// galaxy. ensure_empire put that object back into the new galaxy's map at the old id, where a real
+// NPC empire of the new galaxy may live (ids come from the reloaded counter), with the old galaxy's
+// star records still in its +0x88. Now the mirror starts over: a new cEmpire with an id of the new
+// galaxy. The old object is not released (our reference is its last one, and its destructor would
+// release the old galaxy's records): one cEmpire leaks per reload. `coop.space allies reloadfix 0`
+// restores the old reuse (tests).
+static bool g_reload_fix = true;
+COOP_FIX("allies.reload", "BUG-0038", g_reload_fix, "space: the allies mirror starts over with a new cEmpire after a reload");
+// BUG-0225: the player's cEmpire of a reloaded galaxy can have the freed old one's address; the
+// Space world epoch (spaceext::world_epoch: a load or the galaxy menu shows non-Space frames) sees
+// the reload whatever the address. `allies.reload_id` off: the pointer compare alone (0.7.3.0).
+static bool g_reload_id_fix = true;
+COOP_FIX("allies.reload_id", "BUG-0225", g_reload_id_fix, "space: a galaxy reload is seen by the Space world epoch, not the cEmpire address");
+static uint32_t g_reload_resets;
+static bool g_same_galaxy; // tests (allies samegalaxy 1): the new player cEmpire has the old one's address
+// BUG-0838 (class BUG-0426): a mirror unmirrored before a reload of the world (a save on the way to the galaxy menu,
+// `allies remove`) kept its snapshots: the old world's cPlanetRecord (our reference) and the cCivData the mirror had
+// added to it. The first apply in the new world swapped the record (the old one released: our reference was its
+// last, so it went with the cities it held) and put the kept cCivData pointers of the old world into the new world's
+// record (AddCivData): freed objects in a planet the game draws and saves. Now the snapshots go with the galaxy (a
+// reset of the empire forgets them) and the kept cities belong to the record they came from (another record of that
+// planet: made again). Old (`coop.fix allies.snap_world off`): kept and re-added.
+static bool g_snap_world_fix = true;
+COOP_FIX("allies.snap_world", "BUG-0838", g_snap_world_fix, "space: after a reload of the world the allies mirror never puts the old world's cities into a planet of the new one (possible crash when landing there)");
+static uint32_t g_snaps_dropped;
+static void forget(Mirror& m);
+static void reset_empire(Mirror& m)
+{
+    // a save also takes the unmirrored cEmpire out of the map (it is put back on the next apply):
+    // only another player cEmpire (or another Space world) means another galaxy; none (the menu) =
+    // not known yet
+    void* pe = player_empire();
+    if (!g_reload_fix || !m.emp || !pe)
+        return;
+    if ((pe == m.galaxy || g_same_galaxy) && !(g_reload_id_fix && m.epoch && m.epoch != spaceext::world_epoch()))
+        return;
+    m.emp = nullptr;
+    m.galaxy = nullptr;
+    m.epoch = 0;
+    m.pol = 0;
+    m.contact_before = 0;
+    m.rel_on = spaceext::Relation::Ally;
+    g_reload_resets++;
+    if (g_snap_world_fix && !m.applied && !m.planets.empty()) { // BUG-0838: the old galaxy's snapshots go with it
+        g_snaps_dropped += (uint32_t)m.planets.size();
+        forget(m);
+    }
+}
+
 // the mirror's cEmpire in the star manager: made once (then kept alive by our reference and put
 // back into the map on every apply), so nothing in the game ever sees it freed
 static bool ensure_empire(Mirror& m)
@@ -304,6 +385,9 @@ static bool ensure_empire(Mirror& m)
         return false;
     if (m.emp && empire_of(m.pol) == m.emp)
         return true;
+    // not in the map any more: after a save, or the galaxy was reloaded (also after a save on the
+    // way to the menu unmirrored it, so no "applied" check saw the reload)
+    reset_empire(m);
     if (!m.emp) {
         uint32_t pol = thiscall<uint32_t>(a_NextPol, sm, 1);
         void* e = thiscall<void*>(a_CreateEmpire, sm, pol); // new cEmpire, inserted into +0x150
@@ -313,6 +397,8 @@ static bool ensure_empire(Mirror& m)
         thiscall<void>(a_EmpireInit, e, pol, 0);
         m.emp = e;
         m.pol = pol;
+        m.galaxy = player_empire();
+        m.epoch = spaceext::world_epoch();
     } else {
         uint32_t key = m.pol;
         void** slot = thiscall<void**>(a_MapAt, (uint8_t*)sm + 0x150, &key);
@@ -346,6 +432,27 @@ static void erase_from_vec(void* vec, void* p)
         }
 }
 
+// BUG-0543: SpacePlayerData +0x20 is the player's colony list (vector<cPlanet*>, a reference each:
+// vt+0xBC AddRef, vt+0xC0 Release), filled by cEmpire_AddPlanet (0x1022040): take rec's planet out
+static void remove_colony(void* rec)
+{
+    void* spd = a_SpacePlayerData ? *(void**)a_SpacePlayerData : nullptr;
+    if (!readable(spd, 0x2C))
+        return;
+    void** b = F<void**>(spd, 0x20);
+    void** e = F<void**>(spd, 0x24);
+    if (!b || e < b || e - b > 4096 || !readable(b, (e - b) * 4))
+        return;
+    for (void** it = b; it < e; it++)
+        if (readable(*it, 0x140) && F<void*>(*it, 0x13C) == rec) {
+            void* p = *it;
+            memmove(it, it + 1, (e - it - 1) * sizeof(void*));
+            F<void**>(spd, 0x24) = e - 1;
+            vcall<void>(p, 0xC0 / 4); // the list's reference
+            return;
+        }
+}
+
 static void restore_planet(Mirror& m, uint32_t id)
 {
     auto it = m.planets.find(id);
@@ -360,9 +467,11 @@ static void restore_planet(Mirror& m, uint32_t id)
         s.civ.assign(civ.begin() + std::min(s.civ_before, civ.size()), civ.end());
         void** b = F<void**>(rec, 0x15C);
         F<void**>(rec, 0x160) = b + std::min(s.civ_before, civ.size());
+        if (s.own)
+            remove_colony(rec);
         F<uint32_t>(rec, 0x194) = s.tech;
         F<uint32_t>(rec, 0x2C) = s.flags;
-        planet_set_pol(rec, 0xFFFFFFFFu);
+        planet_set_pol(rec, s.own ? my_pol() : 0xFFFFFFFFu); // (the planets of a star of mine carry my pol)
     }
 }
 
@@ -392,6 +501,36 @@ static void forget(Mirror& m)
     m.stars.clear();
 }
 
+// BUG-1144: the Space game keeps a list of the stars near the current one that an empire owns (cSimulatorSpaceGame +0x30
+// -> +0x7C, star flag 0x10 or 0x20; rebuilt by 0xFE6A50 only on the game's own star messages, docs/re/space.md#space-near-stars).
+// The NPC visitor spawn 0x1009070 picks a star of that list and calls 0xC32810 on GetEmpire(its owner), with no null
+// check: the game never lists a star nobody owns. unapply() gives the mirror's star back to nobody (a save, the
+// session's end) while the list still holds it: the next visitor spawn faulted at 0xC32817 (data 0xB8). After the stars
+// are restored the list is rebuilt the way the game rebuilds it. `coop.fix allies.near_rebuild off`: the list keeps the
+// star until the game's next rebuild (entering another system).
+static bool g_near_fix = true;
+COOP_FIX("allies.near_rebuild", "BUG-1144", g_near_fix,
+         "space: after the allies mirror goes (a save, the end of the session) the game's list of owned stars nearby is "
+         "rebuilt without its star (possible crash when an NPC ship would visit)");
+static uint32_t g_near_rebuilds;
+
+static void* near_stars()
+{
+    void* sg = a_SpaceGame ? cdecl_call<void*>(a_SpaceGame) : nullptr;
+    void* ns = readable(sg, 0x34) ? F<void*>(sg, 0x30) : nullptr; // (`near` is a macro of windows.h)
+    return readable(ns, 0x84) && a_NearVt && F<uintptr_t>(ns, 0) == a_NearVt ? ns : nullptr;
+}
+
+static void rebuild_near()
+{
+    if (!g_near_fix || !a_NearRebuild || !spaceext::in_space())
+        return;
+    if (void* ns = near_stars()) {
+        thiscall<void>(a_NearRebuild, ns);
+        g_near_rebuilds++;
+    }
+}
+
 // undo everything of one mirror (the cEmpire leaves the star manager, our reference keeps it)
 static void unapply(Mirror& m)
 {
@@ -401,11 +540,13 @@ static void unapply(Mirror& m)
     void* sm = star_mgr();
     if (!m.emp || !sm || empire_of(m.pol) != m.emp) { // the galaxy was reloaded: nothing of ours is left
         forget(m);
+        reset_empire(m);
         return;
     }
     set_relation(m, false);
     for (auto& [id, s] : m.planets)
         restore_planet(m, id);
+    bool had_stars = !m.stars.empty();
     for (auto& [id, s] : m.stars)
         restore_star(m, id);
     m.stars.clear();
@@ -413,6 +554,8 @@ static void unapply(Mirror& m)
     thiscall<void>(a_HomeStarMap, sm, m.pol, (void*)nullptr); // home star map +0x12C: erase
     thiscall<int>(a_MapErase, (uint8_t*)sm + 0x150, &key);   // the empire map: erase (releases its ref)
     g_unmirrors++;
+    if (had_stars)
+        rebuild_near(); // BUG-1144: no star of nobody in the game's list of owned stars nearby
 }
 
 static bool add_star(Mirror& m, void* s)
@@ -441,6 +584,10 @@ static void add_planet(Mirror& m, void* rec)
         return;
     s.on = true;
     if (s.rec != rec) {
+        if (g_snap_world_fix && s.rec && !s.civ.empty()) { // BUG-0838: the kept cities are the other record's
+            s.civ.clear();
+            g_snaps_dropped++;
+        }
         vcall<void>(rec, 0); // AddRef
         if (s.rec)
             vcall<void>(s.rec, 1);
@@ -464,6 +611,62 @@ static void add_planet(Mirror& m, void* rec)
     planet_set_pol(rec, m.pol);
 }
 
+// a colony of the partner in my own star system: record-level, my empire's cities, in my colony list
+// (cEmpire_AddPlanet; without it the HUD of a planet of tech 5 that is not on the list read an empire
+// it could not find: 4 faults at 0x107453A in the first try); the undo takes it out of the list again
+static void add_planet_own(Mirror& m, void* rec)
+{
+    uint32_t id = F<uint32_t>(rec, 0x184);
+    PlanetSnap& s = m.planets[id];
+    if (s.on)
+        return;
+    s.on = true;
+    s.own = true;
+    if (s.rec != rec) {
+        if (g_snap_world_fix && s.rec && !s.civ.empty()) { // BUG-0838: the kept cities are the other record's
+            s.civ.clear();
+            g_snaps_dropped++;
+        }
+        vcall<void>(rec, 0); // AddRef
+        if (s.rec)
+            vcall<void>(s.rec, 1);
+        s.rec = rec;
+    }
+    s.tech = F<uint32_t>(rec, 0x194);
+    s.flags = F<uint32_t>(rec, 0x2C);
+    s.civ_before = ptr_vec((uint8_t*)rec + 0x15C, 64).size();
+    cdecl_call<void>(a_PlanetTech, rec, 5);
+    if (!s.civ.empty()) {
+        for (void* c : s.civ)
+            thiscall<void>(a_AddCivData, rec, c);
+        F<uint32_t>(rec, 0x2C) |= 0x40;
+    } else
+        cdecl_call<void>(a_FillPlanet, rec, 5); // cCivData of the star's empire (mine) + its cCityData
+    uint32_t pol = my_pol();
+    auto civ = ptr_vec((uint8_t*)rec + 0x15C, 64);
+    for (size_t i = s.civ_before; i < civ.size(); i++)
+        if (readable(civ[i], 0x18))
+            F<uint32_t>(civ[i], 0x14) = pol;
+    thiscall<void>(a_AddPlanet, player_empire(), rec);
+    planet_set_pol(rec, pol);
+}
+
+static const char* kOwnStar = "your own star system";
+
+// why a partner's colony in my own star system can not be shown here ("" = it can)
+static std::string own_blocked(Mirror& m, uint32_t planet, void* rec)
+{
+    if (!g_own_star_fix || spaceext::rivals())
+        return kOwnStar;
+    bool on = m.planets.count(planet) && m.planets[planet].on;
+    if (!on && F<uint32_t>(rec, 0x194) >= 4)
+        return "a colony or civilization here already"; // a colony we both have: shared
+    void* ap = active_planet_record();
+    if (ap == rec && context() == 0 && !on)
+        return "you are on this planet now (it changes when you leave)";
+    return "";
+}
+
 // why a colony of the partner can not be one of the mirror's here ("" = it can)
 static std::string blocked(Mirror& m, uint32_t planet, void*& rec, void*& star)
 {
@@ -475,7 +678,7 @@ static std::string blocked(Mirror& m, uint32_t planet, void*& rec, void*& star)
     if (m.stars.count(planet & 0xFFFFFFu))
         owner = m.stars[planet & 0xFFFFFFu].emp;
     if (owner == my_pol())
-        return "your own star system";
+        return kOwnStar;
     if (owner != 0xFFFFFFFFu)
         return "a star system of another empire here";
     if (F<uint32_t>(star, 0x5C) & 3)
@@ -496,13 +699,20 @@ static void apply(Mirror& m)
     if (m.applied && (!m.emp || empire_of(m.pol) != m.emp)) { // a reload threw it away
         m.applied = false;
         forget(m);
+        reset_empire(m);
     }
     m.skipped.clear();
     std::vector<std::pair<void*, void*>> todo;
+    std::vector<void*> own_todo;
     std::set<uint32_t> want;
     for (uint32_t p : m.wanted) {
         void *rec, *star;
         std::string why = blocked(m, p, rec, star);
+        if (why == kOwnStar && (why = own_blocked(m, p, rec)).empty()) {
+            want.insert(p);
+            own_todo.push_back(rec);
+            continue;
+        }
         if (!why.empty()) {
             m.skipped[p] = why;
             continue;
@@ -534,7 +744,7 @@ static void apply(Mirror& m)
             } else
                 ++it;
         }
-    if (todo.empty() && !m.applied)
+    if (todo.empty() && own_todo.empty() && !m.applied)
         return;
     if (!ensure_empire(m))
         return;
@@ -545,6 +755,8 @@ static void apply(Mirror& m)
         add_star(m, star);
         add_planet(m, rec);
     }
+    for (void* rec : own_todo)
+        add_planet_own(m, rec);
     // the empire's species (citizens, buildings, the ships; also the species key of each of its
     // stars): the player's own (the same save in the usual session; the partner's species is not in
     // my files otherwise)
@@ -594,7 +806,14 @@ static void SK_THISCALL h_Save(void* mgr, const char16_t* name, int flag)
         g_reapply_at = H->time_seconds() + 3.0; // the game may finish writing after the call
     }
     g_saves++;
+    spaceext::note_save();
     o_Save(mgr, name, flag);
+    // BUG-0225: the game wrote the file synchronously (<name>.tmp, then its own rename; the function
+    // returns nothing, docs/re/space.md#space-owed-refund-identity). An empty name writes nothing.
+    if (name && *name) {
+        spaceext::note_saved();
+        store::after_save(); // E1 (BUG-1149): the per-player store follows every save of the game (any stage)
+    }
 }
 
 // NPC empires grow (colonise more stars) on their own: not the mirror (it would leave stars behind)
@@ -653,6 +872,24 @@ static bool mirror_pol(uint32_t pol)
     return false;
 }
 
+// BUG-0197 x BUG-0195: a partner's colony I show as one of my empire (allies.own_star) is the
+// partner's, not mine: my roster leaves it out (else the host's kept list lost the guest's colony)
+static bool own_mirror(uint32_t planet)
+{
+    for (auto& [n, m] : g_m) {
+        auto it = m.planets.find(planet);
+        if (it != m.planets.end() && it->second.on && it->second.own)
+            return true;
+    }
+    return false;
+}
+
+} // namespace spaceallies
+bool spaceext::allies_mirror_pol(uint32_t pol) { return spaceallies::mirror_pol(pol); }
+bool spaceext::allies_own_mirror(uint32_t planet) { return spaceallies::own_mirror(planet); }
+std::vector<void*> spaceext::game_missions() { return spaceallies::missions(); }
+namespace spaceallies {
+
 static Mirror* mirror_of_planet(uint32_t planet)
 {
     for (auto& [n, m] : g_m)
@@ -684,11 +921,9 @@ static void raids_tick(double now)
         g_my_raids_sent = ids;
         g_last_raids_sent = now;
         net::Writer w;
-        w.u8((uint8_t)std::min<size_t>(mine.size(), 50));
-        for (size_t i = 0; i < mine.size() && i < 50; i++) {
-            w.u32(mine[i].first);
-            w.u8(mine[i].second);
-        }
+        wire::space_allies::Raids msg;
+        msg.raids = mine;
+        msg.write(w);
         spaceext::send(K_RAIDS, w);
     }
 }
@@ -787,8 +1022,7 @@ static void watch_raids()
         if (aborted || left || !w.had_ships || !m || !m->raids.count(w.planet))
             continue;
         net::Writer wr;
-        wr.u8(m->id);
-        wr.u32(w.planet);
+        wire::space_allies::Defended{m->id, w.planet}.write(wr);
         spaceext::send(K_DEFENDED, wr);
         g_raids_won++;
         m->raids.erase(w.planet);
@@ -796,6 +1030,8 @@ static void watch_raids()
         spaceext::notice(m->name + spaceext::tr("'s colony is safe: you beat the raid",
                                                 ": колония спасена, вы отбили налёт"));
     }
+    if (g_aborted_fix) // BUG-0136: an aborted raid never watched (accepted, state 2) leaves the set
+        spacelogic::prune_aborted(g_aborted, g_watch);
 }
 
 // ---------------- sync with the rosters ----------------
@@ -849,7 +1085,14 @@ static void tick(double now)
             if (m.applied && (!star_mgr() || empire_of(m.pol) != m.emp)) {
                 m.applied = false;
                 forget(m);
+                reset_empire(m);
             }
+        if (g_end_pending && g_end_pending_fix && !any_applied()) { // BUG-1036: nothing in a galaxy to undo
+            g_end_pending = false;
+            g_end_pending_done++;
+            forget_all();
+            H->log(M, SK_INFO, "allies: the ended session's mirrors forgotten outside Space (BUG-1036)");
+        }
         return;
     }
     if (g_end_pending) {
@@ -857,7 +1100,7 @@ static void tick(double now)
         if (now < next)
             return;
         next = now + 1.0;
-        if (!spaceext::connected())
+        if (!spaceext::connected() || g_end_pending_fix) // BUG-1036: a new session ends the old one's mirrors first
             H->run_outside_frame([](void*) { end_all(); }, nullptr);
         else
             g_end_pending = false; // a new session: the mirrors are wanted again
@@ -886,14 +1129,12 @@ static void tick(double now)
 static void on_message(uint8_t kind, uint8_t origin, net::Reader& r)
 {
     if (kind == K_RAIDS) {
+        wire::space_allies::Raids msg;
+        if (!msg.read(r))
+            return; // a cut list: keep the raids we know
         std::map<uint32_t, uint8_t> raids;
-        uint8_t n = r.u8();
-        for (uint8_t i = 0; i < n && r.ok(); i++) {
-            uint32_t p = r.u32();
-            uint8_t b = r.u8();
-            if (r.ok())
-                raids[p] = b;
-        }
+        for (auto& [p, b] : msg.raids)
+            raids[p] = b;
         for (auto& [nm, m] : g_m)
             if (m.online && m.id == origin) {
                 for (auto& [p, b] : raids)
@@ -903,10 +1144,10 @@ static void on_message(uint8_t kind, uint8_t origin, net::Reader& r)
                 m.raids = raids;
             }
     } else if (kind == K_DEFENDED) {
-        uint8_t owner = r.u8();
-        uint32_t planet = r.u32();
-        if (!r.ok() || owner != spaceext::my_id())
+        wire::space_allies::Defended msg;
+        if (!msg.read(r) || msg.owner != spaceext::my_id())
             return;
+        uint32_t planet = msg.planet;
         H->run_outside_frame(
             [](void* u) {
                 uint32_t planet = (uint32_t)(uintptr_t)u;
@@ -937,13 +1178,20 @@ static void end_all()
     }
     g_end_pending = false;
     unapply_all();
+    forget_all();
+}
+static void forget_all()
+{
     for (auto& [n, m] : g_m)
         forget(m);
     g_m.clear();
     g_watch.clear();
+    if (g_aborted_fix)
+        g_aborted.clear();
     g_raid_quiet.clear();
 }
 
+// lifecycle-exempt: a Space feature (space_ext.h), run by spaceext::session_end_all from the spacecoop.session hook
 static void on_session_end()
 {
     H->run_outside_frame([](void*) { end_all(); }, nullptr);
@@ -1013,10 +1261,12 @@ static std::string status()
         ap += m.applied, pl += (int)m.planets.size(), st += (int)m.stars.size();
     snprintf(b, sizeof b,
              "allies: mirrors=%d applied=%d stars=%d planets=%d hold=%d saves=%u unmirrors=%u applies=%u growth_blocked=%u "
-             "raids_started=%u raids_won=%u raids_completed=%u",
+             "raids_started=%u raids_won=%u raids_completed=%u end_pending=%d end_pending_done=%u",
              (int)g_m.size(), ap, st, pl, (int)g_hold, g_saves, g_unmirrors, g_applies, g_growth_blocked,
-             g_raids_started, g_raids_won, g_raids_completed);
-    return std::string(b) + (g_last.empty() ? "" : " last='" + g_last + "'");
+             g_raids_started, g_raids_won, g_raids_completed, (int)g_end_pending, g_end_pending_done);
+    return std::string(b) + " npc_stars_taken=" + std::to_string(g_npc_stars_taken) + " npc_stars_refused=" +
+           std::to_string(g_npc_stars_refused) + " cities_read=" + std::to_string(g_cities_read) + " cities_applied=" +
+           std::to_string(g_cities_applied) + " cities_made=" + std::to_string(g_cities_made) + (g_last.empty() ? "" : " last='" + g_last + "'");
 }
 
 static std::string hex(uint32_t v)
@@ -1040,6 +1290,250 @@ static std::string str16(void* s)
     return o;
 }
 
+// a record-level colony of my own empire on `planet` (docs/re/space.md 15.2: the star claimed, tech 5,
+// the cCivData of my empire, AddPlanet). "" = done; else why not: "wait" (restore only: the ship is at that
+// planet, its live planet is not changed from under it) or a lasting reason. `restore` (BUG-0195, a guest's colony the host
+// kept for it): a planet that is a colony already counts as done when it is mine, as a conflict when not.
+// BUG-1151: a guest's own colony on a star an NPC empire owns in the host's world (a system it bought or conquered in
+// its own game) was refused at its restore ("the star belongs to another empire") and lost. The restore now takes the
+// star in the guest's own copy of the world with the game's own TransferStarOwnership (0xC353A0, the function the game
+// runs when a system changes hands: the old empire's RemoveStarOwnership, the new one's AddStarOwnership, which makes
+// every colony of the star the new owner's). Never on the host (its save keeps the NPC's star), never a partner's
+// mirror empire (an NPC's home or last star is taken as the guest's own game had it: the empire ends in that copy).
+// `coop.fix space.npc_star_colonies off`: refused (0.7.14).
+static bool g_npc_star_fix = true;
+COOP_FIX("space.npc_star_colonies", "BUG-1151", g_npc_star_fix,
+         "space: a guest's own colony on a star an NPC empire owns in the host's world comes back (the guest's game takes the star)");
+static std::string take_npc_star(void* star, uint32_t owner, uint32_t pol)
+{
+    if (spaceext::is_host())
+        return "the host's own world keeps its stars";
+    for (auto& [n, m] : g_m)
+        if (m.pol == owner)
+            return "the star is a partner's";
+    void* old = empire_of(owner);
+    if (!old || !empire_of(pol) || !a_TransferStar)
+        return "no empire to take the star from";
+    // (an NPC's home or last star too: the guest conquered it in its own game, where that empire ended; seen in the lab:
+    // the game ends the empire in that copy, no fault, docs/re/space.md#space-npc-star-colonies)
+    cdecl_call<void>(a_TransferStar, star, pol);
+    if (F<uint32_t>(star, 0x54) != pol)
+        return "the game kept the star with its empire";
+    g_npc_stars_taken++;
+    H->log(M, SK_INFO, "space allies: star %u of empire %08X is mine again (a colony of mine there, BUG-1151)",
+           F<uint32_t>(star, 0x70), owner);
+    return "";
+}
+
+static std::string colonize(uint32_t id, bool restore)
+{
+    void* me = player_empire();
+    void* rec = planet_record(id);
+    void* star = rec ? spacecoop::star_record(id & 0xFFFFFFu) : nullptr;
+    if (!me || !rec || !star)
+        return "no such planet";
+    uint32_t pol = F<uint32_t>(me, 0x84);
+    if (restore && active_planet_record() == rec) // (the test command colonizes the active planet on purpose)
+        return "wait";
+    if (F<uint32_t>(star, 0x54) != 0xFFFFFFFFu && F<uint32_t>(star, 0x54) != pol) {
+        if (!restore || !g_npc_star_fix)
+            return "the star belongs to another empire";
+        std::string why = take_npc_star(star, F<uint32_t>(star, 0x54), pol); // BUG-1151
+        if (!why.empty()) {
+            g_npc_stars_refused++;
+            return why;
+        }
+    }
+    if (restore && F<uint32_t>(rec, 0x194) == 5)
+        return F<uint32_t>(star, 0x54) == pol ? "" : "a colony of another empire";
+    if (F<uint32_t>(rec, 0x194) >= 4 && restore)
+        return "a civilization lives there";
+    F<uint32_t>(star, 0x54) = pol;
+    thiscall<void>(a_AddStar, me, star);
+    cdecl_call<void>(a_PlanetTech, rec, 5);
+    cdecl_call<void>(a_FillPlanet, rec, 5);
+    thiscall<void>(a_AddPlanet, me, rec);
+    planet_set_pol(rec, pol);
+    return "";
+}
+
+// ---------------- BUG-1151: a guest colony's cities across its restore ----------------
+// The restore made a record-level colony with FillPlanetDataForTechLevel: one or two generated cities, no buildings, no
+// spice: what the guest built there was gone. The guest now sends its colony's cities as its game keeps them in the
+// planet record (cCivData +0x3C: cCityData, the fields the game's own save writes, docs/re/space.md#space-colony-cities;
+// wire/space_map.h City), the host keeps them with the colony (also on its disk), and the restore writes them back
+// into the generated civilization: the same cities (a missing one made the way the game makes one: its allocator and
+// constructor, then AddCityData), each with its position, size, turrets, spice, name and building entries. Only into a
+// record whose planet is not the active one (the city maker builds the live cCity objects of the active planet only,
+// docs/re/space.md#space-city-data; a planet of the system the ship is in has a cPlanet but no cities). The civilization's turret and building
+// counts are made again from the cities. `coop.fix space.colony_cities off`: the generated city only (0.7.14).
+static bool g_cities_fix = true;
+COOP_FIX("space.colony_cities", "BUG-1151", g_cities_fix,
+         "space: a guest's restored colony gets its own cities back (buildings, turrets, spice), not one generated city");
+static void* my_civ(void* rec)
+{
+    uint32_t pol = my_pol();
+    for (void* cd : ptr_vec((uint8_t*)rec + 0x15C, 32))
+        if (readable(cd, 0x50) && F<uint32_t>(cd, 0x14) == pol)
+            return cd;
+    return nullptr;
+}
+
+static std::vector<uint8_t> cities_read(uint32_t id)
+{
+    void* rec = planet_record(id);
+    void* civ = rec ? my_civ(rec) : nullptr;
+    if (!civ)
+        return {};
+    std::vector<wire::space_map::City> v;
+    for (void* c : ptr_vec((uint8_t*)civ + 0x3C, wire::space_map::kCityMax)) {
+        if (!readable(c, 0xC4))
+            continue;
+        wire::space_map::City x;
+        memcpy(x.pos, (uint8_t*)c, 12);
+        memcpy(x.rot, (uint8_t*)c + 0x0C, 16);
+        x.spice = F<float>(c, 0x1C);
+        x.max_size = F<int32_t>(c, 0x20);
+        x.size = F<int32_t>(c, 0x24);
+        x.turrets = F<uint8_t>(c, 0x28);
+        x.income = F<int32_t>(c, 0x2C);
+        x.happy = F<float>(c, 0x30);
+        x.specialty = F<int32_t>(c, 0x34);
+        x.wall = F<uint32_t>(c, 0xB8);
+        x.name = str16((uint8_t*)c + 0x40);
+        uint8_t* b = F<uint8_t*>(c, 0x7C);
+        uint8_t* e = F<uint8_t*>(c, 0x80);
+        size_t n = b && e > b ? (size_t)(e - b) / wire::space_map::kBuildingBytes : 0;
+        if (n > wire::space_map::kBuildingMax || !readable(b, n * wire::space_map::kBuildingBytes))
+            n = 0;
+        for (size_t i = 0; i < n; i++)
+            x.buildings.emplace_back(b + i * 0x38, b + (i + 1) * 0x38);
+        v.push_back(std::move(x));
+    }
+    if (v.empty())
+        return {};
+    g_cities_read++;
+    return wire::space_map::put_cities(v);
+}
+
+static int popcount8(uint8_t v)
+{
+    int n = 0;
+    for (; v; v &= v - 1)
+        n++;
+    return n;
+}
+
+// "" written, "wait" (the planet is loaded), else why not
+static std::string cities_apply(uint32_t id, const std::vector<uint8_t>& blob)
+{
+    if (!g_cities_fix)
+        return "off";
+    std::vector<wire::space_map::City> v;
+    if (!wire::space_map::get_cities(blob, v) || v.empty())
+        return "no cities in the record";
+    void* rec = planet_record(id);
+    if (!rec)
+        return "no such planet";
+    if (active_planet_record() == rec) // its cities are live (cCity +0x2F0 points at its cCityData): not now
+        return "wait";
+    void* civ = my_civ(rec);
+    if (!civ)
+        return "no civilization of mine there";
+    if (!a_GameAlloc || !a_CityName || !a_CityCtor || !a_AddCityData || !a_BuildingReserve || !a_StrAssign)
+        return "symbols missing";
+    auto cities = ptr_vec((uint8_t*)civ + 0x3C, 64);
+    for (size_t i = 0; i < v.size(); i++) {
+        const auto& x = v[i];
+        void* c = i < cities.size() ? cities[i] : nullptr;
+        bool fresh = !c;
+        if (fresh) { // as FillPlanetDataForTechLevel makes one (0xB96FC3): the game's allocator, the constructor
+            void* mem = cdecl_call<void*>(a_GameAlloc, 0xC4u, (void*)a_CityName, 0, 0, 0, 0);
+            if (!mem)
+                break;
+            c = thiscall<void*>(a_CityCtor, mem);
+            g_cities_made++;
+        }
+        if (!readable(c, 0xC4))
+            continue;
+        memcpy((uint8_t*)c, x.pos, 12);
+        memcpy((uint8_t*)c + 0x0C, x.rot, 16);
+        F<float>(c, 0x1C) = x.spice;
+        F<int32_t>(c, 0x20) = x.max_size;
+        F<int32_t>(c, 0x24) = x.size;
+        F<uint8_t>(c, 0x28) = x.turrets;
+        F<int32_t>(c, 0x2C) = x.income;
+        F<float>(c, 0x30) = x.happy;
+        F<int32_t>(c, 0x34) = x.specialty;
+        if (x.wall)
+            F<uint32_t>(c, 0xB8) = x.wall; // (cCityData::SetWallStyle 0xFF0230 is this store)
+        if (!x.name.empty()) {
+            std::u16string w;
+            int n = MultiByteToWideChar(CP_UTF8, 0, x.name.data(), (int)x.name.size(), nullptr, 0);
+            w.resize(n > 0 ? n : 0);
+            if (n > 0)
+                MultiByteToWideChar(CP_UTF8, 0, x.name.data(), (int)x.name.size(), (wchar_t*)w.data(), n);
+            thiscall<void>(a_StrAssign, (uint8_t*)c + 0x40, w.data(), w.data() + w.size());
+        }
+        // the building list: plain 0x38-byte entries (no destructor): emptied, room made by the game's own reserve
+        // (its allocator), then the entries copied in (0xFF1500, the game's insert, takes a position before the end
+        // only: an append through it ran past the vector's start, lab 20261115-132419)
+        F<uint8_t*>(c, 0x80) = F<uint8_t*>(c, 0x7C);
+        thiscall<void>(a_BuildingReserve, (uint8_t*)c + 0x7C, (uint32_t)x.buildings.size());
+        uint8_t* end = F<uint8_t*>(c, 0x80);
+        if (x.buildings.size() && (!end || F<uint8_t*>(c, 0x84) < end + x.buildings.size() * 0x38))
+            continue; // (no room: the reserve failed)
+        for (auto& e : x.buildings) {
+            memcpy(end, e.data(), 0x38);
+            end += 0x38;
+        }
+        F<uint8_t*>(c, 0x80) = end;
+        if (fresh)
+            thiscall<void>(a_AddCityData, civ, c);
+    }
+    // the civilization's counts as AddCityData keeps them: turrets, and the size without the turrets
+    int turrets = 0, buildings = 0;
+    for (void* c : ptr_vec((uint8_t*)civ + 0x3C, 64))
+        if (readable(c, 0x2C)) {
+            int t = popcount8(F<uint8_t>(c, 0x28));
+            turrets += t;
+            buildings += F<int32_t>(c, 0x24) - t;
+        }
+    F<int32_t>(civ, 0x20) = turrets;
+    F<int32_t>(civ, 0x24) = buildings;
+    g_cities_applied++;
+    H->log(M, SK_INFO, "space allies: colony %08X got its %u own cities back (BUG-1151)", id, (unsigned)v.size());
+    return "";
+}
+
+static std::string describe_cities(uint32_t id)
+{
+    void* rec = planet_record(id);
+    void* civ = rec ? my_civ(rec) : nullptr;
+    if (!civ)
+        return "cities " + hex(id) + ": no civilization of mine\n";
+    char b[200];
+    snprintf(b, sizeof b, "cities %08X n=%u civ_turrets=%d civ_buildings=%d\n", id,
+             (unsigned)ptr_vec((uint8_t*)civ + 0x3C, 64).size(), F<int32_t>(civ, 0x20), F<int32_t>(civ, 0x24));
+    std::string o = b;
+    int i = 0;
+    for (void* c : ptr_vec((uint8_t*)civ + 0x3C, 64)) {
+        if (!readable(c, 0xC4))
+            continue;
+        uint8_t* bb = F<uint8_t*>(c, 0x7C);
+        uint8_t* be = F<uint8_t*>(c, 0x80);
+        size_t n = bb && be > bb ? (size_t)(be - bb) / 0x38 : 0;
+        snprintf(b, sizeof b, "  city %d spice=%.1f size=%d max=%d turrets=%02X income=%d buildings=%u name='%s' classes", i++,
+                 F<float>(c, 0x1C), F<int32_t>(c, 0x24), F<int32_t>(c, 0x20), F<uint8_t>(c, 0x28), F<int32_t>(c, 0x2C),
+                 (unsigned)n, str16((uint8_t*)c + 0x40).c_str());
+        o += b;
+        for (size_t k = 0; k < n && k < 64 && readable(bb, n * 0x38); k++)
+            o += " " + hex(F<uint32_t>(bb + k * 0x38, 0x34));
+        o += "\n";
+    }
+    return o;
+}
+
 static std::string describe_star(uint32_t id)
 {
     void* s = spacecoop::star_record(id);
@@ -1056,6 +1550,9 @@ static std::string describe_star(uint32_t id)
             continue;
         o += "  planet " + hex(F<uint32_t>(p, 0x184)) + " '" + str16((uint8_t*)p + 0x18) +
              "' tech=" + std::to_string(F<int>(p, 0x194));
+        if (void* lp = loaded_planet(p)) // the loaded cPlanet's political id (cGameData vt+0x4C)
+            if (readable((uint8_t*)lp + 0xD4, 0x34))
+                o += " loaded(pol=" + hex(vcall<uint32_t>((uint8_t*)lp + 0xD4, 0x4C / 4)) + ")";
         for (void* cd : ptr_vec((uint8_t*)p + 0x15C, 32))
             if (readable(cd, 0x48))
                 o += " civ(pol=" + hex(F<uint32_t>(cd, 0x14)) + " cities=" +
@@ -1079,7 +1576,7 @@ static std::string debug(const std::vector<std::string>& a)
             for (auto& [s, z] : m.stars)
                 o += "  star " + std::to_string(s) + "\n";
             for (auto& [p, z] : m.planets)
-                o += "  planet " + hex(p) + (m.raids.count(p) ? " RAIDED" : "") + "\n";
+                o += "  planet " + hex(p) + (z.own ? " OWN" : "") + (m.raids.count(p) ? " RAIDED" : "") + "\n";
             for (auto& [p, why] : m.skipped)
                 o += "  skipped " + hex(p) + ": " + why + "\n";
         }
@@ -1106,11 +1603,55 @@ static std::string debug(const std::vector<std::string>& a)
         apply_all();
         return status();
     }
+    if (a[0] == "civ" && a.size() > 1) { // tests (BUG-0838): civ <PlanetID hex>: the record and its cCivData now
+        uint32_t id = (uint32_t)strtoul(a[1].c_str(), nullptr, 16);
+        void* rec = planet_record(id);
+        std::string out = "planet " + a[1] + " rec=" + hex((uint32_t)(uintptr_t)rec) + " civ=";
+        for (void* c : rec ? ptr_vec((uint8_t*)rec + 0x15C, 64) : std::vector<void*>{})
+            out += hex((uint32_t)(uintptr_t)c) + ",";
+        for (auto& [n, m] : g_m)
+            if (auto it = m.planets.find(id); it != m.planets.end())
+                out += " kept_rec=" + hex((uint32_t)(uintptr_t)it->second.rec) + " kept_civ=" +
+                       std::to_string(it->second.civ.size()) + " on=" + std::to_string((int)it->second.on);
+        return out + " dropped=" + std::to_string(g_snaps_dropped) + "\n";
+    }
+    if (a[0] == "near") { // BUG-1144: the game's list of owned stars nearby (cSimulatorSpaceGame +0x30 -> +0x7C)
+        void* ns = near_stars();
+        if (!ns)
+            return "no near list\n";
+        std::vector<void*> v = ptr_vec((uint8_t*)ns + 0x7C, 256);
+        uint32_t me = my_pol();
+        std::string o = "near " + std::to_string(v.size()) + " rebuilds=" + std::to_string(g_near_rebuilds) + "\n";
+        int stale = 0;
+        for (void* s : v) {
+            if (!readable(s, 0x74))
+                continue;
+            uint32_t pol = F<uint32_t>(s, 0x54);
+            bool ok = pol == me || empire_of(pol);
+            stale += !ok;
+            o += "star " + std::to_string(F<uint32_t>(s, 0x70)) + " owner=" + hex(pol) + " flags=" + hex(F<uint32_t>(s, 0x5C)) +
+                 (pol == me ? " (mine)" : ok ? " empire" : " NO EMPIRE") + "\n";
+        }
+        return o + "stale=" + std::to_string(stale) + "\n";
+    }
     if (a[0] == "remove") { // unmirror (as before a save), no re-apply until "apply"
         unapply_all();
         g_hold = true;
         g_reapply_at = 1e18;
         return status();
+    }
+    if (a[0] == "detach" && a.size() > 1) { // tests (BUG-0071): mirror <name> becomes a plain empire of this
+        // galaxy: no contact, no alliance, its star and colony stay, the mod forgets it
+        auto it = g_m.find(a[1]);
+        if (it == g_m.end() || !it->second.applied)
+            return "no such applied mirror\n";
+        set_relation(it->second, false);
+        for (auto& [id, p] : it->second.planets)
+            if (p.rec)
+                vcall<void>(p.rec, 1);
+        std::string pol = hex(it->second.pol);
+        g_m.erase(it);
+        return "detached " + pol + "\n";
     }
     if (a[0] == "drop") { // forget every mirror (after unmirroring it)
         unapply_all();
@@ -1126,7 +1667,27 @@ static std::string debug(const std::vector<std::string>& a)
         return "empire " + a[1] + " '" + str16((uint8_t*)e + 0x3C) + "' stars=" +
                std::to_string(ptr_vec((uint8_t*)e + 0x88).size()) + " home=" + std::to_string(F<uint32_t>(e, 0xB0)) +
                " color=" + hex(F<uint32_t>(e, 0x10)) + " allies=" + std::to_string(ptr_vec((uint8_t*)e + 0x70).size()) +
-               " enemies=" + std::to_string(ptr_vec((uint8_t*)e + 0x5C).size()) + "\n";
+               " enemies=" + std::to_string(ptr_vec((uint8_t*)e + 0x5C).size()) + " at=" + hex((uint32_t)(uintptr_t)e) +
+               "\n";
+    }
+    if (a[0] == "abortedfix" && a.size() > 1) { // BUG-0136: 0 = aborted raids stay in the set for good
+        g_aborted_fix = a[1] != "0";
+        return std::string("abortedfix ") + (g_aborted_fix ? "1" : "0") + " aborted=" + std::to_string(g_aborted.size()) + "\n";
+    }
+    if (a[0] == "samegalaxy" && a.size() > 1) { // tests (BUG-0225): as if a new galaxy's player cEmpire had the old address
+        g_same_galaxy = a[1] != "0";
+        return std::string("samegalaxy ") + (g_same_galaxy ? "1" : "0") + "\n";
+    }
+    if (a[0] == "reloadfix" && a.size() > 1) { // BUG-0038: 0 = reuse the old galaxy's cEmpire after a reload
+        g_reload_fix = a[1] != "0";
+        return std::string("reloadfix ") + (g_reload_fix ? "1" : "0") + " resets=" + std::to_string(g_reload_resets) +
+               "\n";
+    }
+    if (a[0] == "nextpol") { // cStarManager +0x1D4: the next political id NextPoliticalID hands out
+        void* sm = star_mgr();
+        if (sm && a.size() > 1 && a[1] == "bump") // tests: take one id, as a new empire would
+            thiscall<uint32_t>(a_NextPol, sm, 1);
+        return sm ? "nextpol " + hex(F<uint32_t>(sm, 0x1D4)) + "\n" : "no star manager\n";
     }
     if (a[0] == "cities") { // on a planet: the cities and their owners
         void* nm = a_NounMgr ? cdecl_call<void*>(a_NounMgr) : nullptr;
@@ -1174,6 +1735,27 @@ static std::string debug(const std::vector<std::string>& a)
                 n++;
             }
         return "hit " + std::to_string(n) + " raid ships\n";
+    }
+    if (a[0] == "missions") { // tests (BUG-0199): every mission noun of this game; "missions done <ptr>": SetState(5)
+        if (a.size() > 2 && a[1] == "done" && a_SetState) {
+            void* want = (void*)(uintptr_t)strtoul(a[2].c_str(), nullptr, 16);
+            for (void* m : missions())
+                if (m == want) {
+                    thiscall<void>(a_SetState, m, 5); // completed: the mission's own OnCompleted pays (docs/re/space.md 7.5)
+                    return "mission " + hex((uint32_t)(uintptr_t)m) + " state " + std::to_string(F<int>(m, 0x84)) + "\n";
+                }
+            return "no such mission\n";
+        }
+        std::string o;
+        char b[200];
+        for (void* m : missions())
+            if (readable(m, 0x134)) {
+                snprintf(b, sizeof b, "mission %08X id %08X state %d giver %08X reward %.0f flags %X\n",
+                         (uint32_t)(uintptr_t)m, F<uint32_t>(m, 0x78), F<int>(m, 0x84), F<uint32_t>(m, 0x8C),
+                         F<float>(m, 0xA0), F<uint32_t>(m, 0x130));
+                o += b;
+            }
+        return o.empty() ? "no missions\n" : o;
     }
     if (a[0] == "raids") {
         std::string o;
@@ -1224,6 +1806,93 @@ static std::string debug(const std::vector<std::string>& a)
         }
         return o.empty() ? "none\n" : o;
     }
+    if (a[0] == "colonycities" && a.size() > 1) // the cities of my civilization on a planet (BUG-1151)
+        return describe_cities((uint32_t)strtoul(a[1].c_str(), nullptr, 16));
+    if (a[0] == "citytest" && a.size() > 1) { // tests (BUG-1151): my colony's cities as a player's would be after a while
+        uint32_t id = (uint32_t)strtoul(a[1].c_str(), nullptr, 16);
+        std::vector<wire::space_map::City> v;
+        if (!my_civ(planet_record(id)))
+            return "no civilization of mine there\n";
+        wire::space_map::get_cities(cities_read(id), v);
+        if (v.empty()) { // FillPlanet made none (the planet's city count follows its ecosystem level): a plain one
+            wire::space_map::City c;
+            c.size = 4;
+            c.income = 150;
+            c.wall = 0x280852F1;
+            v.push_back(c);
+        }
+        // buildings: the home planet's first city's real entries (their class ids), 3 of them
+        std::vector<std::vector<uint8_t>> real;
+        void* hr = planet_record((uint32_t)strtoul(a.size() > 2 ? a[2].c_str() : "00460035", nullptr, 16));
+        if (void* hc = hr ? my_civ(hr) : nullptr)
+            for (void* c : ptr_vec((uint8_t*)hc + 0x3C, 64)) {
+                uint8_t* bb = readable(c, 0xC4) ? F<uint8_t*>(c, 0x7C) : nullptr;
+                uint8_t* be = bb ? F<uint8_t*>(c, 0x80) : nullptr;
+                for (uint8_t* e = bb; e && e + 0x38 <= be && real.size() < 3 && readable(e, 0x38); e += 0x38)
+                    real.emplace_back(e, e + 0x38);
+            }
+        v[0].spice = 77;
+        v[0].name = "Bobton";
+        v[0].buildings = real;
+        v[0].size = std::max<int>(v[0].size, (int)real.size());
+        wire::space_map::City second = v[0];
+        second.pos[0] += 30;
+        second.name = "Bobville";
+        second.spice = 33;
+        second.turrets = 0x03;
+        v.resize(1);
+        v.push_back(second);
+        std::string why = cities_apply(id, wire::space_map::put_cities(v));
+        return (why.empty() ? std::string("citytest ok\n") : "citytest: " + why + "\n") + describe_cities(id);
+    }
+    if (a[0] == "npcstar") { // tests (BUG-1151): an NPC empire's star near me becomes mine, as a purchase or a conquest
+        void* ns = near_stars();
+        uint32_t me = my_pol();
+        bool force = a.size() > 1 && a.back() == "force"; // force: also a home star or the empire's last one
+        uint32_t want = a.size() > 1 && a[1] != "force" ? (uint32_t)strtoul(a[1].c_str(), nullptr, 0) : 0;
+        void* pick = nullptr;
+        std::string why = "no NPC star near";
+        std::vector<void*> cand = ns ? ptr_vec((uint8_t*)ns + 0x7C, 256) : std::vector<void*>{};
+        // ... and the stars of the empires the player has met (cPlayer +0x11D8: sorted {pol, flags}, bit 1 contacted)
+        void* nm = a_NounMgr ? cdecl_call<void*>(a_NounMgr) : nullptr;
+        void* player = nm && readable(nm, 0x78) ? F<void*>(nm, 0x74) : nullptr;
+        if (player && readable(player, 0x11E0))
+            for (auto p = F<uint32_t*>(player, 0x11D8); p && p < F<uint32_t*>(player, 0x11DC) && readable(p, 8); p += 2)
+                if (p[0] != me && (p[1] & 2))
+                    if (void* e = empire_of(p[0]))
+                        for (void* st : ptr_vec((uint8_t*)e + 0x88, 256))
+                            cand.push_back(st);
+        for (void* st : cand) {
+            if (!readable(st, 0x74) || (want && F<uint32_t>(st, 0x70) != want))
+                continue;
+            uint32_t pol = F<uint32_t>(st, 0x54);
+            void* e = pol != me && pol != 0xFFFFFFFFu ? empire_of(pol) : nullptr;
+            bool mirror = false;
+            for (auto& [n, m] : g_m)
+                mirror |= m.pol == pol;
+            if (!e || mirror || (!force && (F<uint32_t>(e, 0xB0) == F<uint32_t>(st, 0x70) || ptr_vec((uint8_t*)e + 0x88).size() <= 1)))
+                continue;
+            pick = st;
+            break;
+        }
+        if (!pick)
+            return why + "\n";
+        uint32_t owner = F<uint32_t>(pick, 0x54), sid = F<uint32_t>(pick, 0x70);
+        if (!a_TransferStar)
+            return "no TransferStarOwnership\n";
+        cdecl_call<void>(a_TransferStar, pick, me);
+        std::string o = "npcstar " + std::to_string(sid) + " owner " + hex(owner) + " -> " + hex(F<uint32_t>(pick, 0x54)) +
+                        " colonies";
+        int n = 0;
+        for (void* r : planets_of(pick))
+            if (readable(r, 0x1A4) && F<uint32_t>(r, 0x194) == 5)
+                o += " " + hex(F<uint32_t>(r, 0x184)), n++;
+        if (!n) // none there: a colony of mine on its first free planet
+            for (void* r : planets_of(pick))
+                if (!n && readable(r, 0x1A4) && F<uint32_t>(r, 0x194) < 4 && colonize(F<uint32_t>(r, 0x184), false).empty())
+                    o += " " + hex(F<uint32_t>(r, 0x184)) + "(new)", n++;
+        return o + "\n" + describe_star(sid);
+    }
     if (a[0] == "colonize") { // tests: colonize [PlanetID]: a colony of mine (record level), default: a planet here
         void* me = player_empire();
         void* rec = nullptr;
@@ -1243,22 +1912,13 @@ static std::string debug(const std::vector<std::string>& a)
         if (!rec || !me)
             return "no planet to colonize\n";
         uint32_t id = F<uint32_t>(rec, 0x184);
-        void* star = spacecoop::star_record(id & 0xFFFFFFu);
-        if (!star)
-            return "no star\n";
-        uint32_t pol = F<uint32_t>(me, 0x84);
-        if (F<uint32_t>(star, 0x54) != 0xFFFFFFFFu && F<uint32_t>(star, 0x54) != pol)
-            return "the star belongs to another empire\n";
-        F<uint32_t>(star, 0x54) = pol;
-        thiscall<void>(a_AddStar, me, star);
-        cdecl_call<void>(a_PlanetTech, rec, 5);
-        cdecl_call<void>(a_FillPlanet, rec, 5);
-        thiscall<void>(a_AddPlanet, me, rec);
-        planet_set_pol(rec, pol);
+        std::string why = colonize(id, false);
+        if (!why.empty())
+            return why + "\n";
         return "colonized " + hex(id) + "\n" + describe_star(id & 0xFFFFFFu);
     }
     return "usage: coop.space allies [list | star <StarID> | planet <PlanetID> | empire <pol> | raids | raid <PlanetID> [n] |"
-           " apply | remove | drop | fake <name> <PlanetID>... | free | colonize [PlanetID]]\n";
+           " apply | remove | drop | near | fake <name> <PlanetID>... | free | colonize [PlanetID]]\n";
 }
 
 static bool init(const SkHost* h, SkMod* m)
@@ -1312,7 +1972,17 @@ static bool init(const SkHost* h, SkMod* m)
     a_AllUFOs = S("Simulator::GetAllUFOs");
     a_TakeDamage = S("Simulator::cGameDataUFO::TakeDamage");
     a_PlayerUFO = S("Simulator::cSimulatorPlayerUFO::Get");
+    a_SpacePlayerData = S("Simulator::SpacePlayerData::ptr");
     a_FlagsAt = S("SporeCoop::VectorMapUint_At");
+    a_SpaceGame = S("Simulator::cSimulatorSpaceGame::Get");
+    a_NearRebuild = S("SporeCoop::SpaceNearStars_Rebuild");
+    a_NearVt = S("SporeCoop::SpaceNearStars_vftable");
+    a_TransferStar = S("SporeCoop::TransferStarOwnership"); // BUG-1151 (optional)
+    a_GameAlloc = S("SporeCoop::GameAlloc");                  // BUG-1151 (optional: the colony's own cities)
+    a_CityName = S("SporeCoop::cCityData_AllocName");
+    a_CityCtor = S("SporeCoop::cCityData_ctor");
+    a_AddCityData = S("SporeCoop::cCivData_AddCityData");
+    a_BuildingReserve = S("SporeCoop::cCityData_BuildingReserve");
     uintptr_t need[] = {a_StarMgr, a_NextPol, a_GetEmpire, a_CreateEmpire, a_EmpireInit, a_AddStar, a_SetHomeStar,
                         a_AddPlanet, a_SetSpecies, a_GetSpecies, a_PlanetTech, a_FillPlanet, a_MapErase, a_MapAt,
                         a_HomeStarMap, a_RelMgr, a_RelMap, a_RelData, a_RelReset, a_AllyAdd, a_AllyRemove,
@@ -1345,3 +2015,10 @@ static bool reg = spaceext::add({.name = "allies",
                                  .debug = debug});
 
 } // namespace spaceallies
+std::string spaceext::colonize_own(uint32_t planet) { return spaceallies::colonize(planet, true); }
+std::vector<uint8_t> spaceext::colony_cities(uint32_t planet) { return spaceallies::cities_read(planet); }
+std::string spaceext::colony_cities_apply(uint32_t planet, const std::vector<uint8_t>& blob)
+{
+    return spaceallies::cities_apply(planet, blob);
+}
+bool spaceext::colony_cities_on() { return spaceallies::g_cities_fix; }

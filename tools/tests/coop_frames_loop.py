@@ -31,21 +31,36 @@ def main():
     ck('connected' in st, 'guest: still connected')
     ck(re.search(r"remote 0 '.*' puppet=(?!00000000)", st) is not None, 'guest: the host puppet is there')
 
-    # a hit on an NPC proxy goes through the guest's frame to the host
-    m = re.search(r'#(\d+) [0-9A-F]+ species=\S+ hp=([\d.]+)', host.call('coop.npc list')['out'])
-    ck(m is not None, 'host: an NPC to hit')
-    if m:
-        h0 = npc_hits(host)
-        guest.call(f'coop.npc hit {m.group(1)} 1')
-        time.sleep(2)
-        ck(npc_hits(host) > h0, f'host: the guest hit arrived ({h0} -> {npc_hits(host)})')
+    # a hit on an NPC proxy goes through the guest's frame to the host. The host lists every NPC it
+    # tracks; the guest may not have spawned a proxy for each yet, and the host takes a hit only on
+    # an NPC it sees now (BUG-0294): try the listed NPCs until one hit lands.
+    ids = re.findall(r'#(\d+) [0-9A-F]+ species=\S+ hp=([\d.]+)', host.call('coop.npc list')['out'])
+    ck(bool(ids), 'host: an NPC to hit')
+    if ids:
+        h0, h1, tried = npc_hits(host), npc_hits(host), []
+        deadline = time.time() + 15
+        while h1 <= h0 and time.time() < deadline:
+            for nid, _ in ids:
+                r = guest.call(f'coop.npc hit {nid} 1')['out'].strip()
+                tried.append(f'{nid}: {r}')
+                time.sleep(1)
+                h1 = npc_hits(host)
+                if h1 > h0:
+                    break
+        ck(h1 > h0, f'host: the guest hit arrived ({h0} -> {h1}; tried {tried[-4:]})')
 
-    # F9 is read in the mod's frame
+    # F9 is read in the mod's frame. BUG-0898: from a closed window (an earlier test on warm games may have left it
+    # open, e.g. report_shot's question to the guest: F9 then closed it and the check failed)
+    guest.call('coop.uistate 0')
+    time.sleep(1)
+    before = guest.call('coop.uistate')['out']
     guest.call('key 0x78')
     time.sleep(2)
     ui = guest.call('coop.uistate')['out']
-    ck('open=1' in ui, 'guest: F9 opened the co-op window')
+    ck('open=0' in before and 'open=1' in ui, f'guest: F9 opened the co-op window (before {before.split()[:1]}, after {ui.split()[:1]})')
     guest.call('key 0x78')
+    time.sleep(2)
+    ck('open=0' in guest.call('coop.uistate')['out'], 'guest: F9 again closed it')
 
     guest.call('frames.source auto')
     time.sleep(2)

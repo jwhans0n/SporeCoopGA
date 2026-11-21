@@ -127,9 +127,17 @@ struct Validator {
         auto found = load(key, key.type == kDescriptor, record, error);
         if (found == Lookup::Error) return false;
         if (found == Lookup::Missing) {
-            // Verified native control used by Mr Puzzle's Magical Gates. It has
-            // no descriptor; ordinary unresolved IDs must not acquire this bypass.
+            // Verified native control used by Mr Puzzle's Magical Gates.
             if (root && key.instance == 1) { result.native_control = true; return true; }
+            // A2E75D tolerates an absent root descriptor. A286E1..A28701
+            // defaults an absent wave key to the authored ID. Validate that
+            // actual stock sample instead; never bypass a present descriptor,
+            // an unreadable record or a missing inherited descriptor.
+            if (root) {
+                if (!visit({key.instance, kSample, kAudioGroup})) return false;
+                result.direct_sample = true;
+                return true;
+            }
             error = "missing native audio dependency " + key_text(key); return false;
         }
         if (!record.built_in) {

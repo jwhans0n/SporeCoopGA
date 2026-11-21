@@ -1,4 +1,8 @@
 <p align="center">
+
+> Editor testing candidate: `0.7.15.0-ga-editor-preview.16`, protocol 30, based on upstream `v0.7.15`.
+> Integration status and main-promotion gates are in the [0.7.13 synchronization report](docs/reports/UPSTREAM-0.7.13-SYNC.md).
+
   <img src="docs/media/banner.svg" alt="SporeCoopGA - Co-op Galactic Adventures for Spore." width="100%">
 </p>
 
@@ -6,6 +10,8 @@
   <a href="https://github.com/jwhans0n/SporeCoopGA/actions/workflows/build.yml?query=branch%3Amain"><img src="https://github.com/jwhans0n/SporeCoopGA/actions/workflows/build.yml/badge.svg?branch=main" alt="Build"></a>
   <img src="https://img.shields.io/badge/status-experimental%20GA-f0b44a" alt="Experimental Galactic Adventures support">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-74c867" alt="MIT license"></a>
+  <img src="https://img.shields.io/badge/players-2%E2%80%934-ff7a5f" alt="2–4 players">
+  <a href="https://discord.gg/7Yre7u4b8x"><img src="https://img.shields.io/badge/Discord-join%20the%20server-5865F2?logo=discord&logoColor=white" alt="Discord"></a>
 </p>
 
 # SporeCoopGA
@@ -29,8 +35,20 @@ using protocol **15**. Galactic Adventures support remains **experimental**.
 - [Playing together](#playing-together)
 - [Compatibility and status](#compatibility-and-status)
 - [Roadmap](#roadmap)
+- [Inherited upstream compatibility and testing](#inherited-upstream-compatibility-and-testing)
+- [Community](#community)
 - [Development](#development)
 - [Credits](#credits)
+
+The shared Adventure Editor source includes the preview 14 fixes and upstream
+0.7.15. The consolidated testing candidate is **preview 16, protocol 30**;
+all participants must use a matching build. It supports independent act views,
+shared asset and captain settings, terrain editing and native creation sessions.
+Native smoke and main promotion remain pending as recorded in the
+[synchronization report](docs/reports/UPSTREAM-0.7.13-SYNC.md).
+The published protocol 15 release described below remains a separate build.
+Source synchronization does not change an installed preview. Older fork and
+upstream clients cannot join this candidate; session and both GA families must match.
 
 ## Current GA features
 
@@ -176,8 +194,9 @@ recorded problems.
 
 1. **Strengthen co-op adventure play (ongoing).** Broader adventure compatibility,
    complete playthrough coverage, and extended multiplayer testing.
-2. **Shared live Adventure Editor (planned).** Multiple players create and edit
-   the same adventure together in real time.
+2. **Shared live Adventure Editor (in development).** Multiple players create and
+   edit the same adventure together in real time. Placement integration is under
+   validation; it is separate from the published gameplay release.
 3. **Additional Spore editors (later, planned).** Extend collaborative editing
    after the Adventure Editor.
 
@@ -190,7 +209,97 @@ preview includes shared placement/property editing, conservative per-player Undo
 saving, recovery and whole-party playtests. Follow-up work covers shared activity
 history and selective Undo/reapplication, independent act editing when additional
 native work is required, and playtesting while other participants continue editing.
-These editing features remain planned.
+The [editor development guide](docs/MULTIPLAYER-ADVENTURE-EDITOR.md) documents
+preview 4 placement fixes, native cast properties/imports, solo Play and Test
+Together, along with their remaining acceptance gates. Objectives, independent
+act authoring and the later editing milestones remain planned.
+
+## Inherited upstream compatibility and testing
+
+The following is upstream's base-stage evidence and usage guidance, retained
+from upstream releases, now synchronized to pinned 0.7.15. It does not enable the fork's exact-file GA adapter on Steam or
+establish Linux GA support. Protocol 7 compatibility statements apply only to
+the upstream release line; the fork's protocols 15 through 30 require matching
+clients as described above. The upstream setup and release links below are for
+the original project, not packages for this fork's GA support.
+
+GOG and Steam players can play together; every player needs the same SporeCoop 0.7 version.
+The **EA app / Origin** and **disc** versions are not supported (co-op stays off), and the older
+**GOG 2016** build is not supported (the mod tells you so and stays off): update the game through GOG.
+Which build you have, file sizes and hashes, the Steam overlay, mixing versions and every test:
+[INSTALL.md, compatibility details](docs/INSTALL.md#compatibility-details).
+
+## How to play
+
+**Host**
+
+1. Galaxy menu → **Co-op** → type your name → **Host**.
+2. Load a save or start a new game. The window shows the addresses your friends can use.
+
+**Guest**
+
+1. Galaxy menu → **Co-op** → type your name.
+2. Click the host under *Games on your network*, or type the host's address (e.g. `100.64.12.7` on
+   Tailscale) → **Join**.
+3. The host's world arrives and loads by itself; you appear next to the host with your own creature.
+
+**In game**
+
+| Key / command | What it does |
+|---|---|
+| **F9** | the co-op window: players, stage, ping, readiness, chat, *Send my world*, *Leave* |
+| *I'm ready* | agree to evolve (editor, next stage) |
+| `Ctrl+Shift+C` → `coop status` | session details in the cheat console |
+| `coop say <text>` | chat |
+| `coop ping` | show everybody the place under your mouse (Tribe, Civilization) |
+| `coop give` | give your selected tribe members, vehicles or the opened city to a partner |
+| `coop role 1`…`3` | Civilization role: military, economic, religious |
+
+**Example: two friends over the internet**
+
+```
+Alice (GOG) and Bob (Steam) install Tailscale and the same SporeCoop version.
+Alice: Co-op → "Alice" → Host → loads her Tribe save.
+       The window says: friends connect to 100.64.12.7:47810
+Bob:   Co-op → "Bob" → 100.64.12.7 → Join.
+       Alice's tribe loads; Bob gets his share of the members and his own chief.
+Both:  F9 → I'm ready when the tribe is ready for Civilization.
+```
+
+For inherited Steam setup, Galactic Adventures is app 24720 in
+`steamapps\common\Spore 24720`; base Spore's `steamapps\common\Spore`
+has no `SporebinEP1`. If the setup cannot find the GA folder, select it directly.
+Run upstream setup inside the game's Wine prefix on Linux. A "GitHub not
+reachable" setup error can use the matching release zip's `install.bat`; see
+[troubleshooting](docs/INSTALL.md#9-troubleshooting). Fork GA installation still
+uses this fork's matching packages and verified executable.
+
+Upstream version 0.7 (its newest release is on the [Releases](https://github.com/WoodyWizard/SporeCoop/releases/latest) page): co-op in every stage for up to 4 players, and a Space stage built for playing
+together (the F9 window's **Space** page: partners on the map, allied colonies, trade, contracts,
+shared diplomacy, the galactic core together, rivals mode). Tested automatically on real game
+instances: 50+ scenario tests with real clicks, bots that play every stage through real input for
+hours, 4-player sessions with rejoins, a chaos bot and simulated bad networks
+([stability report](docs/stability-report.md)).
+Known issues: [docs/known-issues.md](docs/known-issues.md). Found a problem? Type `/bug <what you
+see>` in the co-op chat when it happens (it marks that moment in every player's log), then see
+[how to report it](docs/REPORTING.md).
+
+Upstream's remaining roadmap at that checkpoint:
+
+- [ ] easier internet play (no VPN or port forwarding)
+- [ ] tests with the EA app build, and of the Steam build with Steam online (overlay)
+- [ ] four-player tests of the 0.7 Space features, co-op adventures
+- [ ] **Rivals mode**: every player with a base, a species, a tribe, a nation and an empire of its
+  own in the same world, a race through every stage with war, peace and alliances
+  ([design](docs/11-rivals.md))
+
+## Community
+
+Join the **[SporeCoop Discord](https://discord.gg/7Yre7u4b8x)**: find players to evolve with, ask for help with the setup,
+share your worlds and creatures, report problems and suggest ideas. Report this
+fork's GA/editor problems in a [fork issue](https://github.com/jwhans0n/SporeCoopGA/issues).
+Original upstream reports use its [issue templates](https://github.com/WoodyWizard/SporeCoop/issues/new/choose).
+The [reporting guide](docs/REPORTING.md) explains the diagnostic files and `/bug` marker.
 
 ## Development
 
@@ -228,3 +337,16 @@ Use isolated test profiles for development.
   unaffiliated with Electronic Arts or Maxis. It contains no game files.
 
 Licensed under the [MIT license](LICENSE).
+
+## Upstream 0.7.8 source synchronization
+
+The synchronization branch includes upstream `v0.7.8` while retaining this fork's
+Galactic Adventures support. Its source version is `0.7.8.0`, protocol27.
+It is not a published release or an installed game update. Every party member
+needs the same fork build. The original and verified 4 GB GOG 2024 executable
+variants are accepted. See the synchronization validation report for merge gates.
+
+## Build the fork
+<a id="building-from-source"></a>
+
+Use the pinned llvm-mingw toolchain with `make` and run `make test`. See [installation and build instructions](docs/INSTALL.md).

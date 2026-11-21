@@ -74,12 +74,14 @@ void set_position(void* object, const net::Vec3& value) { ++positioned; field<ne
 void stop(void*) { ++stopped; }
 } // namespace game
 
-int main()
+int main(int argc, char** argv)
 {
     SkHost host{}; host.sym = symbol; host.hook_create = hook; host.exe_sha256 = executable_hash;
     hash = "unsupported";
     check(!adventure_control::init(&host, nullptr, context()) && !hooks, "unsupported executables install no control hooks");
     hash = "dc04aee5a3debc3f1ad4c1a937460e99a29b9bd3bc285008be83615dd5e59a37";
+    if (argc == 2 && !std::strcmp(argv[1], "--laa"))
+        hash = "47f60c4db38fda1f15c5a3525617e171b0a98d728d99d645b035aa794a9199ab";
     check(adventure_control::init(&host, nullptr, context()) && hooks == 4, "all verified control hooks install together");
     field<void*>(local.data(), 0xB4C) = local_behavior.data(); field<uint32_t>(local.data(), 0x24) = 1;
     field<void*>(remote.data(), 0xB4C) = remote_behavior.data(); field<uint32_t>(remote.data(), 0x24) = 2;

@@ -1,0 +1,69 @@
+// Creature visual effects, shown on the partner's screen (BUG-0451,
+// docs/re/creature.md#creature-effects-relay).
+//
+// A player's own creature makes effects the game creates for the local avatar only: mating-call
+// hearts, the social abilities (sing, dance, charm, pose), attack and ability effects, eating,
+// level-up, ... Every one of them is created by the game's two effect pools of cCreatureBase
+// (game.cpp hooks the creators and the stop). effects.cpp sends the ones made for the local
+// avatar to the partners and plays the received ones on that partner's puppet with the same game
+// functions, so nothing here is a per-effect list.
+//
+// `coop.fix creature.effects_relay off`: the old behaviour (nothing sent or played).
+#pragma once
+
+#include <cstdint>
+#include <functional>
+#include <string>
+#include <utility>
+#include <vector>
+
+#include "net/session.h"
+#include "sporekit.h"
+
+namespace effects {
+
+struct Ctx {
+    net::Session* sess = nullptr;
+    std::function<void*(uint8_t id)> puppet_of; // the creature of player `id` on this game
+    // BUG-0426 class (L1): player id's Creature puppet only while it is the live object made for it (listed, its serial,
+    // this frame's world); a Cell cell, a Tribe marker, a freed or reused one: null
+    std::function<void*(uint8_t id)> puppet_live;
+    std::function<std::vector<std::pair<uint8_t, void*>>()> all_puppets; // every partner's puppet
+    // true when a world position is on the local player's own controlled object (the avatar in
+    // Creature / Cell, the tribe members in Tribe, the vehicles in Civ, the UFO in Space)
+    std::function<bool(const net::Vec3&)> near_local;
+    // where that object is now (the perf workload `coop.effects load` creates effects there)
+    std::function<net::Vec3()> local_pos;
+    // the world being played (0 = none): a change means the game freed the relayed effects
+    std::function<uint32_t()> world;
+    // BUG-0471: player `id` plays in this game's place right now (its state: same stage and world,
+    // in the world); `anyone_here`: some partner does (an effect nobody can see is not sent)
+    std::function<bool(uint8_t id)> here;
+    std::function<bool()> anyone_here;
+};
+
+void init(const SkHost* host, SkMod* mod, const Ctx& ctx);
+void tick(double now); // main thread: send the effects the hooks queued
+void on_message(uint8_t type, uint8_t from, net::Reader& r);
+void on_session_end();
+// BUG-0824: called on the main thread for every world effect that starts here: this game's own (`from` = this player's
+// id, while connected) and the relayed ones (`from` = the player who made it), with the effect id, the effect and its
+// place. The game's creators can report one effect twice (seen: the same effect object in two hooks in one frame).
+using WorldStartFn = void (*)(uint8_t from, uint32_t id, void* fx, const net::Vec3& pos);
+void set_world_start_observer(WorldStartFn fn);
+std::string watch(uint32_t id); // tests (BUG-0465): watch an effect id; its last own / received object and transform
+std::string status(); // counters and the last sent / received effect (coop.effects, coop.status)
+bool set_log(bool on);
+// the frame-time workload (`coop.effects load`): `n` effects every `period_ms` at the local player,
+// created through the game's effect manager like an effect of the game's own code. 0 stops it.
+void set_load(uint32_t n, uint32_t period_ms, uint32_t id);
+// tests: the game's own effect pools of `key` on the local avatar and every partner's puppet:
+// `game=<pointer> active=<0|1>` for each (empty when the game symbols are missing)
+std::string probe(uint32_t key);
+std::string map_dump(); // tests: the effect pool maps of the avatar and the puppets (their keys and effect objects)
+// tests: feed a crafted MSG_EFFECT through on_message as if it came from peer `from` (spoofing and
+// validation checks: the transport cannot make a guest claim another player)
+void inject(uint8_t from, uint8_t player, uint8_t stop, uint8_t pool, uint32_t id, uint32_t key,
+            const net::Vec3& pos, float agl = net::kNoAgl);
+
+} // namespace effects
