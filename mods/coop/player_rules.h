@@ -24,6 +24,7 @@
 #include "net/protocol.h"
 #include "net/session.h"
 #include "sporekit.h"
+#include "sporekit_game.hpp"
 
 namespace player_rules {
 
@@ -37,6 +38,18 @@ struct Ctx {
 };
 
 void init(const SkHost* host, SkMod* mod, Ctx ctx);
+// BUG-1275: Adventure::PickUpItem/DropItem are these same native entries. This
+// module owns their only detours; GA may handle a hold or decline it so the
+// campaign relay runs. A handler receives the verified native trampoline and
+// writes result only when returning true. Registration and removal are on the
+// game thread; clear before the GA context is torn down.
+using HoldNative = bool(SK_THISCALL*)(void*, void*, uint32_t, bool);
+using ReleaseNative = bool(SK_THISCALL*)(void*, void*, int, int);
+using HoldInterceptor = bool(*)(void*, void*, uint32_t, bool, HoldNative, bool& result);
+HoldNative hold_original(uintptr_t expected_entry);
+ReleaseNative release_original(uintptr_t expected_entry);
+bool intercept_adventure_hold(uintptr_t expected_entry, HoldInterceptor handler);
+void clear_adventure_hold(HoldInterceptor handler);
 void on_message(uint8_t type, uint8_t from, net::Reader& r); // MSG_PLAYER_RULE
 std::string status();
 void tick(double now); // once a frame: the host's drama UFOs to the guests, their mirrors on a guest (BUG-0558)

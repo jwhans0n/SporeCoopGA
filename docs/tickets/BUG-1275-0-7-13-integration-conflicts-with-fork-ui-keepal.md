@@ -169,3 +169,36 @@ peeling preserves ancestry, numeric release ordering, ambiguity and message rule
 The full 1,270-ticket check passes in 11.35 seconds natively and 26.22 seconds via
 the unchanged WSL adapter. Real-repository and old/new verdict evidence lives in
 `out/upstream0715/network/tickets-*`.
+
+
+### Native-only shared pickup hook collision
+
+Cold native instances53/54 correctly refused group adventure startup because both
+`SporeCoop::Creature_HoldObject` and `SporeCoop::Adventure::PickUpItem` name the
+same verified function. Upstream player_rules already owned its detour; world init
+stopped at MH_ERROR_ALREADY_CREATED. A single owner now provides the typed GA
+interceptor and checked native hold/release trampolines, preserving campaign
+relays, host-authoritative pickups and shutdown unregistration. All21 world/child
+hook targets were audited; this was their only conflicting native owner.
+
+The retained old-source actual-handler fixture and --old twin each fail two
+duplicate-owner assertions; the new actual campaign/GA fixture and native mirror
+fixture both pass. See `out/upstream0715/network/shared-hold-validation.json` and
+native53/54 logs in `out/windows-lab/ga0715-pair`.
+
+The same native authoring session exposed a gameplay avatar rediscovery/reset on
+every editor frame (~21 NPC world-change logs/second). frame_observe now skips
+campaign-avatar observation while shared editing or an independent creation is
+active; the existing authoring transition cleanup remains. Cold native reprobe is
+required to verify bounded world-change logging and adventure availability.
+
+### Script-only lab memory test isolation
+
+The intermediate repository run failed the memory self-test's unchanged25-second
+budget. Profiling showed20.57seconds in two real Wine document-portal preflights,
+although the case starts no games; it also used real lane paths/consoles. The case
+now owns an empty game directory and stubs only absent game/portal preconditions.
+Actual script RSS sampling, process-group termination, the small-process control
+and original timing assertions remain. Unexpected Git/console access is forbidden.
+Retained isolation RED and full-group GREEN evidence is in `out/integration`;
+the corrected memory case passes in5.12seconds and the complete lab selftest passes.

@@ -113,3 +113,13 @@ its build/test workflow and real campaign/editor native qualification are pendin
 The GitHub issue-write endpoint still returns 403 despite a connected GitHub app.
 Prepared issue 1-10 link corrections preserve concurrent bodies and stay local
 until issue-write access works; old issue-linked sync branches must remain.
+
+
+Native group preparation caught a duplicate pickup detour before any launch:
+upstream player_rules and the Adventure adapter owned two names for the same
+verified native function. The adapter now uses the sole existing hold/release
+owner through typed forwarding/interception; actual-handler RED/GREEN and mirror
+fixtures pass. Editor observation also revealed repeated campaign-avatar reset
+work during authoring; that observer is now gated until gameplay resumes. Cold
+native availability, pickup behavior and idle logging must be verified on the
+rebuilt payload before smoke/promotion.

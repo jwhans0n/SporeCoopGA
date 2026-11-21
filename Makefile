@@ -836,3 +836,10 @@ test-campaign-services-windows: $(B)/host/campaign_services_tests.exe
 $(B)/host/campaign_services_tests.exe: tests/campaign_services_windows_tests.cpp mods/coop/autosave.cpp mods/coop/autosave_glue.h mods/coop/store.cpp mods/coop/store.h mods/coop/host_busy.cpp mods/coop/host_busy.h $(INTERACTION_TEST_NET) $(ADVENTURE_ABI_HEADERS)
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -Wextra -Werror -Wno-missing-field-initializers -ffunction-sections -fdata-sections -Wl,--gc-sections -static -Isdk/include -Imods/coop tests/campaign_services_windows_tests.cpp $(INTERACTION_TEST_NET) -o $@ -lws2_32 -luser32 -lshell32
+
+# One native hold detour dispatches campaign carrying and co-op adventure pickups.
+.PHONY: test-adventure-shared-hold-windows
+test-adventure-shared-hold-windows: $(B)/host/adventure_shared_hold_tests.exe
+$(B)/host/adventure_shared_hold_tests.exe: tests/adventure_shared_hold_tests.cpp mods/coop/player_rules.cpp mods/coop/player_rules.h mods/coop/adventure_world.cpp mods/coop/adventure_world.h mods/coop/fixes.cpp $(SESSION_TRANSPORT_SRC) $(ADVENTURE_ABI_HEADERS)
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -ffunction-sections -fdata-sections -Wl,--gc-sections -static -Isdk/include -Imods/coop tests/adventure_shared_hold_tests.cpp mods/coop/fixes.cpp $(SESSION_TRANSPORT_SRC) -o $@ -lws2_32

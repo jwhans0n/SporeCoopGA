@@ -23,6 +23,7 @@
 #include <vector>
 
 #include "game.h"
+#include "player_rules.h"
 #include "net/adventure_health.h"
 #include "net/adventure_actor_motion.h"
 #include "sporekit_game.hpp"
@@ -214,8 +215,8 @@ static ReplicationStats g_replication_stats;
 using Check_t = void(SK_THISCALL*)(void*);
 using Goals_t = bool(SK_THISCALL*)(void*);
 using State_t = void(SK_THISCALL*)(void*, int);
-using Pick_t = bool(SK_THISCALL*)(void*, void*, int, bool);
-using Drop_t = bool(SK_THISCALL*)(void*, void*, int, bool);
+using Pick_t = player_rules::HoldNative;
+using Drop_t = player_rules::ReleaseNative;
 using Item_t = void(SK_THISCALL*)(void*, void*, void*);
 using Count_t = void(SK_THISCALL*)(void*, void*, void*, void*);
 using Social_t = void(SK_THISCALL*)(void*, void*);
@@ -788,7 +789,7 @@ static bool interaction(uint8_t action, uint8_t player, Identity item, Identity 
     return C.sess->send_reliable_to(0, net::MSG_ADVENTURE, w);
 }
 
-static bool SK_THISCALL pick_item(void* self, void* spatial, int slot, bool replace)
+static bool SK_THISCALL pick_item(void* self, void* spatial, uint32_t slot, bool replace)
 {
     if(active() && C.held && C.held()) return false;
     if (!active() || g_applying || owner(self) == ga::kNoPlayer) return o_Pick(self, spatial, slot, replace);
@@ -806,6 +807,21 @@ static bool SK_THISCALL pick_item(void* self, void* spatial, int slot, bool repl
     bool ok = o_Pick(self, spatial, slot, replace);
     if (ok) interaction(PickUp, player, id);
     return ok;
+}
+static bool intercept_pick(void* self, void* spatial, uint32_t slot, bool replace,
+                           player_rules::HoldNative original, bool& result)
+{
+    // Declining inactive GA is essential: the sole owner must retain the
+    // upstream campaign carry relay, including its own replay guard.
+    if (!active()) return false;
+    result = original && original == o_Pick ? pick_item(self, spatial, slot, replace) : false;
+    return true;
+}
+static bool bind_item_hooks(uintptr_t pick, uintptr_t drop)
+{
+    o_Pick = player_rules::hold_original(pick);
+    o_Drop = player_rules::release_original(drop);
+    return o_Pick && o_Drop && player_rules::intercept_adventure_hold(pick, intercept_pick);
 }
 static void SK_THISCALL picked_item(void* self, void* holder, void* item)
 {
@@ -2316,8 +2332,19 @@ static void retire_identity(Identity id)
 
 void reset()
 {
+    // The static interceptor owns no run/object state. Keep its registration
+    // across run resets; active(), the shared hold and current owner fence it.
+    // Module shutdown removes it before native callbacks or contexts retire.
     reset_replication();
     g_native_result = {};
+}
+
+void shutdown()
+{
+    player_rules::clear_adventure_hold(intercept_pick);
+    g_ok = false;
+    reset();
+    C = {};
 }
 
 void peer_changed(uint8_t player)
@@ -2378,6 +2405,8 @@ void tick(double now)
 
 bool init(const SkHost* h, SkMod* m, Ctx ctx)
 {
+    player_rules::clear_adventure_hold(intercept_pick);
+    g_ok = false;
     H = h; M = m; C = std::move(ctx);
     a_Mode = H->sym("App::cScenarioMode::ptr");
     a_SetAct = H->sym("Simulator::cScenarioPlayMode::SetCurrentAct");
@@ -2410,16 +2439,16 @@ bool init(const SkHost* h, SkMod* m, Ctx ctx)
     a_Physics=H->sym("Simulator::cPhysicsWorld::Get");
     a_Impulse=H->sym("Simulator::cPhysicsWorld::ApplyImpulse");
     a_ThrowGrace=H->sym("SporeCoop::Adventure::ThrowPairGrace");
-    o_Drop = (Drop_t)H->sym("SporeCoop::Adventure::DropItem");
+    uintptr_t drop = H->sym("SporeCoop::Adventure::DropItem");
     if (!skg::supported_gog2024(H->exe_sha256()) ||
         !a_Mode || !a_SetAct || !a_GetMarker || !a_Hostile || !a_Befriend || !a_Ally || !a_Relationships || !a_SocialEvent || !a_SocialMode || !a_AnimalDamage || !a_GoalHUD || !a_ObjectReference || !a_MovementRequest || !a_VehicleGroundUpdate ||
-        !check || !complete || !goals || !state || !pick || !picked || !dropped || !count || !avatar || !generic || !o_Drop || !C.sess || !C.captain_can_act ||
+        !check || !complete || !goals || !state || !pick || !picked || !dropped || !count || !avatar || !generic || !drop || !C.sess || !C.captain_can_act ||
         !talk || !talk_end_address || !gate || !a_GateKey || !a_OpenGate || !a_Physics || !a_Impulse || !a_ThrowGrace || !adventure_world_lifecycle::init(H, M)) return false;
+    if (!bind_item_hooks(pick, drop)) return false;
     g_ok = H->hook_create(M, (void*)check, (void*)check_goals, (void**)&o_Check) == 0 &&
            H->hook_create(M, (void*)complete, (void*)complete_act, (void**)&o_Complete) == 0 &&
            H->hook_create(M, (void*)goals, (void*)update_goals, (void**)&o_Goals) == 0 &&
            H->hook_create(M, (void*)state, (void*)set_state, (void**)&o_State) == 0 &&
-           H->hook_create(M, (void*)pick, (void*)pick_item, (void**)&o_Pick) == 0 &&
            H->hook_create(M, (void*)picked, (void*)picked_item, (void**)&o_Picked) == 0 &&
            H->hook_create(M, (void*)dropped, (void*)dropped_item, (void**)&o_Dropped) == 0 &&
            H->hook_create(M, (void*)count, (void*)count_goal, (void**)&o_Count) == 0 &&
@@ -2481,6 +2510,7 @@ bool init(const SkHost* h, SkMod* m, Ctx ctx)
         };
         g_ok = adventure_targeting::init(H, M, std::move(targeting));
     }
+    if (!g_ok) player_rules::clear_adventure_hold(intercept_pick);
     H->command_add(M, "coop.adventure.world", "Adventure native diagnostics and isolated-profile test actions",
                    [](void*, int argc, const char* const* argv, SkOut* out) { return debug(argc - 1, argv + 1, out); },
                    nullptr, SK_CMD_OUTSIDE_FRAME);

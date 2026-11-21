@@ -98,7 +98,7 @@ class PreviewPackageTests(unittest.TestCase):
             self.assertEqual(set(bundle.namelist()),
                              {'SporeCoopGA/' + p.name for p in distribution.iterdir()})
         guide = (distribution / 'MULTIPLAYER-ADVENTURE-EDITOR.md').read_text()
-        self.assertIn('https://github.com/jwhans0n/SporeCoopGA/blob/feat/ga-editor-multi-act/docs/reports/EDITOR-PREVIEW9-VALIDATION.md', guide)
+        self.assertIn('https://github.com/jwhans0n/SporeCoopGA/blob/main/docs/reports/EDITOR-PREVIEW9-VALIDATION.md', guide)
         self.assertIn('https://example.com/evidence',
                       (distribution / 'EDITOR-PREVIEW9-VALIDATION.md').read_text())
         readme = (distribution / 'README.txt').read_text()

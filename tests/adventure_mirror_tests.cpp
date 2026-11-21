@@ -12,6 +12,14 @@
 // Explosive ownership is exercised by its own native ABI fixture. This mirror
 // fixture leaves that adapter uninitialized while covering world callbacks.
 namespace adventure_explosives { void picked(Identity, uint8_t) {} }
+// Native hook ownership is exercised by adventure_shared_hold_tests. This
+// reconciliation fixture does not initialize detours; absent ownership stays closed.
+namespace player_rules {
+HoldNative hold_original(uintptr_t) { return nullptr; }
+ReleaseNative release_original(uintptr_t) { return nullptr; }
+bool intercept_adventure_hold(uintptr_t, HoldInterceptor) { return false; }
+void clear_adventure_hold(HoldInterceptor) {}
+}
 
 namespace {
 using skg::field;
@@ -116,15 +124,15 @@ void* SK_THISCALL bounds(void* spatial,void* output)
     values[0]={p.x-0.25f,p.y-0.25f,p.z-0.25f};
     values[1]={p.x+0.25f,p.y+0.25f,p.z+0.25f}; return output;
 }
-bool SK_THISCALL item_pick(void* holder,void* spatial,int index,bool)
+bool SK_THISCALL item_pick(void* holder,void* spatial,uint32_t index,bool)
 {
     auto* first=field<uint8_t*>(holder,0xE40); auto* last=field<uint8_t*>(holder,0xE44);
-    if(index<0 || first+index*0x24>=last) return false;
+    if(!first || !last || last<first || index>=size_t(last-first)/0x24) return false;
     field<void*>(first+index*0x24,0x20)=spatial; ++item_picks;
     if(capture_world_actions) world_action_order.push_back('P');
     return true;
 }
-bool SK_THISCALL item_drop(void* holder,void* spatial,int,bool)
+bool SK_THISCALL item_drop(void* holder,void* spatial,int,int)
 {
     int index=adventure_world::item_slot(holder,spatial,false); if(index<0) return false;
     field<void*>(field<uint8_t*>(holder,0xE40)+index*0x24,0x20)=nullptr; ++item_drops;

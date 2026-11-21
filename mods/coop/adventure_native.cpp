@@ -1094,7 +1094,7 @@ void reset()
     adventure_captains::reset(); adventure_world::reset();
     adventure_relationships::reset();
 }
-void shutdown() { reset(); clear_editor_preview(); }
+void shutdown() { adventure_world::shutdown(); reset(); clear_editor_preview(); }
 std::string status()
 {
     auto social = adventure_social::counters();

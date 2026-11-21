@@ -1055,7 +1055,7 @@ static void frame_observe(double now)
     modes::test_tick();       // BUG-0223 tests: a forced frame without the local entity
     if (!coop_editor::authoring() && !editor_creation::active() && !adventure::active()) world_id_tick();          // BUG-1141 (BUG-0217, BUG-0223, BUG-1055): the world changed: its hooks and WORLD_STATE resets
     if (!coop_editor::authoring() && !editor_creation::active()) creations::tick(now);
-    if (g_frame_fix) // BUG-0091: forget the puppets of a world the game tore down before any message uses them
+    if (g_frame_fix && !coop_editor::authoring() && !editor_creation::active()) // Shared editing has no campaign avatar.
         avatar_change_check();
     monitor_frame_start(now); // the puppets as drawn, before any driving (docs/06-testing.md#testing-monitor)
     npc::monitor_tick(now);   // the proxies as drawn

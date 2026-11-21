@@ -545,10 +545,31 @@ static bool SK_THISCALL h_UfoTick(void* u, float dt, double now) // diagnostics:
 // and puts it where it came to rest in the thrower's game (sent when it stopped moving, or after 6 s).
 static constexpr uint32_t kRockNoun = 0x02A8FB3Fu, kOrnamentNoun = 0x03A2511Eu;
 // obj is the object's cSpatialObject (0x1186577; vt 0xB8 casts it to its cGameData, 0x17F243B); both return a bool
-typedef bool(SK_THISCALL* Hold_t)(void*, void*, uint32_t, bool);
-typedef bool(SK_THISCALL* Release_t)(void*, void*, int, int);
+using Hold_t = HoldNative;
+using Release_t = ReleaseNative;
 static Hold_t o_Hold;
 static Release_t o_Release;
+static uintptr_t g_hold_entry, g_release_entry;
+static HoldInterceptor g_adventure_hold;
+
+HoldNative hold_original(uintptr_t expected_entry)
+{
+    return expected_entry && expected_entry == g_hold_entry ? o_Hold : nullptr;
+}
+ReleaseNative release_original(uintptr_t expected_entry)
+{
+    return expected_entry && expected_entry == g_release_entry ? o_Release : nullptr;
+}
+bool intercept_adventure_hold(uintptr_t expected_entry, HoldInterceptor handler)
+{
+    if (!handler || !hold_original(expected_entry) || (g_adventure_hold && g_adventure_hold != handler)) return false;
+    g_adventure_hold = handler;
+    return true;
+}
+void clear_adventure_hold(HoldInterceptor handler)
+{
+    if (g_adventure_hold == handler) g_adventure_hold = nullptr;
+}
 static uint32_t g_hold_tx, g_hold_rx, g_hold_done, g_hold_nocopy, g_drop_tx, g_drop_rx, g_put_tx, g_put_rx, g_hold_other;
 static uint32_t g_hold_last_noun, g_put_fast, g_put_near;
 struct Carried {        // the partner's copy of an object a player carries (or threw), in this game
@@ -639,6 +660,8 @@ static uint8_t own_id() { return is_host() ? 0 : C.sess ? C.sess->my_id() : 0xFF
 
 static bool SK_THISCALL h_Hold(void* c, void* obj, uint32_t slot, bool replace)
 {
+    bool intercepted = false;
+    if (g_adventure_hold && g_adventure_hold(c, obj, slot, replace, o_Hold, intercepted)) return intercepted;
     uint32_t noun = 0;
     net::Vec3 at{};
     void* gd = nullptr;
@@ -681,6 +704,16 @@ static bool SK_THISCALL h_Release(void* c, void* obj, int a, int b)
         g_thrown.push_back(t);
     }
     return r;
+}
+
+static void init_carry_hooks()
+{
+    g_adventure_hold = nullptr;
+    g_hold_entry = g_release_entry = 0;
+    if (uintptr_t a = H->sym("SporeCoop::Creature_HoldObject"))
+        if (H->hook_create(M, (void*)a, (void*)h_Hold, (void**)&o_Hold) == 0 && o_Hold) g_hold_entry = a;
+    if (uintptr_t a = H->sym("SporeCoop::Creature_ReleaseObject"))
+        if (H->hook_create(M, (void*)a, (void*)h_Release, (void**)&o_Release) == 0 && o_Release) g_release_entry = a;
 }
 
 static void carry_tick(double now)
@@ -1492,10 +1525,7 @@ void init(const SkHost* host, SkMod* mod, Ctx ctx)
     a_IsEpic = H->sym("SporeCoop::cCreatureAnimal_IsEpic");
     a_SpawnEventUFO = H->sym("SporeCoop::UFOAbductionEvent_SpawnUFO");
     savestrip::add_filter(ufo_save_filter); // BUG-0817
-    if (uintptr_t a = H->sym("SporeCoop::Creature_HoldObject"))
-        H->hook_create(M, (void*)a, (void*)h_Hold, (void**)&o_Hold);
-    if (uintptr_t a = H->sym("SporeCoop::Creature_ReleaseObject"))
-        H->hook_create(M, (void*)a, (void*)h_Release, (void**)&o_Release);
+    init_carry_hooks();
     p2_ufo_pick_ret = H->sym("SporeCoop::UFOPick_IsEpicReturn");
     if (p2_ufo_pick_ret && a_IsEpic)
         H->hook_create(M, (void*)a_IsEpic, (void*)p2_h_IsEpic, (void**)&p2_o_IsEpic);

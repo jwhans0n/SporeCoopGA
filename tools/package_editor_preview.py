@@ -121,7 +121,7 @@ def main(argv=None):
                     return match[0]
                 path, marker, anchor = target.partition('#')
                 resolved = (source.parent / path).resolve().relative_to(ROOT)
-                return '](' + 'https://github.com/jwhans0n/SporeCoopGA/blob/feat/ga-editor-multi-act/' + resolved.as_posix() + marker + anchor + ')'
+                return '](' + 'https://github.com/jwhans0n/SporeCoopGA/blob/main/' + resolved.as_posix() + marker + anchor + ')'
             data = re.sub(r'\]\(([^)]+)\)', link, source.read_text(encoding='utf-8'))
             (distribution / source.name).write_text(data, encoding='utf-8')
         else:

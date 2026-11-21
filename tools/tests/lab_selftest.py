@@ -933,6 +933,16 @@ def mem_cases(tree, tmp):
     py = f'{sys.executable} -c'
     logdir = os.path.join(tmp, 'mem')
     os.makedirs(logdir)
+    # This fixture starts script processes only. Give it an empty owned game
+    # directory and no consoles; probing real lane sockets adds machine-dependent
+    # delays and can inspect unrelated native runs during parallel self-tests.
+    old_paths = (lab.lane_game, lab.lane_alive, lab.preflight)
+    game = os.path.join(logdir, 'empty-game')
+    os.makedirs(game)
+    lab.lane_game = lambda lane: game
+    lab.lane_alive = lambda lane: {2 * lane - 1: False, 2 * lane: False}
+    # No game is launched, so this case needs no Wine document portal.
+    lab.preflight = lambda: True
     old = (lab.SCRIPT_RSS_MB, lab.MEM_STEP, lab.AFTER)
     lab.SCRIPT_RSS_MB, lab.MEM_STEP, lab.AFTER = 150, 0.3, 0.5
     try:
@@ -942,7 +952,11 @@ def mem_cases(tree, tmp):
                                              f'print(\'RESULT: OK\')" {marker}')
         small = dict(base, name='mem_small', cmd=f'{py} "import time; time.sleep(1.5); print(\'RESULT: OK\')"')
         t0 = time.time()
-        with contextlib.redirect_stdout(io.StringIO()):
+        from unittest.mock import patch
+        import sporectl
+        with contextlib.redirect_stdout(io.StringIO()), \
+             patch.object(lab, 'git', side_effect=AssertionError('script-only fixture queried checkout Git')), \
+             patch.object(sporectl, 'Console', side_effect=AssertionError('script-only fixture queried a game console')):
             r = lab.run_one(big, LANE, tree, logdir, False)
             r2 = lab.run_one(small, LANE, tree, logdir, False)
         line = next((x for x in r['fails'] if 'the test script used' in x), '')
@@ -953,6 +967,7 @@ def mem_cases(tree, tmp):
               f'mem_script: a small script passes, its peak RSS in the result ({r2.get("mem")})')
     finally:
         lab.SCRIPT_RSS_MB, lab.MEM_STEP, lab.AFTER = old
+        lab.lane_game, lab.lane_alive, lab.preflight = old_paths
 
     # the gate, on a fake MemAvailable
     old = (lab.MEM_FLOOR_GB, lab.MEM_GAME_GB, lab.MEM_POLL, lab.MEM_WAIT, lab.mem_available_gb)
