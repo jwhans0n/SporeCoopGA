@@ -271,3 +271,36 @@ all 24 backend contracts pass, including wrong-world, wrong-mode, paused,
 replaced-context and rejected-load cases. Actual scenario qualification remains
 required. Contract evidence is under `out/windows-lab/native-loader-adapter`
 in the qualification worktree.
+
+### Windows native UI log encoding
+
+Source `670f8f91` reached the original UI scenario's host lobby, then printing
+its native colour swatch (three U+25A0 glyphs) raised UnicodeEncodeError under
+Windows cp1252. The RED remains at
+`out/lab/20261120-192654-windows-dbbd64/results.json` in the integration worktree.
+With only UTF-8 launch configuration, the unchanged original UI scenario passed
+in 276.06 seconds, including actual native discovery, settings, chat, reports,
+leave/rejoin, fault checks and post-check log/crash gates. Its standard receipt
+is `out/lab/20261120-193146-windows-3a1fc7/results.json`. Actual Unicode row text
+and receipt/log hashes are retained under `out/windows-lab/native-utf8-launch`
+in the qualification worktree.
+
+The adapter now supplies PYTHONUTF8=1 and PYTHONIOENCODING=utf-8 for workers,
+matching the successful native launch environment exactly. Existing monitor,
+ownership, command and log-gate settings retain their values. A real child
+Python process reproduces the encoding error with ambient cp1252 and writes the
+actual swatch correctly under the adapter environment. All 25 backend contracts
+pass. This tooling follow-up is isolated while the remaining source-670 native
+cases run; it does not claim those pending checks passed or change game payloads.
+
+The reused-profile startup notice is separately retained: two no-click cold
+probes observed Network play disabled self-clear after about 3.5 seconds;
+neutral virtual-cursor placement did not prevent it. A fresh marked profile
+passed unchanged strict startup and 15 seconds of further native controls/modal
+checks. The native matrix therefore uses a fresh profile identity per scenario,
+retaining it for within-scenario relaunches. No Login-property bytes were copied
+or synthesized, and the unrelated-popup guard remains unchanged. The exact
+native notification call site has not been established. Detailed witnesses are
+under `out/windows-lab/network-offline-probe670`,
+`out/windows-lab/network-offline-neutral670` and
+`out/windows-lab/fresh-bootstrap670` in the integration worktree.

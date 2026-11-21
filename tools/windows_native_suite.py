@@ -126,6 +126,17 @@ def lab_record(config, results, run_id, branch, began):
                 backend='windows-native', **config.evidence())
 
 
+def case_environment(output, test, name):
+    # Native UI rows can include glyphs outside the Windows console code page.
+    # Captured log files and the console protocol both use UTF-8.
+    env = dict(os.environ, PYTHONUNBUFFERED='1', PYTHONUTF8='1', PYTHONIOENCODING='utf-8',
+               SPORE_LAB_RUN=str(output), SPORE_LAB_TEST=name)
+    if test.get('monitor') is not None:
+        env['SPORE_MONITOR'] = (test['monitor'] if isinstance(test['monitor'], str)
+                                else json.dumps(test['monitor']))
+    return env
+
+
 def worker(config_path, name, gate, receipt):
     # Never create children until the supervisor owns this process's whole tree.
     deadline = time.monotonic() + 30
@@ -222,9 +233,7 @@ def run(config_path, selection, repeat=1):
             output = config.output / (name + '-' + uuid.uuid4().hex[:8])
             output.mkdir()
             gate, receipt, log = output / 'owned.start', output / 'native.json', output / 'test.log'
-            env = dict(os.environ, PYTHONUNBUFFERED='1', SPORE_LAB_RUN=str(config.output), SPORE_LAB_TEST=name)
-            if test.get('monitor') is not None:
-                env['SPORE_MONITOR'] = test['monitor'] if isinstance(test['monitor'], str) else json.dumps(test['monitor'])
+            env = case_environment(config.output, test, name)
             job = OwnedJob()
             process = None
             began = time.time()

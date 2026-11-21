@@ -4,6 +4,7 @@ import io
 import hashlib
 import json
 import os
+import subprocess
 from pathlib import Path
 import sys
 import tarfile
@@ -373,6 +374,21 @@ class LaneTests(unittest.TestCase):
         self.assertFalse(verdict(test, 0, text, ['supervisor failed']))
         self.assertTrue(skipped_case(dict(name='creature'), 'RESULT: INCONCLUSIVE'))
         self.assertFalse(verdict(dict(name='creature'), 0, text, []))
+
+    def test_native_worker_logs_unicode_even_with_legacy_ambient_encoding(self):
+        from windows_native_suite import case_environment
+        # Actual native lobby colour swatch from the Windows UI scenario.
+        row = 'Alice (host, you) \u25a0\u25a0\u25a0'
+        with patch.dict(os.environ, PYTHONUTF8='0', PYTHONIOENCODING='cp1252'):
+            env = case_environment(self.root, dict(monitor='off'), 'ui')
+            self.assertEqual(os.environ['PYTHONIOENCODING'], 'cp1252')
+            self.assertEqual(env['SPORE_LAB_RUN'], str(self.root))
+            self.assertEqual(env['SPORE_LAB_TEST'], 'ui')
+            self.assertEqual(env['SPORE_MONITOR'], 'off')
+            result = subprocess.run([sys.executable, '-c', 'print(' + ascii(row) + ')'],
+                                    capture_output=True, env=env, timeout=15)
+        self.assertEqual(result.returncode, 0, result.stderr.decode('utf-8', 'replace'))
+        self.assertEqual(result.stdout.decode('utf-8').splitlines(), [row])
 
     def test_receipt_uses_existing_lab_coverage_and_log_gate_schema(self):
         import time
