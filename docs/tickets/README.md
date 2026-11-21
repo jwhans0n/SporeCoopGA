@@ -1281,3 +1281,4 @@ not-reproduced, game-bug (Spore itself), wontfix, duplicate.
 | [BUG-1275](BUG-1275-0-7-13-integration-conflicts-with-fork-ui-keepal.md) | fixed | bug | Tools | 2026-11-13 | unreleased | 0.7.13 integration conflicts with fork UI, keepalive diagnostics and message classification |
 | [BUG-1276](BUG-1276-native-registration-harness-rejects-a-verified-z.md) | open | tooling | Tools | 2026-11-13 |  | Native registration close command differs from the strict Windows harness |
 | [BUG-1277](BUG-1277-integrated-uninstall-inventory-omits-fork-symbol.md) | fixed | bug | Installer | 2026-11-13 | unreleased | Integrated uninstall inventory omits fork symbol maps |
+| [BUG-1278](BUG-1278-act-goal-delete-loses-the-first-click-while-awai.md) | open | bug | Editor | 2026-11-20 |  | Act goal Delete loses the first click while awaiting ownership |
