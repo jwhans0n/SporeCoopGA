@@ -390,6 +390,69 @@ class LaneTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr.decode('utf-8', 'replace'))
         self.assertEqual(result.stdout.decode('utf-8').splitlines(), [row])
 
+    @staticmethod
+    def readiness_fixture(pauses, replacement=None):
+        class Clock:
+            now = 0
+            def clock(self):
+                return self.now
+            def sleep(self, value):
+                self.now += value
+        class Native:
+            poll = 0
+            def __init__(self):
+                self.calls = []
+            def call(self, command):
+                self.calls.append(command)
+                if command == 'game.mode':
+                    self.poll += 1
+                    return dict(ok=True, out='0x01654C04 Tribe')
+                if command == 'coop.avatar':
+                    name = 'Other.spo' if replacement and self.poll >= replacement else 'Zorispe.spo'
+                    return dict(ok=True, out=f"Tribe: local=1234 place=0xA3930F03 world '{name}'\ngame_name '{name}'")
+                if command == 'coop.pauses':
+                    paused = pauses[min(self.poll - 1, len(pauses) - 1)]
+                    return dict(ok=True, out='pauses: flags=3 paused=1 reasons: 04BF38A7=1' if paused
+                                else 'pauses: flags=0 paused=0 reasons: none')
+                if command == 'coop.uistate':
+                    return dict(ok=True, out='open=0 input_lock=0')
+                if command == 'frame':
+                    return dict(ok=True, out=f'frame={self.poll}')
+                raise AssertionError('readiness attempted an unapproved command: ' + command)
+        return Native(), Clock()
+
+    def test_native_scene_waits_for_natural_pause_clear_and_stable_frames(self):
+        from windows_native_lane import wait_scene_ready
+        native, clock = self.readiness_fixture([True, True, False])
+        receipt = self.root / 'readiness.json'
+        result = wait_scene_ready(dict(host=native), 'Tribe', timeout=2, receipt=receipt,
+                                  clock=clock.clock, sleep=clock.sleep)
+        self.assertEqual(result['phase'], 'ready')
+        self.assertGreaterEqual(result['elapsed'], .75)
+        self.assertEqual(json.loads(receipt.read_text())['contexts']['host'][2], 'Zorispe.spo')
+
+    def test_native_scene_persistent_pause_fails_with_native_reason(self):
+        from windows_native_lane import wait_scene_ready
+        native, clock = self.readiness_fixture([True])
+        receipt = self.root / 'readiness.json'
+        with self.assertRaisesRegex(RuntimeError, '04BF38A7'):
+            wait_scene_ready(dict(host=native), 'Tribe', timeout=.5, receipt=receipt,
+                             clock=clock.clock, sleep=clock.sleep)
+        result = json.loads(receipt.read_text())
+        self.assertEqual(result['phase'], 'failed')
+        self.assertIn('paused=1', result['last']['host']['pauses'])
+
+    def test_native_scene_replacement_rejects_the_original_context(self):
+        from windows_native_lane import wait_scene_ready
+        native, clock = self.readiness_fixture([True, False], replacement=2)
+        receipt = self.root / 'readiness.json'
+        with self.assertRaisesRegex(RuntimeError, 'world context changed'):
+            wait_scene_ready(dict(host=native), 'Tribe', timeout=2, receipt=receipt,
+                             clock=clock.clock, sleep=clock.sleep)
+        result = json.loads(receipt.read_text())
+        self.assertEqual(result['phase'], 'failed')
+        self.assertEqual(result['contexts']['host'][2], 'Zorispe.spo')
+
     def test_receipt_uses_existing_lab_coverage_and_log_gate_schema(self):
         import time
         import loggates

@@ -304,3 +304,28 @@ native notification call site has not been established. Detailed witnesses are
 under `out/windows-lab/network-offline-probe670`,
 `out/windows-lab/network-offline-neutral670` and
 `out/windows-lab/fresh-bootstrap670` in the integration worktree.
+
+### Native cold-scene readiness before campaign assertions
+
+The original Tribe scenario accepted a walk but observed zero movement while
+the host trace still said busy=paused. Its standard RED is
+`out/lab/20261120-193809-windows-195327/results.json`. A second unchanged
+Tribe-alone run retained a read-only exact-PID observer under
+`out/windows-lab/tribe-readiness-repro1` in the integration worktree. Both roles
+showed native pause reason 04BF38A7. The host first cleared it naturally 29.42s
+after observed Tribe entry; member AI then showed an active path/tree and
+actual movement. The old four-second setup bound let assertions run during
+the native entry bakes already documented in docs/06-testing.md. No pause bit,
+UI state or movement assertion was changed during these reproductions.
+
+Windows shared setup now waits for the actual expected mode and named avatar,
+stable world identity, naturally unpaused/unlocked state, and advancing frames
+on both roles before returning to the original scenario body. It requires two
+stable observations, times out with native reasons and context facts, and
+rejects a replaced world. It answers no native dialog and clears no pause.
+Linux retains the existing setup path. This also covers cold Civ and the other
+verified gameplay stages. Natural-clear, persistent-pause and replacement
+contracts pass with the existing contracts (28 total). Native rerun of the
+unchanged original Tribe assertions is still required for this follow-up.
+Portable evidence is under `out/windows-lab/native-scene-readiness` in the
+qualification worktree; it does not substitute for native acceptance.
