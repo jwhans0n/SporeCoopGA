@@ -279,3 +279,14 @@ target passes under ASan/UBSan in 95.674 seconds, retaining 6,000 mutations per
 codec and 64 valid round trips. It covers 17,796 Hello and 35,952 Welcome prefixes.
 Evidence: `out/integration/fuzz-fixed/test.log` and `exit.json`. The original 44
 failures remain in the real unit log above.
+
+
+## Final0.7.15 integration acceptance (2026-11-20)
+
+Pinned upstream66dc8640 is retained through normal merges. Required repository,
+Win32 input-closure and14-case original native smoke gates pass; official game
+log gates report13 rows and0 red. Actual Civ vehicle/build/ownership/gift tests
+now exercise the production shared native hook policy. Focused two/four-player
+GA acceptance is complete on the same7bd payload. The final synchronization
+report records exact sources, hashes, original receipts and all retained failures.
+Source-only documentation/known-issue changes preserve the qualified code tree.

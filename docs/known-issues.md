@@ -325,11 +325,11 @@ upstream tickets. A validation item does not imply the source fix is missing.
 | BUG-1249 | Recheck hidden-game presentation reset hangs with current SporeKit | [#4](https://github.com/jwhans0n/SporeCoopGA/issues/4) |
 | BUG-1253 | Historical gradient point-color gesture sometimes has no transaction | [#5](https://github.com/jwhans0n/SporeCoopGA/issues/5) |
 | BUG-1255 | Terraformed native Save/cold reopen changes unclassified authored bytes | [#6](https://github.com/jwhans0n/SporeCoopGA/issues/6) |
-| BUG-1259 | Native Windows smoke/main qualification pending; five fixture cold reopens pass | [#7](https://github.com/jwhans0n/SporeCoopGA/issues/7) |
+| BUG-1259 | Required native smoke/main gate qualified; broader memory/release acceptance deferred | [#7](https://github.com/jwhans0n/SporeCoopGA/issues/7) |
 | BUG-1270 | Add Act after independent editor return loses scene identity | [#8](https://github.com/jwhans0n/SporeCoopGA/issues/8) |
 | BUG-1271 | Standalone Save New/cold reopen warns of unavailable custom creations | [#9](https://github.com/jwhans0n/SporeCoopGA/issues/9) |
-| BUG-1276 | Native startup guard now passes; final-source smoke and issue closure pending | [#10](https://github.com/jwhans0n/SporeCoopGA/issues/10) |
 | BUG-1278 | Act-goal Delete loses the first click while ownership arrives; a second click works | [#11](https://github.com/jwhans0n/SporeCoopGA/issues/11) |
+| BUG-1280 | Waiting-for-ownership caption can outlive its request; editing stays usable | [#14](https://github.com/jwhans0n/SporeCoopGA/issues/14) |
 
 Historical observations need fresh reproduction. No smoke or focused live editor
 pass is claimed for the blocked startup runs. See the
@@ -338,7 +338,7 @@ pass is claimed for the blocked startup runs. See the
 
 ## Galactic Adventures preview 12: validation limits (BUG-1259)
 
-Historical validation limitations and current missing smoke prerequisites are tracked by BUG-1259.
+Historical validation limitations and deferred broader native acceptance remain tracked by BUG-1259. The required0.7.15 Windows smoke/main gate is now qualified; see the synchronization report.
 
 Preview `0.7.3.5-ga-preview.12` requires the exact dc04 GOG executable and matching
 protocol 15 clients. It seals the host's first win/loss decision, holds gameplay
@@ -429,3 +429,11 @@ tests changed only private graphics preferences, not the player's settings.
 * Next steps: retire only this stale caption when the pending request ends,
   preserving unrelated newer status messages. No implementation is included yet.
 * Ticket: BUG-1280.
+
+
+CORRECTION (2026-11-20, sync/upstream-0.7.15-editor-main): BUG-1276's exact native
+startup variants and the required14-case Windows smoke gate now pass. GitHub
+issue10 is ready to close after main promotion. Earlier blocked runs remain
+historical evidence; broader BUG-1259 acceptance and other open reports above
+retain their original scope. Captain portrait no-ops do not establish a co-op
+movement bug; the native-valid world-body route passes with four participants.

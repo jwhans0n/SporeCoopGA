@@ -1279,7 +1279,7 @@ not-reproduced, game-bug (Spore itself), wontfix, duplicate.
 | [BUG-1273](BUG-1273-creature-to-outfitter-creation-flow-fails-to-ret.md) | fixed | bug | Adventure | 2026-11-13 | unreleased | Creature to outfitter creation flow fails to return to shared adventure editing |
 | [BUG-1274](BUG-1274-creation-return-rejects-original-placement-groun.md) | fixed | bug | Adventure | 2026-11-13 | unreleased | Creation return rejects original placement grounding and poisons subsequent editor entry |
 | [BUG-1275](BUG-1275-0-7-13-integration-conflicts-with-fork-ui-keepal.md) | fixed | bug | Tools | 2026-11-13 | unreleased | 0.7.13 integration conflicts with fork UI, keepalive diagnostics and message classification |
-| [BUG-1276](BUG-1276-native-registration-harness-rejects-a-verified-z.md) | open | tooling | Tools | 2026-11-13 |  | Native registration close command differs from the strict Windows harness |
+| [BUG-1276](BUG-1276-native-registration-harness-rejects-a-verified-z.md) | fixed | tooling | Tools | 2026-11-13 | unreleased | Native registration close command differs from the strict Windows harness |
 | [BUG-1277](BUG-1277-integrated-uninstall-inventory-omits-fork-symbol.md) | fixed | bug | Installer | 2026-11-13 | unreleased | Integrated uninstall inventory omits fork symbol maps |
 | [BUG-1278](BUG-1278-act-goal-delete-loses-the-first-click-while-awai.md) | open | bug | Editor | 2026-11-20 |  | Act goal Delete loses the first click while awaiting ownership |
 | [BUG-1279](BUG-1279-test-together-hashes-uninitialized-native-keys-i.md) | fixed | desync | Adventure | 2026-11-20 | unreleased | Test Together hashes uninitialized native keys instead of the committed preview place |

@@ -77,3 +77,14 @@ fixed status records the implemented branch fix and focused regression only.
 - 2026-11-20: Retained native and actual-function RED evidence, implemented the
   narrow consumer fix in an isolated worktree while the previous source remained
   frozen for real unit checks, and passed the focused consumer/provider fixtures.
+
+
+## Complete focused native acceptance (2026-11-20)
+
+The4d/7bd runtime passes reciprocal visible/moving captains in two-player native
+Test Together. The four-player Town continuation also passes actual shared
+objectives/conversations, host authority, unanimous native clock pause/resume,
+and coordinated Build preserving revision16 and each nonempty author history.
+The native GA aggregate has17 hashed PASS receipts. Runtime bytes remain
+identical through7a129c0d; source labels are retained per receipt. The initial
+no-captain launch remains a retained RED. GitHub issue12 can close after main.

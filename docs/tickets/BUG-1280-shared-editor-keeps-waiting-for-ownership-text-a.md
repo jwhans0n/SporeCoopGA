@@ -72,3 +72,13 @@ preview reproduction is claimed, and installed payloads were not changed.
   existing ticket/known-issue text before allocating this separate status issue.
   The active campaign/editor source remains unchanged; this record was prepared
   in an isolated worktree.
+
+
+## Public tracking and native-operation classification (2026-11-20)
+
+Public report: [issue14](https://github.com/jwhans0n/SporeCoopGA/issues/14).
+Controlled unshared Town comparison establishes that the first unselected
+portrait drag is also a native no-op. The selected world-body route works
+without sharing and with four co-op participants, one transaction per movement
+and exact checked Undo/Redo. This narrows the retained finding to misleading
+status text; no Captain movement/domain fix is proposed from this evidence.

@@ -175,3 +175,108 @@ in the primary workspace. This focused fix was prepared in an isolated worktree
 from 47ed940a while the original native unit run stayed frozen. A new native
 Together reprobe and final-source acceptance remain required; no native group
 success is inferred from these fixture passes.
+
+
+## Final source qualification, 2026-11-20
+
+The required source/main qualification is complete. The candidate tested by the
+final campaign runs is `7a129c0d546470c87316b907c57b7679885fbfcc`, version
+`0.7.15.0-ga-editor-preview.16`, protocol 30. It contains pinned upstream
+`66dc8640ed001fff4d5bb38f894a8c2d55530660`. The final documentation changes do
+not change production, SporeKit, native symbols, Python test/setup code or build
+recipes. This qualification does not publish a release or install a payload.
+
+The original smoke suite has 14/14 actual standard PASS receipts. Existing
+labcov reports complete coverage; existing loggates reports 13/13 gameplay rows
+and zero findings. No skipped/inconclusive case or failed setup substitutes for
+a pass. The complete real repository unit run is the 569.18-second row below;
+push and PR build/fuzz workflows also pass on the final tested source.
+
+| Original case | Tested source | Seconds | Standard run |
+|---|---|---:|---|
+| unit | `670f8f91` | 569.18 | `20261120-191203-windows-54961c` |
+| creature | `670f8f91` | 180.12 | `20261120-192354-windows-2cc419` |
+| ui | `670f8f91` | 276.06 | `20261120-193146-windows-3a1fc7` |
+| team | `670f8f91` | 106.02 | `20261120-193622-windows-9da122` |
+| cell_coop | `670f8f91` | 149.90 | `20261120-193622-windows-cae195` |
+| space_coop | `670f8f91` | 94.06 | `20261120-193853-windows-05d959` |
+| frames_loop | `670f8f91` | 111.10 | `20261120-194027-windows-59c239` |
+| tribe_coop | `7a129c0d` | 164.68 | `20261120-200818-windows-0e1ab7` |
+| civ_coop | `7a129c0d` | 120.37 | `20261120-201103-windows-9a9401` |
+| space_play | `7a129c0d` | 208.88 | `20261120-201103-windows-d7be0b` |
+| select | `7a129c0d` | 135.90 | `20261120-201304-windows-73a24b` |
+| space_page | `7a129c0d` | 97.35 | `20261120-201432-windows-fcd387` |
+| tribe_play | `7a129c0d` | 124.45 | `20261120-201520-windows-3a2b26` |
+| chaos_tribe | `7a129c0d` | 235.16 | `20261120-201725-windows-bbdc28` |
+
+Seven receipts retain their original tested source `670f8f91`; seven retain
+`7a129c0d`. No source head or verdict was rewritten. All production source,
+native maps and five payload bytes are identical across these tooling revisions.
+The later adapter adds UTF-8 output and a read-only cold-scene readiness fence;
+the earlier successful scenarios retain their original assertions and verified
+inputs. Civ exercised native vehicle movement, building, ownership and gifts.
+Tribe's original movement check now measures 6.0 m after its native entry bakes
+clear naturally; no pause bit or gameplay assertion was changed. Chaos performs
+267 actions over 120 seconds with five rejoins and zero native faults.
+
+The canonical official aggregate is
+`out/windows-lab/final-smoke-7a129c0d-native-final/official-aggregation/results.json`,
+SHA256 `89effc8d3dd874d62259bd7c889459f0b17b98d5b40be9b0dd2df6bf9e6ce6c0`.
+Its coverage hash is
+`a453042c3cdfd7486cea8af30716baa0817aeb9eaac8b19c5828988cf96d893a`;
+its game-log gate hash is
+`2deb10692929aa59a0f1314a5a8dd2f1dc04dda2885dbe51f6148735fae72846`.
+Original standard receipts and their selected copies remain byte-identical;
+all failed and interrupted runs remain separately retained. Independent audit
+also checks actual PIDs, profile generations, supported LAA image, native log
+rotation, payload/maps and replayed original log gates.
+
+The runtime source is `4d4788a21c6b00417f2d193cf7ad60d6368af83a`; coop.dll is
+`7bd89bdabc2cdef9e58abcf9038ae23453f538c42f6c33d33c38a88cd3f1cb1c`.
+The compiler dependency proof covers 330 unique source/header inputs and 47
+qualified executable hashes. Unchanged fixtures keep their existing results;
+the production adventure-place regression fails 77 checks on the old source
+and passes 87/87 after the fix, while the existing native preview-provider
+fixture passes 112/112. Final Windows adapter contracts pass 30 checks.
+
+Focused GA acceptance has 17 hashed passing receipt records in
+`out/win0715fixtures/native-ga-focused-qualification.json`. It verifies:
+
+- Two- and four-participant terrain, with authors 53/54 and observers 55/56 in
+  the four-player run: exact native convergence, one transaction/history item
+  per completed stroke and per-author Undo/Redo preserving the other stroke.
+- Captain world-body dragging by host 53 and guest 54, with immediate native
+  observer updates on 55/56 and exact Undo/Redo preserving appearance, health,
+  authored lock and unrelated acts. A first unselected portrait drop is also a
+  no-op without sharing; those retained failures do not establish a co-op defect.
+- Host and guest Solo with three peers remaining in their editors, no gameplay
+  run and exact Build restoration. Test Together has reciprocal moving captain
+  models, native shared objectives/conversations and host-authoritative progress.
+- Four-player unanimity: host-only Esc keeps native clocks running, all four
+  pause native clocks/goals, and one Resume resumes. Coordinated Build preserves
+  durable revision 16 and every participant's nonempty history/fingerprint.
+- Late join, explicit cold recovery to revision 16/all four history records,
+  four-peer native Save, ordinary co-op native entry/talk/objectives/movement and
+  normal return. Final four-peer idle checks have no repeated NPC world-change
+  churn, hook errors or native faults. All owned game processes are stopped.
+
+Retained setup failures include native Galaxy coordinates varying by profile,
+an offline notice on reused profiles, cp1252 output, and assertions begun during
+native stage-entry bakes. Genuine saves, fresh marked private profiles, verified
+native load and bounded natural readiness resolve these without forging data or
+relaxing native assertions. One four-player owner lifetime expired during an
+attempted shutdown; that exit stays FAIL. Subsequent explicit recovery and final
+normal cleanup pass. Unqualified first-use/keyboard-only fixture routes and the
+historical standalone Save New/cold comparison remain separate.
+
+Broader creation/replacement/failure matrices, performance and large-adventure
+memory acceptance, overnight testing and release acceptance remain deferred.
+BUG-1259 remains open for that broader acceptance; its required Windows/main
+gate is qualified. Known Add Act, cold reopen, first Goal Delete and stale
+ownership-caption reports remain open. The new caption report is
+[issue 14](https://github.com/jwhans0n/SporeCoopGA/issues/14), BUG-1280.
+
+Main promotion and metadata-only absorbed-branch cleanup use this qualified
+source and retain rollback refs, all worktree/OUT evidence, private profiles and
+exact dirty-file witnesses. Installed preview 14, its settings, shortcut,
+rollback payload and exact 4 GB executable remain unchanged.

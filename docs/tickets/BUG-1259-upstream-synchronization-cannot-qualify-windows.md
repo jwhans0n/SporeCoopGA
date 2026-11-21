@@ -83,3 +83,17 @@ Verification evidence belongs in the upstream synchronization report. Missing pr
 Legacy fork reference: `BUG-0626` before upstream 0.7.13 integration. Historical commits and OUT receipts retain that identity; upstream owns its independently created ticket under that number.
 
 Legacy fork reference: `BUG-1014` before upstream0.7.15 integration. Prior aliases and historical commit/OUT identities remain unchanged; upstream owns its independently created ticket under that number.
+
+
+## Required main gate qualified, broader acceptance deferred (2026-11-20)
+
+The original missing-fixture/Windows-launch blocker is resolved: five genuine
+native campaign fixture families and the native adapter qualify all14 original
+smoke cases, with official log gates13/13/0 red. Full unit and push/PR CI pass.
+The complete source/payload/receipt table is in the final0.7.15 synchronization
+report. Historical failed setup and stage-entry-bake assertions remain retained.
+
+This umbrella ticket stays open for its separately documented large-adventure,
+native memory and broader release acceptance, which the approved scope defers.
+Those limits no longer block this source/main synchronization. GitHub issue7
+should retain that narrowed acceptance scope and preserve its earlier evidence.

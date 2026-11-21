@@ -342,3 +342,21 @@ A parser replay of all five retained native cold observations found that mode
 mapping is explicit; other unexpected adapter labels still fail readiness.
 The actual-header contract passes with the other contracts (30 total), before
 claiming actual native Civ scenario acceptance.
+
+
+## Final native qualification, 2026-11-20
+
+The required original suite is now 14/14 actual PASS; official native game-log
+gates are 13/13 with zero findings. Actual tested heads remain seven rows on
+670f8f91 and seven on 7a129c0d, with verified unchanged production/payload/maps.
+The final source's full push/PR build and fuzz CI also pass. The canonical
+aggregate SHA256 is
+`89effc8d3dd874d62259bd7c889459f0b17b98d5b40be9b0dd2df6bf9e6ce6c0`.
+See the complete case table, failure classifications and 17-record focused GA
+acceptance in [the synchronization report](UPSTREAM-0.7.15-SYNC.md#final-source-qualification-2026-11-20).
+
+All campaign controllers/games and all six focused-GA owned games are stopped.
+Private profiles, genuine fixture archives, every failure and original standard
+receipt remain in OUT. The required main gate is complete; broader creation,
+performance, memory and release-wide acceptance remain deferred. This source
+qualification does not install a build or publish a release.

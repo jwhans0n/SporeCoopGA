@@ -3618,3 +3618,12 @@ CORRECTION (2026-11-20, sync/upstream-0.7.15-editor-main): this is the historica
 preview 4 exclusion. Native Create Your Own and independent creation return are
 implemented in later previews, tracked by BUG-1263, BUG-1273 and BUG-1274. Their
 fixed status does not qualify the separate Add Act and cold-reopen reports.
+
+## Native Windows registration guard qualified (2026-11-20)
+
+The earlier strict startup guard rejected the verified command0/direct-Galaxy
+registration variant. BUG-1276 now retains that exact variant, the warning path
+and stale-window checks. Real cold starts and the original native UI smoke run
+20261120-193146-windows-3a1fc7 pass with zero faults and clean log gates.
+The required14-case smoke gate is complete; broader BUG-1259 acceptance remains
+open. See the [final synchronization record](../reports/UPSTREAM-0.7.15-SYNC.md#final-source-qualification-2026-11-20).
