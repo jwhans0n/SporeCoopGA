@@ -134,6 +134,22 @@ class RegistrationContracts(unittest.TestCase):
         with self.assertRaises(adventure.FixtureError):
             adventure.registration_action(REGISTRATION_ZERO + window(3, 0x4200, 0xFFFFFFF2, (5, 5, 25, 25), command=3))
 
+    def test_exact_noninteractive_offscreen_pointer_window_is_not_a_modal(self):
+        pointer = window(1, 0x4400, 0, (1034, 162, 1035, 163), flags=0x53)
+        self.assertIsNone(adventure.registration_action(GALAXY + pointer))
+        tree = REGISTRATION_ZERO + pointer
+        self.assertEqual(adventure.registration_action(tree)[::2], ('registration', (868, 159)))
+        self.assertEqual(self.run_game([tree, tree, GALAXY + pointer]).clicks, [(868, 159)])
+
+    def test_unknown_front_windows_still_fail_closed(self):
+        for flags, rect, caption, command in ((0x43, (1034, 162, 1035, 163), '', 0),
+                (0x53, (900, 162, 901, 163), '', 0), (0x53, (1034, 162, 1036, 164), '', 0),
+                (0x53, (1034, 162, 1035, 163), 'Unknown', 0),
+                (0x53, (1034, 162, 1035, 163), '', 1)):
+            with self.subTest(flags=flags, rect=rect), self.assertRaises(adventure.FixtureError):
+                adventure.registration_action(REGISTRATION_ZERO + window(1, 0x4400, 0, rect,
+                    flags=flags, caption=caption, command=command))
+
     def test_galaxy_footer_login_never_opens_or_closes_registration(self):
         self.assertIsNone(adventure.registration_action(GALAXY))
         game = self.run_game([GALAXY])

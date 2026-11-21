@@ -11,7 +11,8 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tools'))
-from windows_native_lane import (FixtureStore, LaneConfig, WindowsLane, digest, required_fixtures)  # noqa: E402
+from windows_native_lane import (FixtureStore, LaneConfig, WindowsLane, digest, required_fixtures,
+                                 real_unit_command)  # noqa: E402
 from tests_viewport import viewport_of, canvas_of  # noqa: E402
 from windows_native_suite import original_command, verdict, OwnedJob, lab_record  # noqa: E402
 
@@ -252,6 +253,16 @@ class LaneTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             original_command(dict(cmd='python3 ../outside.py'))
 
+    def test_unit_adapter_runs_only_the_real_repository_target(self):
+        command = ('wsl', '-e', 'bash', '-lc',
+                   'PATH=/native/git-fast:$PATH make -j6 B=out/build0715 HOSTCXX=/usr/bin/clang++ '
+                   'LLVM_MINGW=/native/toolchain TEST_JOBS=4 test')
+        self.assertTrue(real_unit_command(command))
+        self.assertTrue(real_unit_command(('wsl', '-e', 'make', 'test')))
+        for bad in (('py', '-c', 'print("RESULT: OK")'), command[:4] + (command[4] + '; echo pass',),
+                    command[:4] + ('make --eval=test: test',), command[:4] + ('echo RESULT:OK',)):
+            self.assertFalse(real_unit_command(bad))
+
     def test_skip_missing_result_crash_and_gate_failure_never_pass(self):
         test = dict(name='creature')
         self.assertTrue(verdict(test, 0, 'RESULT: OK', []))
@@ -299,6 +310,26 @@ class LaneTests(unittest.TestCase):
                 if process.poll() is None:
                     process.terminate()
                 process.wait(timeout=10)
+
+    @unittest.skipUnless(os.name == 'nt', 'native WinError contract')
+    def test_termination_race_requires_this_owned_handle_to_have_exited(self):
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        from windows_lab import DesktopProcess
+        for wait_result, exited in ((0, True), (258, False)):
+            process = DesktopProcess.__new__(DesktopProcess)
+            process.handle = 123
+            process.kernel = SimpleNamespace(TerminateProcess=Mock(return_value=False),
+                                             WaitForSingleObject=Mock(return_value=wait_result))
+            process.poll = Mock(side_effect=[None, 42] if exited else [None])
+            with patch('windows_lab.C.get_last_error', return_value=5):
+                if exited:
+                    process.terminate()
+                    process.kernel.WaitForSingleObject.assert_called_once_with(123, 1000)
+                    self.assertEqual(process.poll.call_count, 2)
+                else:
+                    with self.assertRaises(OSError):
+                        process.terminate()
 
 
 if __name__ == '__main__':

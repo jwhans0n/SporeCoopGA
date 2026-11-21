@@ -170,3 +170,40 @@ payload and symbol-set verification must then succeed before any native launch.
 The eighteenth backend contract covers failed cleanup: retained process handles
 and the whole-run lease remain owned until retirement succeeds. Another run
 cannot reset profiles in the interval after a failed restoration/termination.
+
+### Fixture provisioning findings
+
+All five base archives were generated from fresh private native stage wizards,
+with the existing planet names. Tribe required the original campaign setup's
+`coop.tribe form`: its genuine NPC controller changed the world from one tribe
+to two with a baked stock species, then native Save completed. A fresh initial
+Tribe snapshot was not a qualified Save; attempting a renamed copied snapshot
+crashed native LoadGame at008C7D2A (read null). That shortcut was rejected and
+its crash retained. No authored file layout or pause bit was patched.
+
+The initial Creature/Civ cold captures were still black under native entry/bake
+pause04BF38A7 despite valid native actors and zero faults. Those captures remain
+failed visual evidence. A repeat waited for the real native pause to clear,
+11.69 seconds for Creature and7.53 for Civ, then verified rendered scenes. Cell
+and Space restored unpaused. Object presence alone is not fixture admission.
+
+The Creature wizard did not make an owned creation: both source and empty cold
+profiles contain a zero-record96-byte EditorSaves.package. Key0680BF12 and its
+creation/PNG/model companions occur in installed Spore_Content/PatchData. Native
+DDBF GraphicsCache/Pollination files are regenerated in the cold profile; they
+were not copied as fake creation packages. The read-only package/header/hash
+audit is retained in `out/windows-lab/stock-creature-dependency-audit.json`.
+
+A later fresh startup exposed an offscreen1x1 IgnoreMouse root window with
+flags53. UTFWin's0x40 is AlwaysInFront, not Modal. The helper now recognizes only
+this exact noninteractive offscreen family; interactive/onscreen/changed/unknown
+front windows still fail closed, with fresh identity checks retained. A real
+fresh Tribe wizard subsequently completed. Twenty-five startup contracts pass.
+
+The rejected snapshot crash also exposed a process exit race. ACCESS_DENIED
+from TerminateProcess is accepted only when a wait on that exact retained
+process handle confirms it has already exited; a live denial still fails.
+Twenty backend contracts include both outcomes and the real WSL make adapter.
+The unit child clears native lane configuration/ownership variables before the
+portable repository tests, keeping fake offline fixtures independent of a live
+native lane. No substitute receipt or printed success can qualify the unit row.
