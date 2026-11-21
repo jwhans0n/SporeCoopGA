@@ -518,7 +518,7 @@ static uint32_t g_adventure_forced = 0;
 void adventure_force_place(uint32_t id) { g_adventure_forced = id; }
 bool adventure_key(uint32_t& inst, uint32_t& group)
 {
-    if(adventure_native::editor_preview())return adventure_native::editor_preview_place();
+    inst = group = 0;
     uintptr_t p = S2("App::cScenarioMode::ptr");
     uint8_t* sm = p ? *(uint8_t**)p : nullptr;
     if (!sm || !skg::readable(sm, 0xD0))
@@ -532,7 +532,11 @@ bool adventure_key(uint32_t& inst, uint32_t& group)
 }
 static uint32_t adventure_place()
 {
-    uint32_t inst, group;
+    // BUG-1279: a party preview has one committed run identity, while each game
+    // may own a different native draft key. A held/stale preview deliberately has no place.
+    if (adventure_native::editor_preview())
+        return adventure_native::editor_preview_place();
+    uint32_t inst = 0, group = 0;
     if (!adventure_key(inst, group))
         return 0;
     if (g_adventure_forced)

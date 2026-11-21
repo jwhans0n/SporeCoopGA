@@ -838,6 +838,14 @@ $(B)/host/campaign_services_tests.exe: tests/campaign_services_windows_tests.cpp
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -Wextra -Werror -Wno-missing-field-initializers -ffunction-sections -fdata-sections -Wl,--gc-sections -static -Isdk/include -Imods/coop tests/campaign_services_windows_tests.cpp $(INTERACTION_TEST_NET) -o $@ -lws2_32 -luser32 -lshell32
 
+# The production adventure adapter uses the canonical preview place independently of native keys.
+.PHONY: test-adventure-place-windows
+test-adventure-place-windows: $(B)/host/adventure_place_tests.exe
+test-editor-windows: $(B)/host/adventure_place_tests.exe
+$(B)/host/adventure_place_tests.exe: tests/adventure_place_tests.cpp mods/coop/modes.cpp mods/coop/modes.h mods/coop/driver.h mods/coop/drive_plan.h mods/coop/mouse.h mods/coop/cell_logic.h mods/coop/creations.h mods/coop/creature_hp.h mods/coop/adventure_native.h mods/coop/adventure.h mods/coop/world_name.h mods/coop/net/interp.h mods/coop/fixes.cpp mods/coop/fixes.h $(ADVENTURE_ABI_HEADERS) Makefile
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -Wno-missing-field-initializers -ffunction-sections -fdata-sections -Wl,--gc-sections -static -Isdk/include -Imods/coop tests/adventure_place_tests.cpp mods/coop/fixes.cpp -o $@
+
 # One native hold detour dispatches campaign carrying and co-op adventure pickups.
 .PHONY: test-adventure-shared-hold-windows
 test-adventure-shared-hold-windows: $(B)/host/adventure_shared_hold_tests.exe
