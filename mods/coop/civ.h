@@ -38,6 +38,7 @@ int own_selected(bool* city = nullptr);
 int give_selected(uint8_t to);
 
 bool init(const SkHost* host, SkMod* mod, Ctx ctx);
+void shutdown(); // remove the shared native tree policy before module teardown
 // BUG-1157: guest: the player civilization's vehicles re-keyed to the host's own designs (designs.cpp); the ones
 // still waiting for the host's answer
 unsigned redesign_vehicles();

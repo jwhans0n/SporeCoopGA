@@ -110,9 +110,10 @@ WSL Git adapter, replacing repeated history walks lasting over ten minutes.
 
 The published review branch is on the user's fork. GitHub's fuzzing job passes;
 its build/test workflow and real campaign/editor native qualification are pending.
-The GitHub issue-write endpoint still returns 403 despite a connected GitHub app.
-Prepared issue 1-10 link corrections preserve concurrent bodies and stay local
-until issue-write access works; old issue-linked sync branches must remain.
+The connected GitHub app still rejects writes, but the user-authorized local
+GitHub CLI now works. Issues1-10 have corrected ticket/source links with concurrent
+bodies checked before update. The new observed Goal Delete activation gap is
+tracked publicly as [issue11](https://github.com/jwhans0n/SporeCoopGA/issues/11).
 
 
 Native group preparation caught a duplicate pickup detour before any launch:
@@ -123,3 +124,12 @@ fixtures pass. Editor observation also revealed repeated campaign-avatar reset
 work during authoring; that observer is now gated until gameplay resumes. Cold
 native availability, pickup behavior and idle logging must be verified on the
 rebuilt payload before smoke/promotion.
+
+
+A full post-init cold check then caught the later Civilization/GA vehicle generic
+behavior-tree collision. A dedicated single-detour broker preserves both policies
+without reordering services. Strict shared-dispatcher/actual GA vehicle regressions
+pass20,057checks for each subscriber order; a controlled Civ slot is explicitly
+not production Civ gameplay evidence. Native Civ smoke and full cold hook/error
+checks remain required. The global read-only315-site hook audit found no other
+concrete shared-owner collision, and cannot replace that native reprobe.

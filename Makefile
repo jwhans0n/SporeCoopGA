@@ -628,7 +628,7 @@ $(B)/host/readable_memory_tests.exe: tests/readable_memory_tests.cpp sdk/include
 	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Wl,--large-address-aware -Isdk/include tests/readable_memory_tests.cpp -o $@
 
 ACTIONS_TEST_SRC := mods/coop/adventure_world_actions.cpp tests/adventure_actions_tests.cpp
-VEHICLES_TEST_SRC := mods/coop/adventure_world_vehicles.cpp tests/adventure_vehicle_tests.cpp
+VEHICLES_TEST_SRC := mods/coop/adventure_world_vehicles.cpp mods/coop/native_behavior_tree.cpp tests/adventure_vehicle_tests.cpp
 RELATIONSHIPS_TEST_SRC := mods/coop/adventure_relationships.cpp tests/adventure_relationship_tests.cpp
 SOCIAL_TEST_SRC := mods/coop/adventure_social.cpp tests/adventure_social_tests.cpp
 MIRROR_TEST_SRC := tests/adventure_mirror_tests.cpp mods/coop/adventure_flow.cpp mods/coop/adventure_targeting.cpp mods/coop/net/adventure.cpp mods/coop/net/session.cpp mods/coop/net/connection.cpp mods/coop/net/udp.cpp mods/coop/net/crc32.cpp
@@ -639,7 +639,7 @@ $(B)/host/adventure_actions_tests.exe: $(ACTIONS_TEST_SRC) mods/coop/adventure_w
 	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop -Isdk/include $(ACTIONS_TEST_SRC) -o $@
 
 test-vehicles-windows: $(B)/host/adventure_vehicle_tests.exe
-$(B)/host/adventure_vehicle_tests.exe: $(VEHICLES_TEST_SRC) mods/coop/adventure_world_vehicles.h $(ADVENTURE_ABI_HEADERS)
+$(B)/host/adventure_vehicle_tests.exe: $(VEHICLES_TEST_SRC) mods/coop/adventure_world_vehicles.h mods/coop/native_behavior_tree.h $(ADVENTURE_ABI_HEADERS)
 	@mkdir -p $(B)/host
 	$(CXX) $(CXXFLAGS) -Wextra -Werror -static -Imods/coop -Isdk/include $(VEHICLES_TEST_SRC) -o $@
 
@@ -843,3 +843,10 @@ test-adventure-shared-hold-windows: $(B)/host/adventure_shared_hold_tests.exe
 $(B)/host/adventure_shared_hold_tests.exe: tests/adventure_shared_hold_tests.cpp mods/coop/player_rules.cpp mods/coop/player_rules.h mods/coop/adventure_world.cpp mods/coop/adventure_world.h mods/coop/fixes.cpp $(SESSION_TRANSPORT_SRC) $(ADVENTURE_ABI_HEADERS)
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -Wextra -Werror -ffunction-sections -fdata-sections -Wl,--gc-sections -static -Isdk/include -Imods/coop tests/adventure_shared_hold_tests.cpp mods/coop/fixes.cpp $(SESSION_TRANSPORT_SRC) -o $@ -lws2_32
+
+# The verified generic native behavior tree has one owner across GA vehicles and Civ.
+.PHONY: test-shared-behavior-tree-windows
+test-shared-behavior-tree-windows: $(B)/host/shared_behavior_tree_tests.exe
+$(B)/host/shared_behavior_tree_tests.exe: tests/shared_behavior_tree_tests.cpp mods/coop/native_behavior_tree.cpp mods/coop/native_behavior_tree.h mods/coop/adventure_world_vehicles.cpp mods/coop/adventure_world_vehicles.h mods/coop/fixes.cpp $(SESSION_TRANSPORT_SRC) $(ADVENTURE_ABI_HEADERS)
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -Wextra -Werror -ffunction-sections -fdata-sections -Wl,--gc-sections -static -Isdk/include -Imods/coop tests/shared_behavior_tree_tests.cpp mods/coop/native_behavior_tree.cpp mods/coop/adventure_world_vehicles.cpp mods/coop/fixes.cpp $(SESSION_TRANSPORT_SRC) -o $@ -lws2_32

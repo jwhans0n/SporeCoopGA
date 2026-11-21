@@ -61,5 +61,7 @@ source is 07b3d9829b13c7c177c42263f3da115f0e1170f0, GOG 2024 with the supported
 - 2026-11-20: opened.
 - 2026-11-20: Retained the failing native subcase and controlled ownership timing
   reproduction during the 0.7.15 integration. Broader authoring qualification is
-  explicitly incomplete. GitHub issue creation remains unavailable (403), so an
-  exact issue body is retained in the integration OUT evidence.
+  explicitly incomplete. The original issue body was retained while connector
+  writes returned403.
+- 2026-11-20: filed as https://github.com/jwhans0n/SporeCoopGA/issues/11 through
+  the authorized local GitHub CLI.

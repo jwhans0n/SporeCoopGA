@@ -310,7 +310,7 @@ anchor so other docs can link to it:
 * Next steps: the next release.
 * Ticket: BUG-1236
 
-## Shared Adventure Editor: open fork reports and qualification (2026-11-13)
+## Shared Adventure Editor: open fork reports and qualification (2026-11-20)
 <a id="issue-fork-preview15-tracking"></a>
 
 The preview 16 source integration retains preview 14 fixes and imports
@@ -325,14 +325,16 @@ upstream tickets. A validation item does not imply the source fix is missing.
 | BUG-1249 | Recheck hidden-game presentation reset hangs with current SporeKit | [#4](https://github.com/jwhans0n/SporeCoopGA/issues/4) |
 | BUG-1253 | Historical gradient point-color gesture sometimes has no transaction | [#5](https://github.com/jwhans0n/SporeCoopGA/issues/5) |
 | BUG-1255 | Terraformed native Save/cold reopen changes unclassified authored bytes | [#6](https://github.com/jwhans0n/SporeCoopGA/issues/6) |
-| BUG-1259 | Main qualification lacks native smoke fixtures and Windows launcher | [#7](https://github.com/jwhans0n/SporeCoopGA/issues/7) |
+| BUG-1259 | Native Windows smoke/main qualification pending; five fixture cold reopens pass | [#7](https://github.com/jwhans0n/SporeCoopGA/issues/7) |
 | BUG-1270 | Add Act after independent editor return loses scene identity | [#8](https://github.com/jwhans0n/SporeCoopGA/issues/8) |
 | BUG-1271 | Standalone Save New/cold reopen warns of unavailable custom creations | [#9](https://github.com/jwhans0n/SporeCoopGA/issues/9) |
-| BUG-1276 | Native startup harness rejects an unclassified close-command value | [#10](https://github.com/jwhans0n/SporeCoopGA/issues/10) |
+| BUG-1276 | Native startup guard now passes; final-source smoke and issue closure pending | [#10](https://github.com/jwhans0n/SporeCoopGA/issues/10) |
+| BUG-1278 | Act-goal Delete loses the first click while ownership arrives; a second click works | [#11](https://github.com/jwhans0n/SporeCoopGA/issues/11) |
 
 Historical observations need fresh reproduction. No smoke or focused live editor
 pass is claimed for the blocked startup runs. See the
-[0.7.13 synchronization report](reports/UPSTREAM-0.7.13-SYNC.md).
+[0.7.13 synchronization report](reports/UPSTREAM-0.7.13-SYNC.md). Current evidence is in the
+[0.7.15 synchronization report](reports/UPSTREAM-0.7.15-SYNC.md).
 
 ## Galactic Adventures preview 12: validation limits (BUG-1259)
 

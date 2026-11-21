@@ -2497,6 +2497,7 @@ void on_unload()
     adventure::reset();
     adventure_assets::shutdown();
     adventure_native::shutdown();
+    civ::shutdown();
     game::set_extra_update_filter(nullptr);
     game::set_npc_ai_filter(nullptr);
     game::set_blocked_update_handler(nullptr);

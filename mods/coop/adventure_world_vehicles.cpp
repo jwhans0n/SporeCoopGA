@@ -6,6 +6,7 @@
 #include <utility>
 
 #include "sporekit_game.hpp"
+#include "native_behavior_tree.h"
 
 namespace adventure_world_vehicles {
 
@@ -25,14 +26,9 @@ Ctx C;
 bool g_ok;
 Counters g_counters;
 
-// Bit-preserving stack words: float delta, double time, tree, actor, context,
-// and three native state words. The return value is in AL.
-using Tree = bool(SK_CDECL*)(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t,
-                            uint32_t, uint32_t, uint32_t, uint32_t);
 using Weapons = void(SK_THISCALL*)(void*, uint32_t);
 using Timers = void(SK_THISCALL*)(void*);
 using Actor = void(SK_THISCALL*)(void*, void*, float);
-Tree o_tree;
 Weapons o_weapons;
 Timers o_timers;
 Actor o_actor;
@@ -44,15 +40,13 @@ bool guest()
 bool paused() { return g_ok && C.active && C.active() && C.paused && C.paused(); }
 bool mirrored(void* object) { return object && (paused() || (guest() && C.is_mirrored && C.is_mirrored(object))); }
 
-bool SK_CDECL tree(uint32_t delta, uint32_t time_low, uint32_t time_high,
-                   uint32_t definition, uint32_t actor, uint32_t context,
-                   uint32_t state0, uint32_t state1, uint32_t state2)
+bool tree_allowed(void* actor)
 {
-    if (mirrored(reinterpret_cast<void*>(static_cast<uintptr_t>(actor)))) {
+    if (mirrored(actor)) {
         ++g_counters.trees;
         return false; // Leave the native tree pending, without advancing its state.
     }
-    return o_tree(delta, time_low, time_high, definition, actor, context, state0, state1, state2);
+    return true;
 }
 
 void SK_THISCALL weapons(void* vehicle, uint32_t delta)
@@ -97,15 +91,20 @@ bool init(const SkHost* host, SkMod* mod, Ctx ctx)
         targets[i] = reinterpret_cast<void*>(H->sym(kSymbols[i]));
         if (!targets[i]) return false;
     }
-    std::array<void*, 4> detours = {reinterpret_cast<void*>(&tree), reinterpret_cast<void*>(&weapons),
-                                  reinterpret_cast<void*>(&timers), reinterpret_cast<void*>(&actor)};
-    std::array<void**, 4> originals = {reinterpret_cast<void**>(&o_tree), reinterpret_cast<void**>(&o_weapons),
-                                     reinterpret_cast<void**>(&o_timers), reinterpret_cast<void**>(&o_actor)};
-    for (size_t i = 0; i < targets.size(); ++i) {
-        if (H->hook_create(M, targets[i], detours[i], originals[i]) != 0) {
-            while (i != 0) { --i; H->hook_remove(M, targets[i]); }
+    std::array<void*, 3> detours = {reinterpret_cast<void*>(&weapons), reinterpret_cast<void*>(&timers),
+                                  reinterpret_cast<void*>(&actor)};
+    std::array<void**, 3> originals = {reinterpret_cast<void**>(&o_weapons), reinterpret_cast<void**>(&o_timers),
+                                     reinterpret_cast<void**>(&o_actor)};
+    for (size_t i = 0; i < detours.size(); ++i) {
+        if (H->hook_create(M, targets[i + 1], detours[i], originals[i]) != 0) {
+            while (i != 0) { H->hook_remove(M, targets[i]); --i; }
             return false;
         }
+    }
+    if (!native_behavior_tree::subscribe(H, M, reinterpret_cast<uintptr_t>(targets[0]),
+                                        native_behavior_tree::Scope::Adventure, tree_allowed)) {
+        for (size_t i = 1; i < targets.size(); ++i) H->hook_remove(M, targets[i]);
+        return false;
     }
     g_ok = true;
     return true;
@@ -114,5 +113,10 @@ bool init(const SkHost* host, SkMod* mod, Ctx ctx)
 bool available() { return g_ok; }
 Counters counters() { return g_counters; }
 void reset() { g_counters = {}; }
+void shutdown()
+{
+    native_behavior_tree::unsubscribe(native_behavior_tree::Scope::Adventure, tree_allowed);
+    g_ok = false; C = {}; reset();
+}
 
 } // namespace adventure_world_vehicles

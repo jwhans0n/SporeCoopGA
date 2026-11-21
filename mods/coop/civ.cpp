@@ -1,5 +1,6 @@
 #include "civ.h"
 #include "civ_internal.h"
+#include "native_behavior_tree.h"
 
 namespace civ {
 
@@ -458,15 +459,14 @@ void* nearest_player_city(const net::Vec3& p, uint8_t* owner)
 
 // ---------------- hooks ----------------
 // behaviour tree tick shared by every agent: skipped for vehicle mirrors on guests
-using BT_t = int(SK_CDECL*)(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t);
-static BT_t o_BT;
-static int SK_CDECL h_BT(uint32_t a0, uint32_t a1, uint32_t a2, uint32_t a3, uint32_t agent, uint32_t a5, uint32_t a6,
-                         uint32_t a7, uint32_t a8)
+static bool tree_allowed(void* agent)
 {
-    if (agent && is_guest() && game::mode_id() == modes::kCiv && !local_play() && !IsBadReadPtr((void*)agent, 4) &&
-        *(uintptr_t*)agent == a_VehicleVt)
-        return 0;
-    return o_BT(a0, a1, a2, a3, agent, a5, a6, a7, a8);
+    return !(agent && is_guest() && game::mode_id() == modes::kCiv && !local_play() && !IsBadReadPtr(agent, 4) &&
+             *static_cast<uintptr_t*>(agent) == a_VehicleVt);
+}
+static bool bind_behavior_tree()
+{
+    return native_behavior_tree::subscribe(H, M, a_BTTick, native_behavior_tree::Scope::Civilization, tree_allowed);
 }
 
 using SetSelected_t = int(SK_THISCALL*)(void*, int);
@@ -1841,7 +1841,7 @@ bool init(const SkHost* host, SkMod* mod, Ctx ctx)
         }
     if (!g_ok)
         return false;
-    H->hook_create(M, (void*)a_BTTick, (void*)h_BT, (void**)&o_BT);
+    if (!bind_behavior_tree()) { g_ok = false; return false; }
     a_WriteCityData = H->sym("SporeCoop::City_WriteCityData"); // optional (BUG-0901, GOG 2024)
     if (uintptr_t kg = H->sym("SporeCoop::Vehicle_KeepOnValidGround")) // optional (BUG-0186, GOG 2024)
         H->hook_create(M, (void*)kg, (void*)h_KeepGround, (void**)&o_KeepGround);
@@ -2291,6 +2291,12 @@ void on_session_end()
     g_host_cities.clear();
     g_split_for.clear();
     g_city_short_since = -1;
+}
+
+void shutdown()
+{
+    native_behavior_tree::unsubscribe(native_behavior_tree::Scope::Civilization, tree_allowed);
+    g_ok = false;
 }
 LIFECYCLE_HOOK("civ.session", lifecycle::kSessionEnd, -44, [](const lifecycle::Ctx&) { on_session_end(); }, true); // C2 (BUG-1141): end_session
 

@@ -118,7 +118,7 @@ bool alive(const LiveRef& ref) {return ref.p && skg::field<uint32_t>(ref.p,0x24)
 bool is_puppet(void*) {return false;}
 }
 namespace adventure_targeting {void reset() {}}
-namespace adventure_world_vehicles {void reset() {}}
+namespace adventure_world_vehicles {void reset() {} void shutdown() {}}
 
 int main(int argc,char** argv)
 {

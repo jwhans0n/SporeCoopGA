@@ -2342,6 +2342,7 @@ void reset()
 void shutdown()
 {
     player_rules::clear_adventure_hold(intercept_pick);
+    adventure_world_vehicles::shutdown();
     g_ok = false;
     reset();
     C = {};

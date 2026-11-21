@@ -342,6 +342,7 @@ namespace adventure_world_vehicles {
 bool init(const SkHost*, SkMod*, Ctx) { return true; }
 Counters counters() { return {}; }
 void reset() {}
+void shutdown() {}
 }
 namespace adventure_relationships {
 bool query_local_party(void* manager, const void* key, void* actor, int& value)

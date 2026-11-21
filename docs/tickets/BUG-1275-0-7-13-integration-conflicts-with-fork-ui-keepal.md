@@ -179,7 +179,8 @@ same verified function. Upstream player_rules already owned its detour; world in
 stopped at MH_ERROR_ALREADY_CREATED. A single owner now provides the typed GA
 interceptor and checked native hold/release trampolines, preserving campaign
 relays, host-authoritative pickups and shutdown unregistration. All21 world/child
-hook targets were audited; this was their only conflicting native owner.
+hook targets were checked against pre-world owners; the later full cold log
+revealed a second conflict with Civilization, recorded below.
 
 The retained old-source actual-handler fixture and --old twin each fail two
 duplicate-owner assertions; the new actual campaign/GA fixture and native mirror
@@ -202,3 +203,21 @@ Actual script RSS sampling, process-group termination, the small-process control
 and original timing assertions remain. Unexpected Git/console access is forbidden.
 Retained isolation RED and full-group GREEN evidence is in `out/integration`;
 the corrected memory case passes in5.12seconds and the complete lab selftest passes.
+
+
+### Generic behavior-tree late-owner conflict
+
+After the carry fix, native adapters were available but the full cold log caught
+Adventure TickBehaviorTree and later Civilization BehaviorTreeTickGeneric owning
+the same verified nine-word cdecl function. The earlier21-target audit covered
+pre-world owners, not this later initialization. A dedicated broker now creates
+one detour for the first verified subscriber and retains fixed GA/Civ filter
+slots; both init orders preserve all native argument words, block when either
+applicable policy denies, and forward the original once. Consumers unregister on
+module shutdown. No native ABI, protocol or serialized field changed.
+
+The actual GA/shared-dispatcher Win32 fixture passes20,057checks per init order;
+its controlled Civ slot tests composition, not the complete production Civ module.
+The duplicate-registration twin fails two expected assertions. Vehicle, mirror
+and shared-hold fixtures pass. Native Civ smoke and a complete cold no-hook-error
+reprobe are still required. Evidence: `out/upstream0715/network/shared-bt-validation.json`.
