@@ -234,3 +234,12 @@ interpreter is installed locally; a regression removes that attribute and
 verifies both an empty file and a file spanning multiple chunks. It fails
 against the old implementation and all 22 backend contracts pass with the
 correction. Outputs are retained under `out/windows-lab/python310-digest`.
+
+CORRECTION (2026-11-20): GitHub Actions run `44850857363` confirmed the production
+hash correction, but exposed a teardown error in the regression when the API
+was absent before the test. `patch.object(create=True)` attempted a second
+attribute deletion on Python 3.10. The test now restores the module dictionary
+and checks both initially present and initially absent cases. The old teardown
+fails under an initially absent context, while the corrected context and all
+22 contracts pass. The failed CI run remains evidence; local outputs are under
+`out/windows-lab/python310-digest-teardown`. Real Python 3.10 CI must rerun.

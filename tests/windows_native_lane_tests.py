@@ -43,11 +43,20 @@ class LaneTests(unittest.TestCase):
         path = self.root / 'payload.bin'
         payload = bytes(range(256)) * 8193
         path.write_bytes(payload)
-        with patch.object(hashlib, 'file_digest', create=True):
-            del hashlib.file_digest
-            self.assertEqual(digest(path), hashlib.sha256(payload).hexdigest())
-            path.write_bytes(b'')
-            self.assertEqual(digest(path), hashlib.sha256(b'').hexdigest())
+        for originally_present in (True, False):
+            with self.subTest(originally_present=originally_present), patch.dict(hashlib.__dict__):
+                if originally_present:
+                    hashlib.__dict__['file_digest'] = object()
+                else:
+                    hashlib.__dict__.pop('file_digest', None)
+                with patch.dict(hashlib.__dict__):
+                    hashlib.__dict__.pop('file_digest', None)
+                    self.assertFalse(hasattr(hashlib, 'file_digest'))
+                    path.write_bytes(payload)
+                    self.assertEqual(digest(path), hashlib.sha256(payload).hexdigest())
+                    path.write_bytes(b'')
+                    self.assertEqual(digest(path), hashlib.sha256(b'').hexdigest())
+                self.assertEqual(hasattr(hashlib, 'file_digest'), originally_present)
 
     def archive(self, entries, name='creature.tgz'):
         root = Path(self.raw['fixtures'])
